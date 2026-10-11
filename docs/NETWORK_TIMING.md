@@ -4,7 +4,7 @@
 
 ```
  OV9281 ─CSI─ Pi 3B ─┐
- OV9281 ─CSI─ Pi 3B ─┤  100 Mbit (USB 2.0 Ethernet on the Pi 3B)
+ OV9281 ─CSI─ Pi 3B ─┤  Ethernet cables (the Pi 3B's port runs at 100 Mbit)
  OV9281 ─CSI─ Pi 3B ─┼──── gigabit switch ──── PC (positioning engine + dashboard)
         …            │                    └─── PTP grandmaster (a Pi, or a Linux box)
 ```
@@ -44,7 +44,8 @@ column is the timing part of the position error at 5 m/s.
 
 * **Crystals:** each Pi's crystal is about 20 ppm off and wanders slowly.
 * **Message exchange:** each two-way PTP or NTP exchange is simulated with:
-  * the Pi 3B's USB Ethernet (125 µs polling quantisation);
+  * the Pi 3B's Ethernet port, which inside the board is connected to the processor through a
+    USB 2.0 chip (SMSC LAN9514), so packets reach the CPU in 125 µs USB polling steps;
   * software-timestamp noise;
   * late-timestamp spikes when the CPU is busy with image processing;
   * switch delay variation;

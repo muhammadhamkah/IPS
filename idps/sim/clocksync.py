@@ -12,12 +12,12 @@ Model, per station:
   ppm x time: 20 ppm is 1.2 ms per minute.
 * **Two-way exchange** (PTP Sync / Delay_Req, or NTP), every `sync_interval_s`:
   t1 master send, t2 slave receive, t3 slave send, t4 master receive. Each timestamp has
-  noise from where it is taken: *software* timestamps on a Pi 3B go through the USB 2.0
-  Ethernet adapter (100 Mbit LAN9514) and the kernel, so they carry USB polling
+  noise from where it is taken: *software* timestamps on a Pi 3B: its Ethernet port is wired
+  inside the board to the CPU through a USB 2.0 chip (LAN9514, 100 Mbit), so they carry USB polling
   quantisation (125 us microframes), interrupt latency and spikes when the CPU is busy
   with image processing; *hardware* timestamps (PHY/NIC, e.g. Pi 5, CM4, Intel i210)
   are good to tens of ns. The switch adds queueing delay variation. A fixed, unknown
-  **path asymmetry** (send and receive paths through the USB adapter differ) biases
+  **path asymmetry** (send and receive paths through that chip differ) biases
   the measured offset by half of it, and no protocol can see that.
 * **Servo** like linuxptp's PI servo: the first measurement steps the clock, then each
   measurement nudges phase (kp) and frequency (ki). The path delay goes through a
@@ -83,7 +83,7 @@ PROFILES: dict[str, ClockProfile] = {
         slave_ts=TimestampNoise(sigma_us=6, quantum_us=125, spike_prob=0.03, spike_mean_us=250),
         master_ts=TimestampNoise(sigma_us=6, quantum_us=125, spike_prob=0.01, spike_mean_us=150),
         network_pdv_us=3, asymmetry_us=15, kp=0.1, ki=0.001, wander_ppb_per_sqrt_s=2,
-        description="Raspberry Pi 3B, 100 Mbit USB Ethernet into a gigabit switch, ptp4l with software "
+        description="Raspberry Pi 3B, Ethernet (100 Mbit port) into a gigabit switch, ptp4l with software "
                     "timestamps, a Pi as grandmaster"),
     # Same Pis, but the master has hardware timestamping (a Linux PC with an Intel i210, a CM4 / Pi 5).
     "pi3b_ptp_sw_hwmaster": ClockProfile(

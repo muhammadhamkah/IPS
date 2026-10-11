@@ -1,5 +1,5 @@
 # The planned prototype network: every camera on its own Raspberry Pi 3B, each Pi wired
-# (100 Mbit USB Ethernet) into one gigabit switch, the PC on the same switch receiving the
+# by Ethernet cable (the Pi 3B's port is 100 Mbit) into one gigabit switch, the PC on the same switch receiving the
 # observations and computing drone positions. Clocks are kept in step with PTP using
 # software timestamps (ptp4l -S), simulated message by message (idps.sim.clocksync);
 # clocks.csv in the output shows each Pi's true clock error and what ptp4l reports.

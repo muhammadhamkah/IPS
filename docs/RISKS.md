@@ -257,7 +257,7 @@ servos.** Compared with the Pi 4B assumed elsewhere:
   (1280×800) detection at 120 FPS is unlikely to fit in 8.33 ms. The likely mode is the
   OV9281's 2×2 binned **640×400** (a quarter of the pixels, half the angular resolution) or a
   lower frame rate.
-* **Network:** 100 Mbit Ethernet via USB 2.0, adding timestamp jitter. Wi-Fi is 2.4 GHz only.
+* **Network:** 100 Mbit Ethernet port, connected inside the board through a USB 2.0 chip (LAN9514), which adds timestamp jitter. Wi-Fi is 2.4 GHz only.
   No hardware PTP. **Simulated** (docs/NETWORK_TIMING.md, `idps-sim clocks`): wired software
   PTP keeps stations within about 60 µs of each other (p95), about 0.15 mm at 5 m/s, which is
   enough. Bandwidth is about 0.2–1 Mbit/s per station, far below the 100 Mbit port.
