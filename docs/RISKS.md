@@ -85,6 +85,26 @@ The table shows the share of grid points that meet 6.2 mm:
 * **This model is optimistic.** It assumes no occlusion between drones, independent errors
   across cameras, and no marker-geometry error. Real margins will be smaller.
 
+### 0.2 Truss + tripod mounting (decision D11)
+
+There are no wall mounts. Cameras go on **overhead trusses** (modelled at 31.5 m, above the
+30 m volume) and on **tripods** (modelled 4 m tall, 2 m outside the volume boundary).
+`error_budget.py --trusses` evaluates these hand-made layouts:
+
+| Layout | Cameras | ≥ 3 cameras | Meets spec: realistic | Meets spec: tight | Meets spec: very tight |
+|---|---|---|---|---|---|
+| A: truss grid 20 m + perimeter tripods 12.5 m | 57 | 91.5 % | 65 % | 83 % | 85 % |
+| B: A + cameras on the boundary trusses looking down the edges | 89 | 95.1 % | 78 % | 89 % | 91 % |
+| C: B + 3 tripod cameras per corner aimed up into the corner | 101 | 98.2 % | 85 % | 98 % | 99 % (worst 7.5 mm) |
+| D: truss grid 12.5 m + tripods 10 m + edge + corners | 148 | **100 %** | 92 % | **99 %** (worst 11.5 mm) | **99.5 %** (worst 7.5 mm) |
+
+**Trusses plus tripods work better than the earlier wall layouts.** Tripods just outside the
+volume, aimed upward, see the upper edges and corners from about 25–35 m. Wall cameras could
+not see the region directly above them. With about 150 cameras and the *tight* budget, the
+remaining failures are a handful of corner points. The planner's optimiser should close these,
+rather than hand placement. The "realistic" budget still fails about 8 % of the volume, so the
+tight error budget remains essential.
+
 **Status: ±1 cm across the full 100×100×30 m volume is not yet shown to be feasible.** It is
 not ruled out by geometry either. The plan keeps it as the requirement, and checks it at
 explicit gates:
@@ -398,6 +418,32 @@ architecture supports this, with the constraints below.
 * **Earliest test:** Phase 4. Rotate a marker rig about a known pivot and verify that the
   reported reference point stays fixed.
 
+### R18: World-frame axes and scale at hall scale (H)
+
+* **Evidence (OptiTrack-style calibration):** the wand gives scale and the ground square
+  gives origin and axes. That is ideal for rooms, but at 100 m the tools are short compared
+  with the distances. Errors in axis angle and scale grow with distance from the origin.
+
+  | Source | Error at 70 m from origin |
+  |---|---|
+  | 1 m square, each LED located to 0.3 mm (averaged) | axis tilt 0.42 mrad → **30 mm** |
+  | 1 m square, LED to 1 mm | 1.4 mrad → **99 mm** |
+  | 1 m wand length known to 0.1 mm (scale 1e-4) | **7 mm** |
+  | Floor markers 50–90 m from origin, LED to 1 mm | 0.016–0.028 mrad → 1–2 mm |
+  | Laser distance meter ±1 mm over 80 m (scale 1.3e-5) | 0.9 mm |
+
+* **Does it matter?** A rotated or scaled world frame does not change distances *between*
+  nearby drones much. It does move every absolute position relative to the real room: floor,
+  landing pads, ceiling, obstacles. "Within 1 cm throughout the volume" refers to the real
+  room, so it matters.
+* **Mitigation:**
+  * Keep the 1 m square for the origin.
+  * Add long-baseline floor markers along +X and +Y, measured with a laser distance meter,
+    for axes, floor plane and scale (WORKFLOW step 4.3).
+  * Verify with the independent total-station check (VALIDATION G4).
+* **Earliest test:** Phase 9. Compare the scale and axes from the square plus wand against
+  the long-baseline markers.
+
 ### R17: Installation-to-plan fidelity (M)
 
 * **Evidence:**
@@ -405,12 +451,18 @@ architecture supports this, with the constraints below.
     level, or is rotated a few degrees from the planned direction, aims the camera equally
     far off.
   * Physical mounts are rarely exactly where planned (obstructions, truss positions).
+  * **Tripods** can be bumped, settle on their legs, or be moved between sessions. Unlike a
+    servo jitter, this changes the camera *position*, which rotation-only live re-pose does
+    not correct. Movement detection flags it; recovery is a full 6-DOF re-pose from beacons
+    (lower accuracy, ARCHITECTURE §6.4) or a wand re-calibration.
   * Accuracy itself is unaffected, because calibration measures the real pose. Coverage,
     however, can degrade.
 * **Mitigation:**
   * The planner uses robust optimisation with per-camera install tolerances, and flags
     tight-tolerance cameras.
   * Install instructions are given relative to physical features.
+  * Tripods are sandbagged, their feet positions taped, and they are placed outside
+    walkways.
   * Bases are levelled and pan-zero oriented to the plan.
   * Snapshot overlay of expected versus seen beacons after coarse aim.
   * Fine aim after calibration.
@@ -434,3 +486,5 @@ architecture supports this, with the constraints below.
 | D8 | Drone reference point and marker offset | Open. See R16 |
 | D9 | Site workflow | **Decided:** planner → install from the plan → one-click aim to plan → wand + calibration square at origin (0,0,0; X arm = +X) → fly. See WORKFLOW.md |
 | D10 | Minimum cameras per point | **Decided:** ≥ 3 everywhere (planner constraint, alongside p95 ≤ 10 mm) |
+| D11 | Mounting options | **Decided:** overhead trusses and tripods; no wall mounts. Needed from the site: truss positions and heights, tripod height range, allowed tripod floor zones |
+| D12 | Calibration tools | **Decided:** OptiTrack-style wand + ground square at origin. Proposed: 1 m × 1 m L-frame with 4 LEDs (origin, X 0.5, X 1.0, Y 1.0). **Proposed for the hall:** long-baseline floor markers + laser distance meter (R18) |

@@ -37,6 +37,14 @@ measurements.
   The wall bands and upper corners still fail in every simple layout. They need dedicated
   close-range cameras, found by the Phase 0 optimiser. Expect about 150–260 stations. Full-
   volume feasibility is *not yet shown*; it is checked at gates in Phases 0, 6 and 9.
+* **Mounting on trusses and tripods (decided).** This layout works better than walls:
+  tripods just outside the volume, aimed upward, cover the upper edges and corners. A
+  hand-made 148-camera layout meets the spec at 99 % of test points under the tight budget;
+  the planner's optimiser must close the remaining corners.
+* **Calibration (decided): OptiTrack-style wand + 1 m ground square at the origin.** At hall
+  scale, a 1 m square alone leaves 30–100 mm error at 70 m from the origin. A few floor
+  markers placed 40–90 m along the X and Y lines and measured with a laser distance meter
+  fix this.
 * **Servo pan/tilt gimbals (decided)** are workable only with **live re-pose**: every camera
   continuously measures its own rotation from about 9–16 fixed beacons, and a station that
   moves or jitters drops out automatically. Servo hold stability is measured in Phase 6.
@@ -51,4 +59,5 @@ Run the error budget:
 python3 tools/feasibility/error_budget.py           # layout scenarios (requires numpy)
 python3 tools/feasibility/error_budget.py --sweep   # full-volume requirement sweep
 python3 tools/feasibility/error_budget.py --beacons # camera pose precision from beacons
+python3 tools/feasibility/error_budget.py --trusses # truss + tripod layouts
 ```

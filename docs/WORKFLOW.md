@@ -31,7 +31,7 @@ the following inputs.
 | Input | Example | Why it is needed |
 |---|---|---|
 | Flight volume | Box 100 × 100 × 30 m, or several boxes, or a mesh | The region where every point must meet the accuracy and coverage target |
-| Room geometry and **allowed mounting surfaces** | Walls (height range), ceiling trusses, columns, free-standing poles; no-go zones (doors, windows, lights) | The optimiser may only place cameras where they can physically be mounted |
+| Room geometry and **allowed mounting options** | **Overhead trusses** (their actual positions and height) and **tripods** (allowed floor zones outside the flight volume, tripod height range); no-go zones (doors, walkways, lights) | The optimiser may only place cameras where they can physically be mounted. Walls are not used (decision D11) |
 | Obstacles | Columns, nets, hanging equipment | Occlusion |
 | Hardware catalogue | Sensor (OV9281), lens options (2.8 / 3.6 / 4 / 6 / 8 mm), servo pan/tilt ranges, gimbal geometry | Field of view, resolution, aim limits |
 | Requirements | p95 ≤ 10 mm everywhere; **≥ 3 cameras everywhere** (configurable) | Optimisation constraints |
@@ -45,7 +45,8 @@ the following inputs.
 
    | Camera | Surface | X, Y, Z (m) | Measure from | Pan / Tilt (°) | Lens | Beacons in view |
    |---|---|---|---|---|---|---|
-   | C01 | North wall | 12.50, 0.00, 8.00 | 12.50 m from NW corner along N wall, 8.00 m above floor | 34.0 / −22.5 | 4 mm | 14 |
+   | C01 | Truss T3 | 12.50, 40.00, 31.50 | Truss T3, 12.50 m from its west end | 34.0 / −62.5 | 2.8 mm | 14 |
+   | C57 | Tripod | −52.00, 18.75, 4.00 | 2.00 m outside the west boundary, 18.75 m from the origin line, mast 4.00 m | 90.0 / 38.0 | 2.8 mm | 11 |
    | … | | | | | | |
 
    * The *Measure from* column turns coordinates into **tape-measure instructions** relative
@@ -79,7 +80,9 @@ on-site aim step and is compared against the calibration result.
 
 ## Step 2: Install (on site)
 
-1. Mount each station at its planned position using the tape-measure instructions. Exact
+1. Mount each station at its planned position using the tape-measure instructions: on the
+   named truss at the given distance, or on a tripod at the marked floor spot and mast
+   height. Exact
    placement is **not** needed for accuracy, because calibration measures where each camera
    really is. It only needs to be within the plan's install tolerance, so that coverage
    holds.
@@ -89,8 +92,15 @@ on-site aim step and is compared against the calibration result.
      perpendicular to the wall", or toward a named reference point).
    * The servo can only aim relative to its base. A base rotated by 5° gives a camera aimed
      5° off.
-3. Mount beacons at their planned positions.
-4. Connect PoE. Each station appears in the dashboard and the operator assigns it its plan ID
+3. **Tripods must not move during a session.**
+   * Spread the legs fully, weight them with sandbags and tape the feet positions on the
+     floor.
+   * Keep tripods outside walkways and cordon them off if people move around.
+   * A bumped tripod shifts the camera *position*, which live re-pose (rotation only) cannot
+     correct. The system detects this and drops the camera (RISKS R17). The camera then
+     needs a full re-pose or a new wand calibration.
+4. Mount beacons at their planned positions.
+5. Connect PoE. Each station appears in the dashboard and the operator assigns it its plan ID
    (C01, C02, …). A label or QR code on each station speeds this up.
 
 ---
@@ -118,24 +128,43 @@ At this stage the aim is **coarse**: servo accuracy plus the base orientation er
    * A hand-held wand reaches only about 2–3 m above the floor. The upper part of the hall
      volume needs the wand on a pole or **carried by a drone** flying a planned pattern
      (RISKS R9). The planner generates that pattern.
-2. **Calibration square on the floor at the origin.** It defines the world frame:
+2. **Calibration square on the floor at the origin.** This is the same wand + ground-square
+   method OptiTrack and Vicon use. It defines the world frame:
    * Its marked corner is **(0, 0, 0)**.
    * Its X arm defines **+X**. This is the direction drones face at yaw 0 (RISKS D7).
    * Its Y arm defines +Y.
    * The floor plane through it defines Z = 0, with +Z up.
 
-   The square carries 3–4 IR LEDs at precisely known positions. It is placed at the origin
-   and orientation shown in the plan. Its arm lengths also give a second, independent scale
-   check against the wand.
-3. **Solve:** a bundle adjustment computes every camera's exact position and rotation, plus
-   wand points. It is then aligned to the square's frame.
-4. **Beacon self-survey:** with the cameras now calibrated, the system triangulates every
+   **Proposed square (decision D12):** an L-frame with **1 m arms along X and Y**, with
+   4 IR LEDs:
+   * one at the origin;
+   * one at X = 0.5 m;
+   * one at X = 1.0 m;
+   * one at Y = 1.0 m.
+
+   The extra LED at X = 0.5 m makes the X arm distinguishable from the Y arm. With equal arms
+   and only 3 LEDs, the software could not tell them apart. The frame also needs levelling
+   feet and a bubble level, a known LED height above the floor, and a rigid material such as
+   aluminium box section.
+3. **Axis and scale extension markers (hall scale only).** A 1 m square is enough for the
+   origin, but too short to fix the axis directions and scale over 100 m. Small errors grow
+   with distance from the origin (RISKS R18). For the hall:
+   * Place 2 extra floor LEDs along the +X line, e.g. at about 40 m and 90 m. Place 1–2 along
+     the +Y line. Line them up with a laser line from the square.
+   * Measure their distances from the origin with a **laser distance meter** (±1 mm class).
+   * The software uses these long baselines to fix +X and +Y, the floor plane (Z = 0) and the
+     overall scale. The wand then provides only the camera-to-camera geometry.
+   * In a lab-sized room, the 1 m square and the wand are sufficient on their own.
+4. **Solve:** a bundle adjustment computes every camera's exact position and rotation, plus
+   wand points. It is then aligned to the square's frame, with the extension markers fixing
+   the axes and scale.
+5. **Beacon self-survey:** with the cameras now calibrated, the system triangulates every
    fixed beacon, averaging many cameras over tens of seconds. These measured beacon positions
    are what live re-pose uses from then on.
    * This removes the need for a total station to survey beacons.
    * A total station is still recommended for the *independent accuracy check* in
      VALIDATION.md, because a system cannot validate itself.
-5. **Fine aim (optional, automatic):** now that each camera's true pose is known, the software
+6. **Fine aim (optional, automatic):** now that each camera's true pose is known, the software
    computes the servo correction that brings each camera to its exact planned view direction.
    It moves the cameras, and live re-pose (from the beacons) updates their rotation; a full
    re-calibration is not needed.

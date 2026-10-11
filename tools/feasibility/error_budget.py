@@ -16,7 +16,7 @@ Calibration and timing errors are *systematic* per camera, so they are not
 averaged away over time; treating them as independent per camera is the
 optimistic assumption made here.
 
-Usage: python3 tools/feasibility/error_budget.py [--sweep] [--beacons] [--all]
+Usage: python3 tools/feasibility/error_budget.py [--sweep] [--beacons] [--trusses] [--all]
 """
 from __future__ import annotations
 
@@ -302,6 +302,78 @@ def beacon_study():
                   f"  0.1 s {rots[1]*1e3:5.3f}  1 s {rots[2]*1e3:5.3f} mrad")
 
 
+
+# ---------------------------------------------------------------------------
+# Truss + tripod layouts (decided mounting options: no wall mounts).
+# ---------------------------------------------------------------------------
+
+def _cam(pos, tgt, f_mm):
+    p = np.array(pos, float)
+    return Camera(p, look_at(p, np.array(tgt, float)), f_mm * 1e-3 / PIXEL_PITCH_M)
+
+
+def truss_edge(spacing=12.5, h=31.5, f_mm=2.8, inset=3.0):
+    """Cameras on the boundary trusses, looking down/outward at the edge band."""
+    out = []
+    for s in np.arange(-50 + spacing / 2, 50, spacing):
+        for pos, tgt in [((s, -50 + inset), (s, -50, 12)), ((s, 50 - inset), (s, 50, 12)),
+                         ((-50 + inset, s), (-50, s, 12)), ((50 - inset, s), (50, s, 12))]:
+            out.append(_cam((*pos, h), tgt, f_mm))
+    return out
+
+
+def perimeter_tripods(spacing=12.5, h=4.0, out_m=2.0, f_mm=2.8):
+    """Tripods just outside the volume; alternate cameras aim inward-up and
+    along-the-boundary-up (to cover the upper edge band)."""
+    out, k = [], 0
+    for s in np.arange(-50 + spacing / 2, 50, spacing):
+        for (px, py), (nx, ny), (tx, ty) in [((s, -50 - out_m), (0, 1), (1, 0)),
+                                             ((s, 50 + out_m), (0, -1), (-1, 0)),
+                                             ((-50 - out_m, s), (1, 0), (0, -1)),
+                                             ((50 + out_m, s), (-1, 0), (0, 1))]:
+            k += 1
+            if k % 2:
+                tgt = (px + nx * 30, py + ny * 30, 15)
+            else:
+                tgt = (px + nx * 4 + tx * 18, py + ny * 4 + ty * 18, 24)
+            out.append(_cam((px, py, h), tgt, f_mm))
+    return out
+
+
+def corner_tripods(h=4.0, out_m=2.0, f_mm=2.8):
+    out = []
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            p = (sx * (50 + out_m), sy * (50 + out_m), h)
+            out += [_cam(p, (sx * 40, sy * 40, 26), f_mm), _cam(p, (sx * 30, sy * 45, 18), f_mm),
+                    _cam(p, (sx * 45, sy * 30, 18), f_mm)]
+    return out
+
+
+def truss_tripod_study():
+    g = grid(np.linspace(-49, 49, 9), np.linspace(-49, 49, 9), [0.2, 5, 10, 15, 20, 25, 29])
+    print(f"\n== Truss + tripod layouts: 3D RMS <= {RMS_LIMIT_MM:.1f} mm and >= 3 cameras ==")
+    print("   trusses at 31.5 m above the volume; tripods 4 m tall, 2 m outside the boundary")
+    grid20 = ceiling_rig(20.0, height=31.5)[0]
+    grid12 = ceiling_rig(12.5, height=31.5)[0]
+    layouts = [
+        ("A truss grid 20 m + tripods 12.5 m", grid20 + perimeter_tripods()),
+        ("B A + edge-truss ring", grid20 + perimeter_tripods() + truss_edge()),
+        ("C B + corner tripods", grid20 + perimeter_tripods() + truss_edge() + corner_tripods()),
+        ("D truss 12.5 m + tripods 10 m + edge + corners",
+         grid12 + perimeter_tripods(10.0) + truss_edge() + corner_tripods()),
+    ]
+    noises = [("realistic", Noise(0.1, 1e-4, 3e-3, 1e-4)),
+              ("tight", Noise(0.05, 5e-5, 2e-3, 5e-5)),
+              ("very tight", Noise(0.05, 3e-5, 1e-3, 2e-5))]
+    for name, cams in layouts:
+        n_vis = np.array([visible(c, g, 150) for c in cams]).sum(0)
+        print(f" {name}: {len(cams)} cameras, >=3 cams at {np.mean(n_vis >= 3)*100:.1f}% of points")
+        for nname, nz in noises:
+            e = worst_case(cams, g, nz)
+            print(f"   {nname:<11s} points meeting spec {np.mean(e <= RMS_LIMIT_MM)*100:5.1f}%"
+                  f"  RMS median {np.nanmedian(e):4.1f}  max {np.nanmax(e):5.1f} mm")
+
 if __name__ == "__main__":
     import sys
     flags = set(sys.argv[1:])
@@ -311,3 +383,5 @@ if __name__ == "__main__":
         full_volume_sweep()
     if flags & {"--beacons", "--all"}:
         beacon_study()
+    if flags & {"--trusses", "--all"}:
+        truss_tripod_study()
