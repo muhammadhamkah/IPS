@@ -31,7 +31,9 @@ the following inputs.
 | Input | Example | Why it is needed |
 |---|---|---|
 | Flight volume | Box 100 × 100 × 30 m, or several boxes, or a mesh | The region where every point must meet the accuracy and coverage target |
-| Room geometry and **allowed mounting options** | **Overhead trusses** (their actual positions and height) and **tripods** (allowed floor zones outside the flight volume, tripod height range); no-go zones (doors, walkways, lights) | The optimiser may only place cameras where they can physically be mounted. Walls are not used (decision D11) |
+| **Trusses** | For each truss: its line (start/end XY), height, and **which segments are usable**. Missing sections are marked, and **additional trusses** can be added (e.g. a hired truss line). Drawn on a plan view or imported from CSV/DXF | Cameras may only be placed on usable truss segments. Walls are not used (decision D11) |
+| **Tripod zones** | Floor areas where tripods may stand (e.g. outside the flight volume, away from walkways), with **tripod height from 1 m up to 20 m** (per zone, or chosen by the optimiser within that range) | Used where there is no truss, and for upward-looking coverage of the edges and corners |
+| No-go zones | Doors, walkways, lights, emergency exits | Excluded from mounting |
 | Obstacles | Columns, nets, hanging equipment | Occlusion |
 | Hardware catalogue | Sensor (OV9281), lens options (2.8 / 3.6 / 4 / 6 / 8 mm), servo pan/tilt ranges, gimbal geometry | Field of view, resolution, aim limits |
 | Requirements | p95 ≤ 10 mm everywhere; **≥ 3 cameras everywhere** (configurable) | Optimisation constraints |
@@ -96,9 +98,10 @@ on-site aim step and is compared against the calibration result.
    * Spread the legs fully, weight them with sandbags and tape the feet positions on the
      floor.
    * Keep tripods outside walkways and cordon them off if people move around.
-   * A bumped tripod shifts the camera *position*, which live re-pose (rotation only) cannot
-     correct. The system detects this and drops the camera (RISKS R17). The camera then
-     needs a full re-pose or a new wand calibration.
+   * **Tall tripods (up to 20 m) need guy lines.** A tall mast sways and rings after a knock
+     or a servo move; the settle time is measured per mast type (RISKS R19).
+   * If a tripod is bumped, the system detects it and drops that camera; recover it as
+     described in Step 7 without re-wanding.
 4. Mount beacons at their planned positions.
 5. Connect PoE. Each station appears in the dashboard and the operator assigns it its plan ID
    (C01, C02, …). A label or QR code on each station speeds this up.
@@ -122,12 +125,20 @@ At this stage the aim is **coarse**: servo accuracy plus the base orientation er
 
 ## Step 4: Calibrate
 
-1. **Wand:** the operator moves the calibration wand (3 coded LEDs at fixed spacing) through
-   the volume while the dashboard shows live coverage of collected wand samples per camera
-   and per region. Collection stops when every camera has enough well-spread samples.
-   * A hand-held wand reaches only about 2–3 m above the floor. The upper part of the hall
-     volume needs the wand on a pole or **carried by a drone** flying a planned pattern
-     (RISKS R9). The planner generates that pattern.
+1. **Wand (walkable height only, as in OptiTrack):** the operator walks the calibration wand
+   (3 coded LEDs at fixed spacing) through the walkable layer, from the floor to about 2.5 m.
+   The dashboard shows live wand-sample coverage per camera and per floor region. Collection
+   stops when every camera that can see the walkable layer has enough well-spread samples.
+   The upper volume is calibrated by drone flight (item 6 below).
+   * Cameras aimed up at the upper edges and corners may **not see the walkable layer at all**,
+     and those cannot be wand-calibrated. In the 148-camera truss + tripod layout, 32 upward-
+     aimed tripod cameras are in this group. The planner lists them. They are calibrated by
+     one of:
+     * the **continuous-calibration flight** (item 6), from drone markers co-observed with
+       already-calibrated cameras; or
+     * **tilt-down wanding:** during wanding their servos tilt down to see the wand, and
+       afterwards they return to the planned angle, with beacons re-measuring the rotation.
+       This relies on the gimbal kinematic model for the small position change.
 2. **Calibration square on the floor at the origin.** This is the same wand + ground-square
    method OptiTrack and Vicon use. It defines the world frame:
    * Its marked corner is **(0, 0, 0)**.
@@ -164,7 +175,18 @@ At this stage the aim is **coarse**: servo accuracy plus the base orientation er
    * This removes the need for a total station to survey beacons.
    * A total station is still recommended for the *independent accuracy check* in
      VALIDATION.md, because a system cannot validate itself.
-6. **Fine aim (optional, automatic):** now that each camera's true pose is known, the software
+6. **Continuous-calibration flight (the whole show volume).** Enable continuous calibration;
+   a drone with markers takes off and flies a pattern covering the entire usable volume. The
+   planner generates the pattern, weighted toward regions with few wand samples.
+   * The drone's markers act as calibration points: the bundle adjustment refines every
+     camera's pose from them, and calibrates the cameras that never saw the wand.
+   * Calibrated cameras anchor the scale and world frame, so the drone needs no known
+     geometry. Two markers at a known spacing on the drone add an extra scale check at
+     altitude.
+   * The dashboard shows per-camera calibration quality improving live. The result is saved
+     as a new calibration version.
+   * Continuous calibration can stay enabled during normal operation (ARCHITECTURE §6.6).
+7. **Fine aim (optional, automatic):** now that each camera's true pose is known, the software
    computes the servo correction that brings each camera to its exact planned view direction.
    It moves the cameras, and live re-pose (from the beacons) updates their rotation; a full
    re-calibration is not needed.
@@ -191,5 +213,25 @@ The dashboard compares **as-built** against **as-planned**:
 * A camera that moves or jitters is automatically dropped and re-admitted.
 * If the operator re-aims a camera later, it re-poses from the beacons without a new wand
   calibration.
-* A full wand re-calibration is recommended periodically and after any physical change to a
-  station.
+* With continuous calibration enabled, every flight also refines the calibration. A full
+  wand re-calibration is needed only after major changes (many stations moved, lens change).
+* A bumped tripod is recovered without re-wanding (Step 7).
+
+---
+
+## Step 7: Recovering a bumped tripod (no re-wanding)
+
+1. Move the tripod back to its taped floor marks and restore the mast height.
+2. In the dashboard, select the station and click **"Restore"**. This sends the gimbal back
+   to its planned (or last fine-aimed) pan/tilt and reloads the station's pose from the
+   saved calibration file.
+3. The system **checks the restored pose automatically** instead of trusting it. Tape marks
+   usually return a tripod to within about 5–10 mm and a few tenths of a degree, but that is
+   not 1 cm-grade.
+   * A full 6-DOF re-pose against the self-surveyed beacons corrects the remaining position
+     and rotation offset.
+   * Continuous calibration, during the next drone flight, refines it further.
+4. The station returns to service only when its beacon residuals pass the threshold. The
+   dashboard shows how far the restored pose had to be corrected. If the correction is larger
+   than the beacons can resolve, the dashboard asks for a short re-wand or a drone pass in
+   that camera's view.

@@ -374,6 +374,25 @@ def truss_tripod_study():
             print(f"   {nname:<11s} points meeting spec {np.mean(e <= RMS_LIMIT_MM)*100:5.1f}%"
                   f"  RMS median {np.nanmedian(e):4.1f}  max {np.nanmax(e):5.1f} mm")
 
+    # Cameras that cannot be wand-calibrated (never see the walkable layer).
+    walk = grid(np.linspace(-49, 49, 25), np.linspace(-49, 49, 25), [0.5, 1.5, 2.5])
+    cams = layouts[-1][1]
+    blind = sum(visible(c, walk, 150).sum() == 0 for c in cams)
+    print(f" layout D: {blind} of {len(cams)} cameras never see the walkable layer (0.5-2.5 m)")
+
+    # Tripod height (tight budget).
+    nz = noises[1][1]
+    for h in (4.0, 8.0, 12.0, 16.0, 20.0):
+        cams = grid12 + perimeter_tripods(10.0, h=h) + truss_edge() + corner_tripods(h=h)
+        e = worst_case(cams, g, nz)
+        print(f"   tripods {h:4.1f} m (tight): meeting spec {np.mean(e <= RMS_LIMIT_MM)*100:5.1f}%"
+              f"  max {np.nanmax(e):5.1f} mm")
+    cams = (grid12 + perimeter_tripods(10.0, h=4.0) + perimeter_tripods(20.0, h=16.0)
+            + truss_edge() + corner_tripods(h=4.0) + corner_tripods(h=16.0))
+    e = worst_case(cams, g, nz)
+    print(f"   mixed 4 m + 16 m tripods, {len(cams)} cameras (tight): meeting spec"
+          f" {np.mean(e <= RMS_LIMIT_MM)*100:5.1f}%  max {np.nanmax(e):5.1f} mm")
+
 if __name__ == "__main__":
     import sys
     flags = set(sys.argv[1:])

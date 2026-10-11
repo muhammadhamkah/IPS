@@ -66,6 +66,8 @@ sign-off.
 | T8 Scale consistency | 4, 6, 8 | G1 wand waved through the volume | Length error p95 ≤ 2 mm (lab) |
 | T9 Calibration stability | 6 | 24 h beacon drift log with temperature | ≤ 0.05 mrad drift (hall), ≤ 0.2 mrad (lab) |
 | T10 Servo gimbal stability and live re-pose | 6 | (a) 30-minute beacon log with the servo holding: jitter spectrum; (b) 50 move-return cycles: settle time and re-pose error versus the bundle-adjustment reference; (c) knock test: movement detection latency | Within 0.03 mrad for ≥ 99 % of tracking time; re-pose ≤ 0.05 mrad; movement flagged within 1 frame of exceeding 0.03 mrad |
+| T15 Continuous calibration | 6, 9 | Wand the walkable layer only, then fly the calibration pattern; compare the upper-volume accuracy (T6/T7 points at altitude) before and after | Upper zones meet §1 after the flight; cameras without wand samples are calibrated to the same residual level |
+| T16 Tripod restore | 6, 9 | Bump a tripod, restore it per WORKFLOW Step 7, then compare against a fresh full calibration | Restored pose within 1 mm / 0.03 mrad of the reference after re-pose and one calibration flight |
 | T14 Reference point under tilt | 4 | Marker rig rotated ±25° in roll/pitch about a known pivot at fixed yaw | Reported reference point moves ≤ 2 mm |
 | T11 ID decoding | 1, 4, 10 | Multiple markers, crossings, occlusions | Wrong-ID rate < 1e-4; acquisition time per P13 |
 | T12 Long range | 9 | T1, T2, T6 and T7 repeated at 25–30 m and beyond | Report the curves; compare with the simulator's prediction |
