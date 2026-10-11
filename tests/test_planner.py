@@ -265,7 +265,8 @@ def test_shallow_truss_tilts_cover_the_top_layer():
 
 
 def test_fine_check_finds_gaps_between_grid_samples():
-    """The coarse planning grid can miss a thin gap; the dense re-check after planning finds it."""
+    """The coarse planning grid can miss a thin gap; the dense re-check after planning finds it,
+    and the planner re-plans until it passes."""
     from idps.plan.planner import fine_check, fine_check_text
     d = {"name": "gap", "volume": {"polygon": [[-15, -8], [15, -8], [15, 8], [-15, 8]], "z": [0, 8]},
          "lenses_mm": [2.8], "requirements": {"min_cameras": 4, "p95_mm": 10, "noise": "tight"},
@@ -279,8 +280,10 @@ def test_fine_check_finds_gaps_between_grid_samples():
     plan, ev = optimise(site_from_dict(d), log=lambda *a: None)
     fc = plan.summary["fine_check"]
     assert fc["spacing_m"] <= 0.5 and fc["points"] > 10 * ev.summary["evaluation_points"]
-    assert fc["failing"] > 0 and fc["worst_spots"]                    # steep tilts leave thin gaps up top
-    assert "fall short" in fine_check_text(fc)
+    # steep tilts leave thin gaps up top that the 2 m grid misses; the planner re-plans with them
+    assert plan.summary["optimiser"]["fine_check_rounds"] > 1 and fc["failing"] == 0
+    weaker = fine_check(site_from_dict(d), plan.cameras[1:])          # lose a camera: gaps are found and located
+    assert weaker["failing"] > 0 and weaker["worst_spots"] and "fall short" in fine_check_text(weaker)
     lab = load_site(ROOT / "examples" / "sites" / "lab.yaml")
     ok = fine_check(lab, Plan.load(ROOT / "examples" / "plans" / "lab.yaml").cameras)
     assert ok["failing"] == 0 and "every point meets" in fine_check_text(ok)

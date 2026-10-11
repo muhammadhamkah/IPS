@@ -87,6 +87,11 @@ def evaluate(site: Site, cameras: list[PlannedCamera]) -> Evaluation:
 
 def fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_000, finest_m: float = 0.25,
                cancel=None) -> dict:
+    return _fine_check(site, cameras, max_points, finest_m, cancel)[0]
+
+
+def _fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_000, finest_m: float = 0.25,
+                cancel=None):
     """Re-check a finished layout on a much denser grid than the optimiser uses.
 
     The planner works on a coarse grid (metres) because coverage only changes where a point
@@ -103,7 +108,7 @@ def fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_0
            "failing_volume_m3": 0.0, "worst_spots": [], "unproven": 0, "guaranteed": False,
            "guarantee_radius_m": 0.0}
     if not cameras or not len(pts):
-        return out
+        return out, pts
     pos = np.array([c.position_m for c in cameras])
     R = np.array([c.R for c in cameras])
     f_px = np.array([site.sensor.f_px(c.lens_mm) for c in cameras])
@@ -138,7 +143,7 @@ def fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_0
         out["worst_spots"] = [{"x": float(np.mean(c, 0)[0]), "y": float(np.mean(c, 0)[1]),
                                "z_min": float(np.min(c, 0)[2]), "z_max": float(np.max(c, 0)[2]),
                                "points": len(c)} for c in spots]
-    return out
+    return out, pts[fail]
 
 
 def fine_check_text(fc: dict) -> str:
@@ -238,14 +243,32 @@ def optimise(site: Site, log=print, max_cameras: int | None = None, cancel=None)
         log(f"warning: {w}")
     cands = generate_candidates(site)
     pts = site_grid(site).points
-    result = Optimiser(site, cands, pts, log=log).run(max_cameras=max_cameras, cancel=cancel)
-    cams = build_cameras(site, cands, result.selected)
+    extra = np.zeros((0, 3))
+    seconds = 0.0
+    for rnd in range(4):
+        # The optimiser works on a coarse grid; the fine check looks between its samples. Any
+        # point found short there is added to the optimiser's points and the layout re-planned,
+        # until the fine check passes (or nothing more can be gained).
+        result = Optimiser(site, cands, np.vstack([pts, extra]), log=log).run(max_cameras=max_cameras,
+                                                                             cancel=cancel)
+        seconds += result.seconds
+        cams = build_cameras(site, cands, result.selected)
+        log("Fine check of the finished layout…")
+        fc, bad = _fine_check(site, cams, cancel=cancel)
+        log(fine_check_text(fc))
+        if not len(bad) or rnd == 3:
+            break
+        if len(bad) > 3000:
+            bad = bad[np.random.default_rng(rnd).choice(len(bad), 3000, replace=False)]
+        before = len(extra)
+        extra = np.unique(np.round(np.vstack([extra, bad]), 3), axis=0)
+        if len(extra) == before:
+            break                                       # the same points again: nothing more to gain
+        log(f"Re-planning with {len(extra):,} extra points where the fine check found gaps…")
     ev = evaluate(site, cams)
     summary = dict(ev.summary)
-    summary["optimiser"] = {"candidates": len(cands), "seconds": round(result.seconds, 1),
-                            "stopped_because": result.stopped_because}
-    log("Fine check of the finished layout…")
-    summary["fine_check"] = ev.summary["fine_check"] = fine_check(site, cams, cancel=cancel)
-    log(fine_check_text(summary["fine_check"]))
+    summary["optimiser"] = {"candidates": len(cands), "seconds": round(seconds, 1),
+                            "stopped_because": result.stopped_because, "fine_check_rounds": rnd + 1}
+    summary["fine_check"] = ev.summary["fine_check"] = fc
     plan = Plan(site.name, site.source_path, cams, summary)
     return plan, ev
