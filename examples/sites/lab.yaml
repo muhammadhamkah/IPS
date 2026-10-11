@@ -1,0 +1,43 @@
+# Lab prototype: 6 x 6 x 3 m flight volume, tripods around it, one ceiling truss.
+# Coordinates: tracking frame (origin = calibration square at the room centre,
+# +X along its X arm), metres.
+name: Lab prototype
+volume: {min: [-3, -3, 0], max: [3, 3, 3]}
+sensor: OV9281
+lenses_mm: [2.8, 3.6]
+
+requirements:
+  min_cameras: 3
+  p95_mm: 10
+  noise: tight            # realistic | tight | very_tight, or explicit sigma_* fields
+
+visibility: {max_range_m: 15}
+evaluation: {spacing_m: 0.75, inset_m: 0.25}
+
+trusses:
+  - id: T1
+    start: [-4, 0]
+    end: [4, 0]
+    height_m: 3.6
+    usable: [[0, 3], [5, 8]]     # middle 2 m blocked by a light fitting
+
+tripod_zones:                    # floor strips just outside the volume
+  - {id: north, rect: [-4, 3.5, 4, 4.0], height_m: [1.5, 3.0]}
+  - {id: south, rect: [-4, -4.0, 4, -3.5], height_m: [1.5, 3.0]}
+  - {id: east,  rect: [3.5, -3, 4.0, 3], height_m: [1.5, 3.0]}
+  - {id: west,  rect: [-4.0, -3, -3.5, 3], height_m: [1.5, 3.0]}
+
+no_go_zones:
+  - [-4.0, -1.0, -3.5, 1.0]      # door on the west side
+
+candidates:
+  truss_step_m: 1.0
+  truss_drop_m: 0.3
+  truss_elevations_deg: [-90, -60, -40]
+  tripod_step_m: 1.0
+  tripod_heights_m: [2.0, 3.0]
+  tripod_elevations_deg: [-30, -15, 0]
+  azimuth_step_deg: 30
+  max_cameras_per_mount: 1
+
+optimiser: {max_cameras: 16}

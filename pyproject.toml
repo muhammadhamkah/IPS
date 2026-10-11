@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idps"
+version = "0.1.0"
+description = "Indoor Drone Positioning System - central software"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26", "pyyaml>=6"]
+
+[project.optional-dependencies]
+report = ["matplotlib>=3.8"]
+dev = ["pytest>=8", "matplotlib>=3.8"]
+
+[project.scripts]
+idps-plan = "idps.plan.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["idps*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

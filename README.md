@@ -15,6 +15,43 @@ markers, and a central PC engine with a live 3D dashboard.
 | [docs/WORKFLOW.md](docs/WORKFLOW.md) | Operator workflow: planner → install → one-click aim → wand + calibration square → fly |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phase 0–10 plan with measurable exit criteria |
 
+## Planner (`idps-plan`)
+
+The first piece of software. It takes a site file and works out:
+* how many cameras are needed;
+* where each one is mounted (truss + distance along it, or tripod position and mast height);
+* the pan/tilt each camera should point at.
+
+It also predicts which parts of the volume have 3+ cameras and meet the accuracy target.
+
+```bash
+pip install -e '.[dev]'                       # numpy, pyyaml, matplotlib, pytest
+idps-plan optimise examples/sites/lab.yaml  -o out/lab
+idps-plan optimise examples/sites/hall.yaml -o out/hall --verify-spacing 5
+# What-if: edit out/hall/plan.yaml (move/remove a camera), then
+idps-plan evaluate out/hall/plan.yaml -o out/hall-edited
+```
+
+**Site file contents** (see `examples/sites/*.yaml`):
+* the flight volume;
+* trusses as lines with height, usable segments (gaps = missing truss) and extra trusses;
+* tripod floor zones with a height range (up to 20 m);
+* no-go zones;
+* lens options;
+* requirements (minimum cameras, p95 mm, error budget);
+* candidate density.
+
+**Outputs:**
+* `plan.yaml`, the plan used later by the one-click aim step;
+* `cameras.csv`, the install sheet;
+* `report.html`:
+  * coverage maps of 0/1/2/3+ cameras and predicted-accuracy maps for every altitude;
+  * a plan view;
+  * the camera table with base heading, pan, tilt and neighbour spacing;
+  * which points fail if any one camera is lost.
+
+Run the tests with `python3 -m pytest`.
+
 ## Key findings so far
 
 These come from `tools/feasibility/error_budget.py`, a first-order model. They are not
