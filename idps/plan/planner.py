@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from idps.core.noise import P95_PER_RMS
-from idps.coverage.fisher import contributions, rms_mm
+from idps.coverage.fisher import contributions, guaranteed_visible, rms_mm
 from idps.coverage.volume import EvalGrid, distance_to_polygon, volume_grid
 from idps.plan.candidates import CandidateSet, generate_candidates
 from idps.plan.model import Plan, PlannedCamera, install_angles
@@ -83,6 +83,79 @@ def evaluate(site: Site, cameras: list[PlannedCamera]) -> Evaluation:
         "design_margin": {"min_cameras": site.design.min_cameras, "p95_mm": site.design.p95_mm},
     }
     return Evaluation(grid, n, p95, meets, critical, robust, summary)
+
+
+def fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_000, finest_m: float = 0.25,
+               cancel=None) -> dict:
+    """Re-check a finished layout on a much denser grid than the optimiser uses.
+
+    The planner works on a coarse grid (metres) because coverage only changes where a point
+    crosses the edge of a camera's view; this pass looks between those samples for holes the
+    coarse grid could have missed. The spacing is as fine as `finest_m` allows within
+    `max_points`. Returns a summary dict (also stored in the plan summary as "fine_check")."""
+    req = site.requirements
+    vol = site.volume.volume_m3
+    spacing = max(finest_m, (vol / max_points) ** (1 / 3))
+    spacing = float(np.ceil(spacing * 20) / 20)                      # round up to 5 cm
+    grid = volume_grid(site.volume, spacing, site.eval_inset_m)
+    pts = grid.points
+    out = {"spacing_m": spacing, "points": int(len(pts)), "failing": 0, "fraction_meeting": 1.0,
+           "failing_volume_m3": 0.0, "worst_spots": [], "unproven": 0, "guaranteed": False,
+           "guarantee_radius_m": 0.0}
+    if not cameras or not len(pts):
+        return out
+    pos = np.array([c.position_m for c in cameras])
+    R = np.array([c.R for c in cameras])
+    f_px = np.array([site.sensor.f_px(c.lens_mm) for c in cameras])
+    fail = np.zeros(len(pts), bool)
+    unproven = np.zeros(len(pts), bool)
+    # every point of the volume lies within this distance of a sample (half the cell diagonal)
+    radius = spacing * np.sqrt(3) / 2
+    chunk = max(1000, 3_000_000 // max(len(cameras), 1))
+    for a in range(0, len(pts), chunk):
+        if cancel is not None and cancel():
+            break
+        P = pts[a:a + chunk]
+        vis, inf = contributions(pos, R, f_px, P, site.sensor, req.noise, site.limits)
+        n = vis.sum(0)
+        p95 = rms_mm(inf.sum(0)) * P95_PER_RMS
+        fail[a:a + chunk] = ~((n >= req.min_cameras) & (p95 <= req.p95_mm))
+        sure = guaranteed_visible(pos, R, f_px, P, site.sensor, site.limits, radius).sum(0)
+        unproven[a:a + chunk] = ~fail[a:a + chunk] & (sure < req.min_cameras)
+    g = slice(0, grid.n_grid)
+    out["guarantee_radius_m"] = float(radius)
+    out["unproven"] = int(unproven.sum())        # meets at the sample, but a camera's view edge is within reach
+    out["guaranteed"] = bool(not fail.any() and not unproven.any())
+    out["failing"] = int(fail.sum())
+    out["fraction_meeting"] = float(1 - fail.mean())
+    out["failing_volume_m3"] = float(fail[g].mean() * vol) if grid.n_grid else 0.0
+    if fail.any():                                   # where: group failing points into ~2 m cells
+        P = pts[fail]
+        cells: dict = {}
+        for p in P:
+            cells.setdefault(tuple(np.floor(p / 2.0).astype(int)), []).append(p)
+        spots = sorted(cells.values(), key=len, reverse=True)[:5]
+        out["worst_spots"] = [{"x": float(np.mean(c, 0)[0]), "y": float(np.mean(c, 0)[1]),
+                               "z_min": float(np.min(c, 0)[2]), "z_max": float(np.max(c, 0)[2]),
+                               "points": len(c)} for c in spots]
+    return out
+
+
+def fine_check_text(fc: dict) -> str:
+    sp = fc["spacing_m"]
+    head = f"Fine check every {sp * 100:.0f} cm ({fc['points']:,} points):"
+    if not fc["failing"]:
+        if fc.get("guaranteed"):
+            return (f"{head} every point meets the requirement, and the camera count is guaranteed for the "
+                    f"whole space between them, at any resolution (each sample's {fc['guarantee_radius_m'] * 100:.0f} cm "
+                    f"surroundings lie fully inside enough cameras' views).")
+        return (f"{head} every point meets the requirement. At {fc.get('unproven', 0):,} of them a camera's view "
+                f"edge passes within {fc.get('guarantee_radius_m', 0) * 100:.0f} cm, so the space right there is "
+                f"not proven; the coverage tiles still count it as covered.")
+    where = "; ".join(f"X {s['x']:.1f}, Y {s['y']:.1f}, {s['z_min']:.1f}–{s['z_max']:.1f} m high"
+                      for s in fc["worst_spots"][:3])
+    return (f"{head} {fc['failing']:,} points ({100 * (1 - fc['fraction_meeting']):.2f} %, about "
+            f"{fc['failing_volume_m3']:,.1f} m³) fall short between the planning grid's samples, mostly near {where}.")
 
 
 def _outside_note(site: Site, x: float, y: float) -> str:
@@ -171,5 +244,8 @@ def optimise(site: Site, log=print, max_cameras: int | None = None, cancel=None)
     summary = dict(ev.summary)
     summary["optimiser"] = {"candidates": len(cands), "seconds": round(result.seconds, 1),
                             "stopped_because": result.stopped_because}
+    log("Fine check of the finished layout…")
+    summary["fine_check"] = ev.summary["fine_check"] = fine_check(site, cams, cancel=cancel)
+    log(fine_check_text(summary["fine_check"]))
     plan = Plan(site.name, site.source_path, cams, summary)
     return plan, ev

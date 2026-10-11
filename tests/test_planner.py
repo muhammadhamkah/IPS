@@ -262,3 +262,45 @@ def test_shallow_truss_tilts_cover_the_top_layer():
     d["candidates"]["tripod_elevations_deg"] = [0, -15, -30, -50]
     plan, ev = optimise(site_from_dict(d), log=lambda *a: None)
     assert ev.summary["fraction_meeting_all_requirements"] == pytest.approx(1.0)
+
+
+def test_fine_check_finds_gaps_between_grid_samples():
+    """The coarse planning grid can miss a thin gap; the dense re-check after planning finds it."""
+    from idps.plan.planner import fine_check, fine_check_text
+    d = {"name": "gap", "volume": {"polygon": [[-15, -8], [15, -8], [15, 8], [-15, 8]], "z": [0, 8]},
+         "lenses_mm": [2.8], "requirements": {"min_cameras": 4, "p95_mm": 10, "noise": "tight"},
+         "design": {"min_cameras": 4, "p95_mm": 7}, "visibility": {"max_range_m": 80},
+         "evaluation": {"spacing_m": [2, 2, 2], "inset_m": 0.5},
+         "trusses": [{"id": "T1", "start": [-15.5, 8], "end": [15.5, 8], "height_m": 11.5},
+                     {"id": "T2", "start": [-15.5, -8], "end": [15.5, -8], "height_m": 11.5}],
+         "candidates": {"truss_step_m": 3, "truss_elevations_deg": [-90, -60, -35], "azimuth_step_deg": 30,
+                        "max_cameras_per_mount": 1, "min_camera_spacing_m": 1.5},
+         "optimiser": {"max_cameras": 200}}
+    plan, ev = optimise(site_from_dict(d), log=lambda *a: None)
+    fc = plan.summary["fine_check"]
+    assert fc["spacing_m"] <= 0.5 and fc["points"] > 10 * ev.summary["evaluation_points"]
+    assert fc["failing"] > 0 and fc["worst_spots"]                    # steep tilts leave thin gaps up top
+    assert "fall short" in fine_check_text(fc)
+    lab = load_site(ROOT / "examples" / "sites" / "lab.yaml")
+    ok = fine_check(lab, Plan.load(ROOT / "examples" / "plans" / "lab.yaml").cameras)
+    assert ok["failing"] == 0 and "every point meets" in fine_check_text(ok)
+
+
+def test_guaranteed_visibility_is_conservative():
+    """A ball counted as fully seen really is: random points inside it are all visible."""
+    from idps.coverage.fisher import contributions, guaranteed_visible
+    site = load_site(ROOT / "examples" / "sites" / "lab.yaml")
+    cams = Plan.load(ROOT / "examples" / "plans" / "lab.yaml").cameras
+    pos = np.array([c.position_m for c in cams])
+    R = np.array([c.R for c in cams])
+    f = np.array([site.sensor.f_px(c.lens_mm) for c in cams])
+    rng = np.random.default_rng(0)
+    centres = rng.uniform([-3, -3, 0.2], [3, 3, 3], size=(300, 3))
+    r = 0.3
+    sure = guaranteed_visible(pos, R, f, centres, site.sensor, site.limits, r)
+    assert sure.any()
+    for _ in range(20):
+        u = rng.normal(size=(len(centres), 3))
+        u *= (r * rng.uniform(0, 1, (len(centres), 1)) ** (1 / 3)) / np.linalg.norm(u, axis=1, keepdims=True)
+        vis, _ = contributions(pos, R, f, centres + u, site.sensor, site.requirements.noise, site.limits)
+        assert not (sure & ~vis).any()

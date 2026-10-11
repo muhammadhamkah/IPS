@@ -95,6 +95,16 @@ class ResultsPanel(QWidget):
             t.setMinimumWidth(170)
             tiles.addWidget(t)
         lay.addWidget(tiles_box)
+        # dense re-check of the finished layout, between the planning grid's samples
+        self.fine = QLabel("")
+        self.fine.setObjectName("fine_check")
+        self.fine.setWordWrap(True)
+        self.fine.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.fine.setToolTip("The planner samples the volume every few metres. Coverage only changes where a "
+                             "point crosses the edge of a camera's view, so after planning the layout is "
+                             "re-checked on a much finer grid to catch any gap between those samples.")
+        self.fine.hide()
+        lay.addWidget(self.fine)
 
         # --- overlay controls
         orow_box, orow = flow_row()
@@ -154,6 +164,12 @@ class ResultsPanel(QWidget):
     def show_result(self, plan, ev):
         s = ev.summary
         req = s["requirements"]
+        fc = s.get("fine_check") or plan.summary.get("fine_check")
+        if fc:
+            from idps.plan.planner import fine_check_text
+            self.fine.setText(("✅ " if not fc["failing"] else "⚠️ ") + fine_check_text(fc))
+            self.fine.setStyleSheet("" if not fc["failing"] else "color: #b8860b;")
+        self.fine.setVisible(bool(fc))
 
         def pct(v):
             return f"{100 * v:.1f} %"

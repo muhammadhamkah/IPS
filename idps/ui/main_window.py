@@ -565,6 +565,8 @@ class MainWindow(QMainWindow):
         for r in recs:
             cams = apply(cams, r)
         ev = evaluate(site, cams)
+        from idps.plan.planner import fine_check
+        ev.summary["fine_check"] = fine_check(site, cams, max_points=150_000)    # quick: runs on the UI thread
         summary = dict(ev.summary)
         summary["optimiser"] = {**plan.summary.get("optimiser", {}),
                                 "stopped_because": f"edited by the advisor ({len(recs)} change(s))"}

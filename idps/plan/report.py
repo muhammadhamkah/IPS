@@ -275,6 +275,10 @@ def write_report(path: str | Path, site: Site, plan: Plan, ev: Evaluation, title
     verdict = ('<p class="ok"><b>Every evaluation point meets the requirements.</b></p>' if ok_all else
                f'<p class="bad"><b>{pct(1 - s["fraction_meeting_all_requirements"])} of evaluation points '
                f'do not meet the requirements</b> (hatched / non-green cells below).</p>')
+    fc = s.get("fine_check")
+    if fc:
+        from idps.plan.planner import fine_check_text
+        verdict += f'<p class="{"ok" if not fc["failing"] else "bad"}">{html.escape(fine_check_text(fc))}</p>'
     doc = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title or 'IDPS camera plan')}</title><style>{CSS}</style></head><body><main>
