@@ -65,6 +65,25 @@ def app_icon():
     return QIcon(pm)
 
 
+def _quit_on_ctrl_c(app) -> None:
+    """Ctrl+C in the launching Terminal closes the window normally (with the
+    unsaved-changes prompt) instead of raising KeyboardInterrupt inside Qt."""
+    import signal
+
+    from PySide6.QtCore import QTimer
+
+    def handler(*_):
+        if app.window is not None:
+            app.window.close()
+        else:
+            app.quit()
+    signal.signal(signal.SIGINT, handler)
+    timer = QTimer(app)              # let the Python interpreter run so it can see the signal
+    timer.timeout.connect(lambda: None)
+    timer.start(200)
+    app._sigint_timer = timer
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv if argv is None else argv)
     if sys.platform == "darwin":
@@ -88,6 +107,7 @@ def main(argv=None) -> int:
         win.open_doc(path)
     else:
         win.canvas.zoom_to_fit()
+    _quit_on_ctrl_c(app)
     return app.exec()
 
 

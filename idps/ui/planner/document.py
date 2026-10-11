@@ -82,7 +82,10 @@ class SiteDocument(QObject):
         self.data = normalise({})
         self.path: Path | None = None
         self.undo = QUndoStack(self)
-        self.undo.cleanChanged.connect(lambda _: self.pathChanged.emit(self.title()))
+        self.undo.cleanChanged.connect(self._clean_changed)
+
+    def _clean_changed(self, _clean: bool):
+        self.pathChanged.emit(self.title())
 
     # --- state -------------------------------------------------------
     def _set(self, d: dict):

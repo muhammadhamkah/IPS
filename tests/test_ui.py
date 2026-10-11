@@ -248,3 +248,33 @@ def test_edit_height_on_settings_tab(win, app):
     win.a_undo.trigger()
     app.processEvents()
     assert page.z1.value() == pytest.approx(10.0)
+
+
+def test_ctrl_c_handler_closes_window(app, monkeypatch):
+    import signal
+
+    from idps.ui.app import _quit_on_ctrl_c
+    closed = []
+
+    class W:
+        def close(self):
+            closed.append(True)
+    old = signal.getsignal(signal.SIGINT)
+    try:
+        monkeypatch.setattr(app, "window", W(), raising=False)
+        _quit_on_ctrl_c(app)
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        assert closed == [True]
+    finally:
+        signal.signal(signal.SIGINT, old)
+        app._sigint_timer.stop()
+
+
+def test_window_close_then_undo_signals_do_not_raise(app):
+    from idps.ui.main_window import MainWindow
+    w = MainWindow()
+    doc = w.doc
+    w.close()
+    w.deleteLater()
+    app.processEvents()
+    doc.undo.setClean()           # used to call a lambda on the deleted window

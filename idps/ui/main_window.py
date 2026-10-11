@@ -79,7 +79,7 @@ class MainWindow(QMainWindow):
 
         self.doc.changed.connect(self._changed)
         self.doc.pathChanged.connect(self._title)
-        self.doc.undo.cleanChanged.connect(lambda clean: self.setWindowModified(not clean))
+        self.doc.undo.cleanChanged.connect(self._clean_changed)
         self.canvas.cursorMoved.connect(lambda x, y: self.cursor_label.setText(f"X {x:8.2f} m   Y {y:8.2f} m"))
         self.canvas.message.connect(lambda m: self.statusBar().showMessage(m, 8000))
         self.canvas.selectionChanged.connect(self._selection)
@@ -215,6 +215,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{name}[*] — IDPS Planner")
         self.setWindowFilePath(str(self.doc.path) if self.doc.path else "")
         self.setWindowModified(self.doc.dirty)
+
+    def _clean_changed(self, clean: bool):
+        self.setWindowModified(not clean)
 
     def _changed(self):
         self.setWindowModified(self.doc.dirty)
