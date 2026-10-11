@@ -2,8 +2,8 @@
 
 Each drone gets ``slot_NN.json`` ("idps-traj/1"): its trajectory sampled in the venue's
 **NED** frame (D18) with position, velocity and acceleration (feed-forward for PX4's
-position controller), a fixed yaw of 0 (North, decision D7), and its LED colour. The drone's
-companion computer loads it and plays it through PX4 offboard mode (idps.show.runner).
+position controller), a fixed yaw of 0 (North, decision D7), and its LED colour. The PC plays
+every slot to its drone through PX4 offboard mode over Wi-Fi (idps.show.fleet, D20).
 ``manifest.json`` lists the slots, their home spots (where each drone is placed before the
 show), the show length and the check result.
 

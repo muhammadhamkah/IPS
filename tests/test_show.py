@@ -161,3 +161,34 @@ def test_cli_check_export_blender(tmp_path):
     assert (tmp_path / "ok" / "slot_04.json").exists()
     assert main(["blender-venue", "--site", site, "--plan", plan, "-o", str(tmp_path / "v.py")]) == 0
     assert main(["play", str(tmp_path / "ok" / "slot_01.json"), "--dry-run"]) == 0
+
+
+def test_fleet_player_sends_positions_and_setpoints(tmp_path, lab):
+    """PC-side flying (no companion): ODOMETRY with yaw 0 for seen drones, setpoints for all."""
+    from idps.show.fleet import Fix, FleetPlayer, odometry_fields, parse_links
+    site, cams = lab
+    show = load_show(write_demo_skyc(tmp_path / "s.skyc", n=3))
+    man = export_px4(show, tmp_path / "out", report=check_show(show, site, cams))
+
+    def link():
+        log = {"odo": [], "sp": []}
+        mav = types.SimpleNamespace(odometry_send=lambda **k: log["odo"].append(k),
+                                    set_position_target_local_ned_send=lambda *a, **k: log["sp"].append(k))
+        return types.SimpleNamespace(target_system=1, target_component=1, mav=mav, log=log)
+
+    links = {1: link(), 3: link()}
+    fleet = FleetPlayer(man, links)
+    seen = {1: Fix(np.array([1.0, 2.0, -0.5]))}                          # slot 3 not seen this tick
+    clock = {"t": 500.0}
+    fleet.run(500.0, positions=lambda: seen, clock=lambda: clock["t"],
+              sleep=lambda s: clock.__setitem__("t", clock["t"] + 0.02))
+    n = len(links[1].log["sp"])
+    assert n == pytest.approx((fleet.t_end + 2.0) * 50, abs=3) and len(links[3].log["sp"]) == n
+    assert len(links[1].log["odo"]) == n and not links[3].log["odo"]
+    o = links[1].log["odo"][0]
+    assert (o["x"], o["y"], o["z"]) == (1.0, 2.0, -0.5) and o["q"] == [1.0, 0.0, 0.0, 0.0]   # facing North
+    assert o["frame_id"] == 1 and o["pose_covariance"][20] > 0 and np.isnan(o["pose_covariance"][15])
+    assert odometry_fields([0, 0, 0], 0, yaw_rad=np.pi)["q"][3] == pytest.approx(1.0)
+    assert parse_links(["2=udpout:10.0.0.2:14550"]) == {2: "udpout:10.0.0.2:14550"}
+    with pytest.raises(ValueError):
+        FleetPlayer(man, {9: link()})

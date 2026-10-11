@@ -4,7 +4,8 @@ one trajectory file per PX4 drone, and build the venue inside Blender.
   idps-show blender-venue --site venue.yaml --plan plan.yaml -o idps_venue.py
   idps-show check  show.skyc --site venue.yaml --plan plan.yaml
   idps-show export show.skyc --site venue.yaml --plan plan.yaml -o out/show
-  idps-show play   out/show/slot_01.json --dry-run          (on a drone's companion computer)
+  idps-show fly    out/show/manifest.json --link 1=udpout:192.168.50.101:14550 ...   (PC -> drones)
+  idps-show play   out/show/slot_01.json --dry-run          (one drone, e.g. PX4 SITL)
   idps-show demo   -o demo.skyc --drones 8
 """
 from __future__ import annotations
@@ -94,6 +95,31 @@ def cmd_play(a) -> int:
                 + ["--device", a.device, "--baud", str(a.baud)])
 
 
+def cmd_fly(a) -> int:
+    from idps.show.fleet import FleetPlayer, parse_links
+    links = parse_links(a.link)
+    if not links:
+        print("give each drone's link: --link SLOT=DEVICE (e.g. 1=udpout:192.168.50.101:14550)")
+        return 2
+    if not a.sitl:
+        print("Live positions come from the IDPS engine, which is not built yet. Use --sitl to fly "
+              "PX4 SITL drones (they position themselves).")
+        return 2
+    from pymavlink import mavutil
+    import time
+    mavs = {}
+    for slot, dev in links.items():
+        m = mavutil.mavlink_connection(dev)
+        m.wait_heartbeat()
+        mavs[slot] = m
+    fleet = FleetPlayer(a.manifest, mavs)
+    start = a.start if a.start else time.time() + 5.0
+    print(f"flying {len(mavs)} drone(s), show starts in {start - time.time():.1f} s; "
+          "arm and switch to OFFBOARD now")
+    fleet.run(start)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="idps-show", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -131,7 +157,12 @@ def main(argv=None) -> int:
     d.add_argument("--drones", type=int, default=8)
     d.add_argument("--radius", type=float, default=2.4)
     d.add_argument("--height", type=float, default=1.8)
-    p = sub.add_parser("play", help="play a slot file through PX4 offboard (companion computer)")
+    f = sub.add_parser("fly", help="fly a show from the PC: positions and setpoints to every drone")
+    f.add_argument("manifest", help="manifest.json from idps-show export")
+    f.add_argument("--link", action="append", help="SLOT=DEVICE, one per drone (MAVLink over Wi-Fi/UDP)")
+    f.add_argument("--start", type=float, help="show start, Unix time (s); default: now + 5 s")
+    f.add_argument("--sitl", action="store_true", help="PX4 SITL drones: setpoints only, no IDPS positions")
+    p = sub.add_parser("play", help="play one slot file through PX4 offboard (one drone, e.g. SITL)")
     p.add_argument("slot_file")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--start", type=float)
@@ -139,7 +170,7 @@ def main(argv=None) -> int:
     p.add_argument("--baud", type=int, default=921600)
     a = ap.parse_args(argv)
     return {"check": cmd_check, "export": cmd_export, "blender-venue": cmd_blender, "demo": cmd_demo,
-            "play": cmd_play}[a.cmd](a)
+            "fly": cmd_fly, "play": cmd_play}[a.cmd](a)
 
 
 if __name__ == "__main__":

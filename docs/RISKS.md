@@ -556,6 +556,31 @@ and is still fine.
 * **Earliest test:** Phase 9. Accelerometer + beacon log on a guyed 20 m mast: sway amplitude
   and spectrum, and settle time after a servo move.
 
+### R20: Drone heading without a magnetometer or a measured yaw (M)
+
+* **Context (D20):** one IR marker per drone, so IDPS measures position but not heading.
+  Drones never yaw and always face North, and the magnetometer is off (steel trusses and
+  motors make it unreliable indoors).
+* **Evidence:**
+  * PX4's EKF2 needs a heading source: a magnetometer, GPS or external vision. Its
+    no-magnetometer yaw estimator works from GPS velocity, not from vision.
+  * A heading error `ψ` turns every correction the position controller makes by `ψ`. A few
+    degrees costs a little tracking accuracy; tens of degrees make the drone circle around
+    its setpoint.
+* **Mitigation:**
+  * Put each drone down **facing North** on its home pad. Each pad is marked with an arrow,
+    or uses a jig, aligned to the calibration square.
+  * The PC sends heading 0 (North) with every position in `ODOMETRY`, with an uncertainty of
+    about 3° that covers the placement. PX4 fuses it as external-vision yaw (`EKF2_EV_CTRL`
+    yaw bit), and its gyros hold the heading between updates.
+  * **Heading monitor (to build):** IDPS knows each drone's commanded acceleration (the
+    setpoints it sends) and measures the acceleration it actually gets. A consistent angle
+    between the two is the heading error. Alert, or refuse take-off, above a threshold such
+    as 10°.
+* **Earliest test:** PX4 SITL with the magnetometer off. Fly a show with heading errors of
+  0, 5, 15 and 30° injected at placement, and measure the tracking error. On the first drone,
+  log the heading drift over a 10-minute hover.
+
 ---
 
 ## 2. Decisions
@@ -566,7 +591,7 @@ and is still fine.
 | D2 | Ground-truth equipment (total station rental, rotating-arm rig, linear rail) | Open. Recommended: rotating arm + rail now; total station for Phase 8/9 |
 | D3 | Prototype station count and budget beyond S$200 | Open. Recommended: 4 stations for Phase 4 |
 | D4 | Ethernet/PoE for anything beyond 3 Wi-Fi prototype stations | Open. Recommended: yes, and **mandatory for the full-volume requirement** (timing ≤ 0.05 ms) |
-| D5 | Markers per drone | Open. Depends on R16: 1 marker if it can sit at the reference point; otherwise 2–3 to measure roll and pitch |
+| D5 | Markers per drone | **Decided:** 1 marker (D20). Mount it at the drone's reference point (top centre, over the centre of mass); any remaining offset is declared to PX4 (`EKF2_EV_POS_X/Y/Z`), which corrects it with its own attitude (R16) |
 | D6 | Gimbal type | **Decided:** servo pan/tilt, with live beacon re-pose and movement detection (R3). Upgrade path: worm-gear or braked servo if Phase 6 stability fails |
 | D7 | Drone yaw convention | **Decided:** fixed yaw set at takeoff (normally 0 = facing North, the square's long arm); no yaw in flight |
 | D8 | Drone reference point and marker offset | Open. See R16 |
@@ -578,6 +603,7 @@ and is still fine.
 | D16 | Station hardware | **Decided:** Raspberry Pi 5 (2 GB, active cooler) + OV9281 per camera, the camera on the servo pan/tilt and the Pi fixed beside it; powered and networked by one PoE+ cable to a gigabit PoE+ switch; PTP with hardware timestamps, camera 1's Pi as grandmaster. Chosen over the Pi 3B (no hardware bought yet): full-resolution sensor (about 4 fewer cameras), hardware PTP, PoE. See R4, docs/HARDWARE.md, docs/NETWORK_TIMING.md |
 | D15 | Planner mounting inputs | **Decided:** volume; truss lines with height, usable and missing segments, additional trusses; tripod floor zones with height up to 20 m |
 | D18 | Coordinate frame | **Decided:** North-East-Down (NED) from the origin = the calibration square's corner; North = its long arm = drone yaw 0; E 90° clockwise; D down. The planner asks for the performance area first, then the origin (dragged on the plan, N arrow turned to North). Everything shown, exported and sent to drones is NED; headings are from North, clockwise |
-| D19 | Show design and drone firmware | **Decided:** shows designed in Skybrush Studio for Blender (.skyc / CSV export); drones run PX4. IDPS checks shows against the venue and coverage, exports one NED trajectory file per drone slot, and a companion computer per drone plays it through PX4 offboard (docs/SHOW.md). **Open:** drone heading source (proposal: two markers per drone) |
+| D19 | Show design and drone firmware | **Decided:** shows designed in Skybrush Studio for Blender (.skyc / CSV export); drones run PX4. IDPS checks shows against the venue and coverage, exports one NED trajectory file per drone slot, and the PC plays them through PX4 offboard (D20, docs/SHOW.md) |
+| D20 | Drone onboard set-up | **Decided:** no companion computer. The flight controller has Wi-Fi itself (or a few-gram Wi-Fi MAVLink bridge), and the PC talks to every drone over Wi-Fi: positions in (`ODOMETRY`) and the show out (offboard setpoints at 50 Hz). One IR marker per drone. Drones never yaw and face North (+X in NED), so the PC sends heading 0 as their heading source and the magnetometer stays off (R20) |
 | D17 | Cameras vs drones height | **Decided:** drones always fly below the cameras. Every camera is at or above the flight ceiling (plus an optional margin) and looks level or down; trusses and tripod masts that can't reach the ceiling are not used. A volume taller than the 20 m tripods (e.g. the 30 m hall) is trusses only |
 | D12 | Calibration tools | **Decided:** OptiTrack-style wand + ground square at origin. Proposed: 1 m × 1 m L-frame with 4 LEDs (origin, N 0.5, N 1.0, E 1.0). **Proposed for the hall:** long-baseline floor markers + laser distance meter (R18) |

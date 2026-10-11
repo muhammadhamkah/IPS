@@ -1,11 +1,12 @@
 # Designing and flying a show
 
 ```
-Blender + Skybrush Studio ──.skyc──▶ idps-show check ──▶ idps-show export ──▶ slot_NN.json ──▶ each drone's
-  (design inside the                 (venue, cameras,     (one file per        (Wi-Fi)          companion computer
-   IDPS venue)                         limits, spacing)     drone slot, NED)                    ──MAVLink──▶ PX4
-                                                                                                      ▲
-                                IDPS engine (PC) ── positions in NED, 50–120 Hz, over Wi-Fi ──────────┘
+Blender + Skybrush Studio ──.skyc──▶ idps-show check ──▶ idps-show export ──▶ slot_NN.json + manifest.json
+  (design inside the                 (venue, cameras,     (one file per                │
+   IDPS venue)                         limits, spacing)     drone slot, NED)             ▼
+                                                                          idps-show fly (PC) ──Wi-Fi, MAVLink──▶ PX4 on each drone
+                                                                            • setpoints from each slot file, 50 Hz
+                                                                            • IDPS position + heading 0 (North)
 ```
 
 Decided: shows are designed in **Skybrush Studio for Blender**, and the drones run **PX4**.
@@ -13,8 +14,10 @@ Skybrush's own upload and flight tools target its ArduPilot-based firmware, so I
 PX4 side:
 * checking the show against the venue;
 * the per-drone files;
-* the player on each drone;
-* the position stream.
+* flying them from the PC.
+
+The drones carry **no companion computer** (D20). Each flight controller is reached over
+Wi-Fi, and the PC sends it both its position and its show.
 
 ## 1. Design in Blender
 
@@ -35,6 +38,9 @@ PX4 side:
    (the calibration square). In Blender's top view with North up the screen, the show looks
    exactly as it will fly. A show designed elsewhere can be turned (`--rotate`) or moved
    (`--offset N,E,D`).
+   In NED, North is +X; in Blender it is +Y, so that the top view reads like a map. If you
+   would rather have Blender's +X point North too, design with `--axes NWU` (+X North, +Y West,
+   +Z up) and pass the same option to every command.
 4. **Export** from Skybrush Studio's Export panel:
    * **.skyc**, the main format: trajectories and lights;
    * **CSV (ZIP)**: one CSV per drone (time in ms, x, y, z, RGB). Use this if the .skyc export
@@ -82,55 +88,70 @@ this, for testing only. It writes:
 can be put on any slot's home spot. IDPS identifies which drone stands there from its marker
 ID, and that drone gets the slot's file.
 
-## 4. On each drone (PX4)
+## 4. Fly: the PC drives every drone (PX4)
 
-**Hardware per drone:**
-* PX4 flight controller;
-* a small **companion computer** with Wi-Fi, e.g. a Raspberry Pi Zero 2 W, connected to the
-  flight controller by serial (MAVLink);
-* the IDPS IR marker(s);
+**On each drone** (D20), there is no companion computer, to save weight:
+* a PX4 flight controller with Wi-Fi: either built in, or a few-gram Wi-Fi-to-serial MAVLink
+  bridge such as an ESP32 or ESP8266 module (the bridge only relays, it runs nothing);
+* **one** IDPS IR marker, at the drone's reference point (top centre, over the centre of
+  mass). Declare any remaining offset to PX4 with `EKF2_EV_POS_X/Y/Z`;
 * the show LEDs.
 
-**Positions in.** The PC sends each drone its IDPS position over Wi-Fi. The companion forwards
-it to PX4 as MAVLink `ODOMETRY` (or `VISION_POSITION_ESTIMATE`). PX4's EKF2 fuses it as
-external vision:
-* `EKF2_EV_CTRL`: horizontal and vertical position (plus yaw, see below);
-* `EKF2_HGT_REF` = vision;
-* `EKF2_EV_DELAY` = the measured latency.
+**Heading.** Drones never yaw. They always face **North, +X in NED** (D7). Because of that:
+* Every drone is put down **facing North** on its home pad (mark each pad with an arrow).
+* The magnetometer stays **off**, since it is unreliable indoors.
+* The PC sends **heading 0** with every position, and PX4 fuses it as external-vision yaw.
+  PX4 needs some heading source, and this is it. See R20 for how far this can be trusted and
+  how IDPS will watch for a drone that is turned.
 
-PX4's local frame then *is* the venue's NED frame.
+**Flying the show:**
+```
+idps-show fly out/show/manifest.json --link 1=udpout:192.168.50.101:14550 --link 2=udpout:192.168.50.102:14550 ...
+```
+`idps/show/fleet.py` runs every drone from one loop at 50 Hz.
+* **To each drone it sends:**
+  * MAVLink `ODOMETRY`: the IDPS position in NED plus heading 0, for every drone the engine
+    currently sees;
+  * `SET_POSITION_TARGET_LOCAL_NED`: position, velocity and acceleration from the drone's
+    slot file, plus yaw 0 (type mask 2048).
+* **Home first:** it streams the home setpoints from the moment it starts, because PX4 only
+  accepts OFFBOARD once setpoints are flowing. Arm the drones and switch them to OFFBOARD; the
+  show starts at `--start`, or 5 s after launch by default.
+* **No clock sync on the drones:** all timing comes from the PC.
 
-**Show out.** `idps-show play slot_NN.json` (the reference player, `idps/show/runner.py`)
-streams `SET_POSITION_TARGET_LOCAL_NED` at 50 Hz in OFFBOARD mode:
-* it sends position, velocity and acceleration, and yaw 0 (type mask 2048: everything except
-  yaw rate);
-* it starts streaming the home position a few seconds early, because PX4 only accepts
-  OFFBOARD once setpoints are flowing.
+`--link` pairs each slot with the drone standing on that slot's home spot. IDPS will check the
+pairing from the marker IDs once the engine is built. Until then, `fly` runs only against
+PX4 SITL (`--sitl`), where the simulated drones position themselves. `idps-show play
+slot_NN.json` flies a single slot (`--dry-run` prints it).
 
-`--dry-run` prints the setpoints without a drone.
+**PX4 parameters:**
+* external vision: `EKF2_EV_CTRL` = horizontal position + vertical position + yaw;
+  `EKF2_HGT_REF` = vision;
+* `EKF2_EV_DELAY` = the measured latency from the camera exposure to PX4 (positions travel
+  over Wi-Fi, so measure it on the real link);
+* `EKF2_MAG_TYPE` = None. PX4's local frame then *is* the venue's NED frame.
 
-**Start and timing.** The companions keep their clocks with chrony over Wi-Fi; millisecond
-accuracy is plenty for show timing. The PC tells every drone the show start time, and every
-player starts at that instant.
-
-**Failsafes (PX4 parameters):**
-* loss of positions → land (EKF2 timeouts);
-* loss of the offboard stream → land (`COM_OF_LOSS_T`, `COM_OBL_RC_ACT`);
+**Failsafes:**
+* loss of positions → land (EKF2 vision timeouts);
+* loss of the offboard stream, e.g. Wi-Fi drops → land (`COM_OF_LOSS_T`, `COM_OBL_RC_ACT`);
 * a geofence matching the performance area.
+
+**Wi-Fi:** use a dedicated 5 GHz network for the drones, separate from the camera network
+(cameras are wired, D16). Each drone needs about 50 position and 50 setpoint messages a
+second, each under 300 bytes: around 30 kB/s per drone, so 50 drones fit comfortably.
+Latency and dropouts matter more than bandwidth; measure them in Phase 7.
 
 ## Open questions
 
-* **Drone heading (yaw).** PX4 needs to know which way each drone faces. One IR marker gives
-  position only, and magnetometers are unreliable indoors (steel trusses, motors). Proposal:
-  **two markers per drone** (front and back, known offsets), so IDPS measures the heading and
-  sends it in `ODOMETRY`. To decide with the drone design.
-* **Companion computer and Wi-Fi.** Choose the board (weight, power), and plan a dedicated
-  5 GHz Wi-Fi network for positions and commands, separate from the camera network.
+* **Drone flight controller with Wi-Fi.** Choose the board (PX4 support, weight, Wi-Fi
+  range and latency), or a standard PX4 board plus a Wi-Fi MAVLink bridge.
 * **Still to build:**
-  * the engine's position stream to the drones (with the positioning engine);
+  * the engine's position stream to `fly`, with slot pairing from marker IDs;
+  * the heading monitor (R20);
   * a dashboard **Show** tab: 3D playback, check results, slot assignment, start and abort;
   * rehearsing a show in the simulator with the live-monitoring brain watching.
 * **Verify with PX4 SITL** (the simulator) before the first flight:
+  * external-vision heading with the magnetometer off;
   * the frame alignment;
   * the OFFBOARD entry;
   * the failsafes.

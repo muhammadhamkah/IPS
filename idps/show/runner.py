@@ -1,8 +1,8 @@
-"""Reference show player for a drone's companion computer (PX4).
+"""Show player for one PX4 drone: the building block of the PC's fleet player
+(idps.show.fleet), and usable on its own against one drone or PX4 SITL.
 
-It loads the drone's ``slot_NN.json``, waits for the show start time (the companion's clock
-is kept in step over Wi-Fi with chrony; millisecond-level is plenty for timing a show) and
-streams PX4 **offboard** setpoints at 50 Hz:
+It loads a ``slot_NN.json``, waits for the show start time and streams PX4 **offboard**
+setpoints at 50 Hz over any MAVLink link (serial, or UDP over Wi-Fi):
 
 * ``SET_POSITION_TARGET_LOCAL_NED`` with position, velocity and acceleration feed-forward
   and yaw 0 (North), in ``MAV_FRAME_LOCAL_NED``;
@@ -111,7 +111,7 @@ def main(argv=None) -> int:
             print(f"t={t:6.2f}  N {sp.pos[0]:7.3f}  E {sp.pos[1]:7.3f}  D {sp.pos[2]:7.3f}  "
                   f"v {np.linalg.norm(sp.vel):5.2f} m/s  rgb {sp.rgb.astype(int).tolist()}")
         return 0
-    from pymavlink import mavutil                     # optional dependency on the companion
+    from pymavlink import mavutil                     # optional dependency
     mav = mavutil.mavlink_connection(a.device, baud=a.baud)
     mav.wait_heartbeat()
     pl.run(mav, a.start if a.start else time.time() + 5.0)
