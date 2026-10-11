@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                                QPushButton, QSizePolicy, QSplitter, QStackedWidget, QTabWidget, QToolBar,
                                QVBoxLayout, QWidget)
 
@@ -248,10 +248,18 @@ class MainWindow(QMainWindow):
         cones.currentIndexChanged.connect(
             lambda i: (setattr(self.view3d, "show_cones", ["selected", "all", "none"][i]), self.view3d.update()))
         bar.addWidget(cones)
-        cov = QCheckBox("Coverage layer")
-        cov.setChecked(True)
-        cov.toggled.connect(lambda on: (setattr(self.view3d, "show_coverage", on), self.view3d.update()))
-        bar.addWidget(cov)
+        bar.addSpacing(12)
+        bar.addWidget(QLabel("Coverage:"))
+        self.cov_combo = QComboBox()
+        modes = [("Altitude slice", "slice"), ("Whole volume", "volume"), ("Problems only", "problems"), ("Off", "off")]
+        for label, key in modes:
+            self.cov_combo.addItem(label, key)
+        self.cov_combo.setToolTip("Altitude slice: a coloured layer at the altitude slider's height\n"
+                                  "Whole volume: every evaluation point\n"
+                                  "Problems only: points with fewer than 3 cameras or over the accuracy limit")
+        self.cov_combo.currentIndexChanged.connect(
+            lambda i: (setattr(self.view3d, "coverage_mode", self.cov_combo.itemData(i)), self.view3d.update()))
+        bar.addWidget(self.cov_combo)
         bar.addStretch(1)
         lay.addLayout(bar)
         lay.addWidget(self.view3d, 1)
@@ -480,6 +488,9 @@ class MainWindow(QMainWindow):
         self.results.show_result(plan, ev)
         self.canvas.zoom_to_fit()                # include every planned camera
         self.view3d.fit()
+        if ev.summary["fraction_meeting_all_requirements"] < 0.9999:
+            self.results.log(self.results.status.text() + "  Not every point meets the requirement: in the 3D "
+                             "view set Coverage to “Problems only” to see where.")
 
     def _plan_failed(self, msg):
         self._plan_finished()

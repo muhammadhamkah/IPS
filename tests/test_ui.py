@@ -427,3 +427,41 @@ def test_finishing_a_shape_returns_to_select(win):
     click(c, -9, 7)
     click(c, 9, 7)
     assert c.tool == "select" and win.tool_actions["select"].isChecked()
+
+
+def test_mount_counts_groups_shared_spots():
+    from idps.plan.model import PlannedCamera
+    from idps.ui.planner.view3d import mount_counts
+
+    def cam(mtype, x, y, z):
+        return PlannedCamera("C", mtype, "m", [x, y, z], 0.0, 0.0, 2.8)
+    counts = mount_counts([cam("truss", 1, 2, 11.2), cam("truss", 1, 2, 11.2), cam("truss", 4, 2, 11.2),
+                           cam("tripod", 0, -3, 3.0), cam("tripod", 0, -3, 10.0)])
+    assert counts[(1, 2, 11.2)] == 2 and counts[(4, 2, 11.2)] == 1
+    assert counts[(0, -3, 10.0)] == 2                    # one tripod, two heights on the mast
+
+
+def test_3d_coverage_modes_render_and_count_problems(win, app):
+    from idps.ui.planner.worker import PlanWorker
+
+    def setup(d):
+        d["volume"]["polygon"] = [[-10, -5], [-10, 7], [17.5, 7], [17.5, -5]]
+        d["volume"]["z"] = [0.0, 10.0]
+        d["trusses"] = [{"id": "T1", "start": [-9.5, 7.5], "end": [17.5, 7.5], "height_m": 11.5},
+                        {"id": "T2", "start": [-11, -5.5], "end": [18, -5.5], "height_m": 11.5}]
+        d["candidates"]["max_cameras_per_mount"] = 1
+    win.doc.edit("setup", setup)
+    got = {}
+    w = PlanWorker(win.doc.to_site_dict(), None)
+    w.finished.connect(lambda plan, ev, site: got.update(plan=plan, ev=ev, site=site))
+    w.run()
+    win._plan_done(got["plan"], got["ev"], got["site"])
+    assert "Problems only" in win.results.status.text()          # short plan points the user to the 3D view
+    win.show_view("3d")
+    v = win.view3d
+    n_bad, vol_bad = v.coverage_stats()
+    assert n_bad == int((~got["ev"].meets).sum()) > 0 and vol_bad > 0
+    for i in range(win.cov_combo.count()):
+        win.cov_combo.setCurrentIndex(i)
+        assert v.coverage_mode == win.cov_combo.itemData(i)
+        assert not v.grab().isNull()

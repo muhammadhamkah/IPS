@@ -359,6 +359,11 @@ class PlanCanvas(QGraphicsView):
                 p.drawEllipse(QPointF(x, y), r, r)
                 if hl or len(plan.cameras) <= 40:
                     self._text(p, QPointF(x, y), cam.id, tok["text2"], dx=6, dy=12, size=9, bold=hl)
+            # several cameras sharing one mount spot: badge it, otherwise their aim lines look odd
+            from idps.ui.planner.view3d import mount_counts
+            for (x, y, _), n in mount_counts(plan.cameras).items():
+                if n > 1:
+                    self._text(p, QPointF(x, y), f"×{n}", tok["text"], dx=-22, dy=-6, size=10, bold=True)
 
         # drawing preview
         if self.tool != "select" and (self.pending or self.cursor_pt):

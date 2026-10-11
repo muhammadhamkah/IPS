@@ -18,6 +18,22 @@ from idps.coverage.volume import offset_ring
 from idps.ui import theme
 
 
+def mount_counts(cameras) -> dict:
+    """{(x, y, z): number of cameras} for cameras sharing a physical spot
+    (same truss point, or same tripod; tripods counted at the mast top)."""
+    out: dict = {}
+    for c in cameras:
+        x, y, z = (round(v, 2) for v in c.position_m)
+        key = (x, y, z) if c.mount_type == "truss" else (x, y, None)
+        out[key] = out.get(key, 0) + 1
+    tops: dict = {}
+    for c in cameras:
+        if c.mount_type == "tripod":
+            k = (round(c.position_m[0], 2), round(c.position_m[1], 2))
+            tops[k] = max(tops.get(k, 0.0), c.position_m[2])
+    return {(k[0], k[1], k[2] if k[2] is not None else tops[(k[0], k[1])]): n for k, n in out.items()}
+
+
 class View3D(QWidget):
     cameraClicked = Signal(int)
 
@@ -32,7 +48,7 @@ class View3D(QWidget):
         self.target = np.zeros(3)
         self.fov = math.radians(45)
         self.show_cones = "selected"         # "none" | "selected" | "all"
-        self.show_coverage = True
+        self.coverage_mode = "slice"         # "slice" | "volume" | "problems" | "off"
         self._drag = None
         self._fitted = False
         self._gizmo_hits: list = []          # (QRectF or (centre, radius), action) built while painting
@@ -467,28 +483,69 @@ class View3D(QWidget):
                     self._line(prims, (*pa, h), (*pb, h), QPen(colour, 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
             self._text(prims, (*a, h), f"{t['id']}  {h:g} m", tok["text2"], sel == ("truss", i), 10)
 
+    def _point_colour(self, ev, v, limit, measure):
+        if measure == "accuracy":
+            p95 = ev.p95_mm[v]
+            return theme.ramp_color(p95 if np.isfinite(p95) else 2 * limit, 2 * limit)
+        return QColor(theme.STATUS[min(int(ev.n_cams[v]), 3)])
+
+    def coverage_stats(self):
+        """(failing points, failing volume m3) for the current result, or None."""
+        if self.canvas.result is None:
+            return None
+        plan, ev = self.canvas.result
+        s = ev.summary
+        return int((~ev.meets).sum()), float(s.get("volume_below_min_cameras_m3", 0.0)
+                                             + s.get("volume_over_accuracy_limit_m3", 0.0))
+
     def _coverage(self, prims):
-        if not self.show_coverage or self.canvas.result is None or self.canvas.overlay_mode == "none":
+        """coverage_mode: 'slice' = solid layer at the altitude slider, 'volume' = every
+        evaluation point, 'problems' = only points failing the requirement, 'off'."""
+        if self.coverage_mode == "off" or self.canvas.result is None:
             return
         plan, ev = self.canvas.result
         g = ev.grid
-        k = self.canvas.overlay_level
-        on = np.where(g.level_of() == k)[0]
-        if not len(on):
-            return
         req = plan.summary.get("requirements", {})
         limit = float(req.get("p95_mm", 10.0))
-        P, z = self.project(ev.points[on])
-        for (sx, sy), depth, v in zip(P, z, on):
-            if depth <= 0.05:
+        measure = "accuracy" if self.canvas.overlay_mode == "accuracy" else "count"
+        if self.coverage_mode == "slice":
+            k = self.canvas.overlay_level
+            lvl = g.level_of()
+            z = float(g.zs[k])
+            xs, ys = g.xs, g.ys
+            dx = (xs[1] - xs[0]) if len(xs) > 1 else 1.0
+            dy = (ys[1] - ys[0]) if len(ys) > 1 else 1.0
+            grid_idx = np.where(lvl[:g.n_grid] == k)[0]
+            ii, jj = np.nonzero(g.inside)
+            for (i, j), v in zip(zip(ii, jj), grid_idx):
+                c = self._point_colour(ev, v, limit, measure)
+                c.setAlphaF(0.55)
+                x0, y0 = xs[i] - dx / 2, ys[j] - dy / 2
+                self._poly(prims, [(x0, y0, z), (x0 + dx, y0, z), (x0 + dx, y0 + dy, z), (x0, y0 + dy, z)],
+                           QPen(Qt.PenStyle.NoPen), c)
+            ring = np.where(lvl == k)[0]
+            ring = ring[ring >= g.n_grid]
+            P, depth = self.project(ev.points[ring]) if len(ring) else (np.zeros((0, 2)), np.zeros(0))
+            for (sx, sy), d, v in zip(P, depth, ring):
+                if d > 0.05:
+                    c = self._point_colour(ev, v, limit, measure)
+                    prims.append((float(d), "dot", ((sx, sy), 3.0, c, c)))
+            return
+        sel = np.arange(len(ev.points)) if self.coverage_mode == "volume" else np.where(~ev.meets)[0]
+        if not len(sel):
+            return
+        P, depth = self.project(ev.points[sel])
+        for (sx, sy), d, v in zip(P, depth, sel):
+            if d <= 0.05:
                 continue
-            if self.canvas.overlay_mode == "count":
-                c = QColor(theme.STATUS[min(int(ev.n_cams[v]), 3)])
+            bad = not ev.meets[v]
+            c = self._point_colour(ev, v, limit, measure)
+            if self.coverage_mode == "volume" and not bad:
+                c.setAlphaF(0.30)
+                prims.append((float(d), "dot", ((sx, sy), 2.2, c, c)))
             else:
-                p95 = ev.p95_mm[v]
-                c = theme.ramp_color(p95 if np.isfinite(p95) else 2 * limit, 2 * limit)
-            c.setAlphaF(0.75)
-            prims.append((float(depth), "dot", ((sx, sy), 3.2, c, c)))
+                edge = QColor(theme.STATUS[0])
+                prims.append((float(d) - 0.02, "dot", ((sx, sy), 5.0, c, edge)))
 
     def _cameras(self, prims, tok):
         if self.canvas.result is None:
@@ -527,6 +584,10 @@ class View3D(QWidget):
                 prims.append((float(z[0]) - 0.01, "dot", (P[0], 6.5 if hl else 4.5, colour, tok["surface"])))
             if hl or len(plan.cameras) <= 40:
                 self._text(prims, pos, c.id, tok["text"] if hl else tok["text2"], hl, 10 if hl else 9)
+        # several cameras on one mount: say so, otherwise their aim lines look like one odd camera
+        for (x, y, z), n in mount_counts(plan.cameras).items():
+            if n > 1:
+                self._text(prims, (x, y, z + 0.6), f"×{n}", tok["text"], True, 11)
 
     def _cone(self, prims, c, pos, colour, aspect, hl):
         """Field-of-view pyramid out to a range that keeps the picture readable."""
@@ -555,8 +616,16 @@ class View3D(QWidget):
         p.setPen(tok["text2"])
         hint = "Drag or two-finger scroll: orbit · ⇧: pan · pinch or ⌘-scroll: zoom · click a camera to select"
         p.drawText(QRectF(10, self.height() - 24, self.width() - 20, 20), Qt.AlignmentFlag.AlignLeft, hint)
-        if self.canvas.result is not None and self.canvas.overlay_mode != "none" and self.show_coverage:
-            z = self.canvas.result[1].grid.zs[self.canvas.overlay_level]
-            what = "cameras per point" if self.canvas.overlay_mode == "count" else "predicted accuracy"
-            p.drawText(QRectF(10, 8, self.width() - 20, 20), Qt.AlignmentFlag.AlignLeft,
-                       f"Coverage layer: {what} at Z = {z:.1f} m (altitude slider below)")
+        if self.canvas.result is not None and self.coverage_mode != "off":
+            what = "predicted accuracy" if self.canvas.overlay_mode == "accuracy" else "cameras per point"
+            n_bad, vol_bad = self.coverage_stats()
+            if self.coverage_mode == "slice":
+                z = self.canvas.result[1].grid.zs[self.canvas.overlay_level]
+                text = f"Coverage: {what} on the layer at Z = {z:.1f} m (move it with the altitude slider)"
+            elif self.coverage_mode == "volume":
+                text = f"Coverage: {what} at every evaluation point; failing points are large with a red ring"
+            else:
+                text = ("Problem points: none, every point meets the requirement" if n_bad == 0 else
+                        f"Problem points: {n_bad} failing (about {vol_bad:,.0f} m³), colour = "
+                        + ("predicted error" if what == "predicted accuracy" else "cameras seeing it"))
+            p.drawText(QRectF(10, 8, self.width() - 20, 20), Qt.AlignmentFlag.AlignLeft, text)
