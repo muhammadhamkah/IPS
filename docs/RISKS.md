@@ -439,7 +439,7 @@ architecture supports this, with the constraints below.
 * **Mitigation:**
   * Keep the 1 m square for the origin.
   * Add long-baseline floor markers along +X and +Y, measured with a laser distance meter,
-    for axes, floor plane and scale (WORKFLOW step 4.3).
+    for axes, floor plane and scale (WORKFLOW step 4, item 3).
   * Verify with the independent total-station check (VALIDATION G4).
 * **Earliest test:** Phase 9. Compare the scale and axes from the square plus wand against
   the long-baseline markers.

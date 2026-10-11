@@ -116,7 +116,7 @@ parallel. The dashboard then shows:
   missing).
 
 At this stage the aim is **coarse**: servo accuracy plus the base orientation error, about
-1–3°. That is enough for coverage, and the final aim is refined after calibration (step 5).
+1–3°. That is enough for coverage, and the final aim is refined after calibration (step 4, item 6).
 
 ---
 
