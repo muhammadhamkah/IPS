@@ -11,6 +11,10 @@ requirements:
   p95_mm: 10
   noise: tight            # realistic | tight | very_tight, or explicit sigma_* fields
 
+design:                   # what the optimiser aims for: margin for occlusion / a lost camera
+  min_cameras: 4
+  p95_mm: 7
+
 visibility: {max_range_m: 15}
 evaluation: {spacing_m: 0.75, inset_m: 0.25}
 
@@ -40,4 +44,4 @@ candidates:
   azimuth_step_deg: 30
   max_cameras_per_mount: 1
 
-optimiser: {max_cameras: 16}
+optimiser: {max_cameras: 30}

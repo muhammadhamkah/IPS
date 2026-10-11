@@ -59,8 +59,7 @@ class Optimiser:
     def __init__(self, site: Site, cands: CandidateSet, points: np.ndarray, log=print):
         self.site, self.c, self.pts, self.log = site, cands, points, log
         self.R = cands.R
-        req = site.requirements
-        self.obj = Objective(req.min_cameras, req.p95_mm / P95_PER_RMS)
+        self.obj = Objective(site.design.min_cameras, site.design.p95_mm / P95_PER_RMS)
 
     def _contrib(self, idx):
         idx = np.atleast_1d(idx)

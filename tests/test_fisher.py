@@ -3,7 +3,7 @@ import numpy as np
 from idps.core.camera import SENSORS, rotation_from_az_el
 from idps.core.noise import NoiseBudget
 from idps.coverage.fisher import VisibilityLimits, contributions, trace_inverse, unpack
-from idps.coverage.volume import volume_grid
+from idps.coverage.volume import Volume, distance_to_polygon, offset_ring, outward_normals, volume_grid
 
 
 def test_trace_inverse_matches_numpy():
@@ -48,7 +48,31 @@ def test_visibility_limits():
 
 
 def test_volume_grid_includes_takeoff_layer_and_boundary():
-    pts, (xs, ys, zs) = volume_grid([-5, -5, 0], [5, 5, 3], 2.0, inset=0.5)
-    assert np.isclose(zs[0], 0.2) and np.isclose(zs[-1], 2.5)
-    assert np.isclose(xs[0], -4.5) and np.isclose(xs[-1], 4.5)
-    assert len(pts) == len(xs) * len(ys) * len(zs)
+    g = volume_grid(Volume.box([-5, -5, 0], [5, 5, 3]), 2.0, inset=0.5)
+    assert np.isclose(g.zs[0], 0.2) and np.isclose(g.zs[-1], 2.5)
+    assert np.isclose(g.xs[0], -4.5) and np.isclose(g.xs[-1], 4.5)
+    assert g.n_grid == g.inside.sum() * len(g.zs)
+    # ring points sit 0.5 m inside the walls
+    ring = g.points[g.n_grid:, :2]
+    d = np.minimum(5 - np.abs(ring[:, 0]), 5 - np.abs(ring[:, 1]))
+    assert np.allclose(d, 0.5, atol=1e-6)
+
+
+def test_l_shaped_volume():
+    L = Volume(np.array([[0, 0], [20, 0], [20, 10], [10, 10], [10, 20], [0, 20]]), 0, 10)
+    assert np.isclose(L.floor_area_m2, 300) and np.isclose(L.volume_m3, 3000)
+    assert L.contains_xy(np.array([[5, 15], [15, 5]])).all()
+    assert not L.contains_xy(np.array([[15, 15]]))[0]           # the notch
+    g = volume_grid(L, 2.0, inset=0.5)
+    assert L.contains_xy(g.points[:, :2]).all()
+
+
+def test_polygon_orientation_independent():
+    sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
+    for poly in (sq, sq[::-1]):
+        n = outward_normals(poly)
+        mid = (poly + np.roll(poly, -1, 0)) / 2
+        assert not Volume(poly, 0, 1).contains_xy(mid + n).any()
+        ring = offset_ring(poly, 2.0, 5.0)
+        d, _, _ = distance_to_polygon(ring, poly)
+        assert np.allclose(d[~np.isclose(d, 2 * np.sqrt(2))], 2.0)

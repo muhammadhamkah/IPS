@@ -20,7 +20,8 @@ def _write_outputs(out: Path, site, plan, ev, title):
         write_report(out / "report.html", site, plan, ev, title)
     except ImportError:
         print("note: matplotlib not installed; skipping report.html", file=sys.stderr)
-    print(json.dumps({k: v for k, v in plan.summary.items() if k != "requirements"}, indent=2))
+    print(json.dumps({k: v for k, v in plan.summary.items()
+                      if k not in ("requirements", "design_margin")}, indent=2))
     print(f"wrote {out}/plan.yaml, cameras.csv, report.html")
 
 

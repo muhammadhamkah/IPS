@@ -105,11 +105,39 @@ remaining failures are a handful of corner points. The planner's optimiser shoul
 rather than hand placement. The "realistic" budget still fails about 8 % of the volume, so the
 tight error budget remains essential.
 
+### 0.3 Optimised layouts (`idps-plan`)
+
+The hand-made layouts above were far from optimal. The planner's optimiser finds much smaller
+layouts that meet the requirement *in the model*.
+
+**Example hall (100 × 100 × 30 m, tight budget):**
+
+| Optimiser target | Cameras | Meets 3 cameras / 10 mm (5 m check grid) | Worst point | Points that fail if one camera is lost |
+|---|---|---|---|---|
+| Exactly the requirement (3 cameras, 10 mm) | 18 | 99.95 % | 10.7 mm | up to 236 per camera |
+| **Design margin: 4 cameras, 7 mm** | **28** | **100 %** | **8.4 mm** | **at most 2 per camera** |
+| 4 cameras, 7 mm, sightlines limited to 60 m | 66–85 | 99.5–99.9 % | 16–70 mm | (optimised on too coarse a grid) |
+
+* A 50 × 20 × 20 m venue needs about 16 cameras with the design margin.
+* An L-shaped 40 × 30 × 15 m tripod-only venue needs about 10.
+
+**Caveats:**
+
+* These small counts rely on wide lenses (2.8 mm) and **sightlines up to 100 m+**. That is
+  where the model is most optimistic: centroid precision at long range is assumed, not
+  measured (R7), and there is no occlusion model.
+* The planner therefore always reports single-camera-loss robustness, and the examples use a
+  **design margin** (≥ 4 cameras, 7 mm).
+* Phase 1/9 measurements of centroid precision versus range must be fed back into the noise
+  model before a venue's camera count is trusted.
+
 **Status: ±1 cm across the full 100×100×30 m volume is not yet shown to be feasible.** It is
 not ruled out by geometry either. The plan keeps it as the requirement, and checks it at
 explicit gates:
 
 * **Phase 0:** the optimiser must find a layout that meets the spec under the tight budget.
+  It now does, in the model (§0.3); what remains is validating the model's long-range
+  assumptions.
 * **Phases 1/5/6:** each budget term must be measured at or below its allocation.
 * **Phase 9:** hall-scale tests must confirm the model.
 

@@ -6,7 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from idps.core.camera import rotation_from_az_el
-from idps.plan.site import Site
+from idps.coverage.volume import distance_to_polygon, offset_ring, points_in_polygon
+from idps.plan.site import Site, TripodZone
 
 
 @dataclass
@@ -29,10 +30,6 @@ class CandidateSet:
         return rotation_from_az_el(self.az, self.el)
 
 
-def _in_rect(x, y, r) -> bool:
-    return r[0] <= x <= r[2] and r[1] <= y <= r[3]
-
-
 def _aims(elevations, az_step):
     azs = np.arange(0.0, 360.0, az_step)
     out = []
@@ -52,12 +49,50 @@ def _samples(a: float, b: float, step: float) -> np.ndarray:
     return np.linspace(a, b, n)
 
 
+def tripod_positions(site: Site, zone: TripodZone) -> np.ndarray:
+    """Candidate tripod floor positions for a zone, about tripod_step_m apart."""
+    step = site.candidates.tripod_step_m
+    if zone.offset_m is not None:
+        poly = site.volume.polygon
+        pts = []
+        for d in _samples(zone.offset_m[0], zone.offset_m[1], step):
+            ring = offset_ring(poly, float(d), step)
+            dist, e, _ = distance_to_polygon(ring, poly)
+            # In concave corners the offset strips of neighbouring edges overlap,
+            # bringing points closer to the volume than allowed: drop those.
+            keep = dist >= zone.offset_m[0] - 1e-6
+            if zone.edges is not None:
+                keep &= np.isin(e, zone.edges)   # only along the chosen edges
+            pts.append(ring[keep])
+        return np.concatenate(pts) if pts else np.zeros((0, 2))
+    poly = zone.polygon
+    (x0, y0), (x1, y1) = poly.min(0), poly.max(0)
+    X, Y = np.meshgrid(_samples(x0, x1, step), _samples(y0, y1, step), indexing="ij")
+    xy = np.stack([X.ravel(), Y.ravel()], 1)
+    return xy[points_in_polygon(xy, poly) | _on_bbox_edge(xy, poly)]
+
+
+def _on_bbox_edge(xy, poly):
+    """Rectangular zones: keep samples on the zone's own edges (the even-odd
+    test is ambiguous exactly on the boundary)."""
+    if len(poly) != 4:
+        return np.zeros(len(xy), bool)
+    (x0, y0), (x1, y1) = poly.min(0), poly.max(0)
+    is_rect = np.all(np.isclose(poly[:, 0], x0) | np.isclose(poly[:, 0], x1)) and \
+        np.all(np.isclose(poly[:, 1], y0) | np.isclose(poly[:, 1], y1))
+    if not is_rect:
+        return np.zeros(len(xy), bool)
+    return (xy[:, 0] >= x0 - 1e-9) & (xy[:, 0] <= x1 + 1e-9) & (xy[:, 1] >= y0 - 1e-9) & (xy[:, 1] <= y1 + 1e-9)
+
+
 def generate_candidates(site: Site) -> CandidateSet:
     cs = site.candidates
     rows = []
 
     def blocked(x, y):
-        return any(_in_rect(x, y, r) for r in site.no_go_zones)
+        p = np.array([[x, y]])
+        return any(points_in_polygon(p, r)[0] or distance_to_polygon(p, r)[0][0] < 1e-6
+                   for r in site.no_go_zones)
 
     truss_aims = _aims(cs.truss_elevations_deg, cs.azimuth_step_deg)
     for t in site.trusses:
@@ -74,19 +109,17 @@ def generate_candidates(site: Site) -> CandidateSet:
 
     tripod_aims = _aims(cs.tripod_elevations_deg, cs.azimuth_step_deg)
     for z in site.tripod_zones:
-        x0, y0, x1, y1 = z.rect
         heights = [h for h in cs.tripod_heights_m if z.height_range_m[0] <= h <= z.height_range_m[1]]
         if not heights:
             heights = sorted({z.height_range_m[0], z.height_range_m[1]})
-        for x in _samples(x0, x1, cs.tripod_step_m):
-            for y in _samples(y0, y1, cs.tripod_step_m):
-                if blocked(x, y):
-                    continue
-                for h in heights:
-                    key = f"{z.id}@{x:.2f},{y:.2f},{h:.1f}"
-                    for az, el in tripod_aims:
-                        for lens in site.lenses_mm:
-                            rows.append(((x, y, h), az, el, lens, key, "tripod", z.id, np.nan))
+        for x, y in tripod_positions(site, z):
+            if blocked(x, y) or site.volume.contains_xy(np.array([[x, y]]))[0]:
+                continue
+            for h in heights:
+                key = f"{z.id}@{x:.2f},{y:.2f},{h:.1f}"
+                for az, el in tripod_aims:
+                    for lens in site.lenses_mm:
+                        rows.append(((x, y, h), az, el, lens, key, "tripod", z.id, np.nan))
 
     if not rows:
         raise ValueError("no candidate mounts: add trusses or tripod zones to the site file")

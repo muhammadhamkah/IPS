@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from idps.core.camera import direction_from_az_el
+from idps.coverage.volume import offset_ring
 from idps.plan.model import Plan
 from idps.plan.planner import Evaluation
 from idps.plan.site import Site
@@ -53,13 +54,25 @@ def layout_figure(site: Site, plan: Plan) -> str:
     plt = _mpl()
     fig, ax = plt.subplots(figsize=(7.5, 7.5))
     (x0, y0), (x1, y1) = site.volume_min[:2], site.volume_max[:2]
-    ax.add_patch(plt.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, ec=TEXT2, lw=1.2))
+    poly = site.volume.polygon
+    ax.add_patch(plt.Polygon(poly, closed=True, fill=False, ec=TEXT2, lw=1.2))
+    centre = poly.mean(0)
+    for k, v in enumerate(poly):
+        off = v - centre
+        off = off / (np.linalg.norm(off) + 1e-9) * 10
+        ax.annotate(f"V{k}", v, fontsize=7, color=TEXT, xytext=off, textcoords="offset points",
+                    ha="center", va="center")
     for z in site.tripod_zones:
-        zx0, zy0, zx1, zy1 = z.rect
-        ax.add_patch(plt.Rectangle((zx0, zy0), zx1 - zx0, zy1 - zy0, fc="#f0efec", ec="none", zorder=0))
+        if z.polygon is not None:
+            ax.add_patch(plt.Polygon(z.polygon, closed=True, fc="#f0efec", ec="none", zorder=0))
+        else:
+            for d in z.offset_m:
+                ring = offset_ring(poly, d, 1e9)          # offset vertices only
+                ring = ring[1::2] if len(ring) == 2 * len(poly) else ring
+                ax.add_patch(plt.Polygon(ring, closed=True, fill=False, ec="#d6d4cd", lw=1,
+                                         ls=(0, (3, 2)), zorder=0))
     for r in site.no_go_zones:
-        ax.add_patch(plt.Rectangle((r[0], r[1]), r[2] - r[0], r[3] - r[1], fc="none", ec=TEXT2,
-                                   hatch="xx", lw=0.5, zorder=0))
+        ax.add_patch(plt.Polygon(r, closed=True, fc="none", ec=TEXT2, hatch="xx", lw=0.5, zorder=0))
     for t in site.trusses:
         ax.plot(*np.array([t.start, t.end]).T, color=GRID, lw=2, ls=(0, (2, 2)), zorder=1)
         for s0, s1 in t.usable:
@@ -92,12 +105,13 @@ def layout_figure(site: Site, plan: Plan) -> str:
                 textcoords="offset points")
     ax.annotate("+Y", (0, span * 0.06), fontsize=7, color=TEXT, xytext=(-3, 3),
                 textcoords="offset points", ha="right")
-    ax.annotate("origin", (0, 0), fontsize=7, color=TEXT, xytext=(-3, -9), textcoords="offset points",
+    ax.annotate("origin", (0, 0), fontsize=7, color=TEXT, xytext=(-4, 4), textcoords="offset points",
                 ha="right")
     ax.set_aspect("equal")
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
-    ax.set_title("Camera layout (plan view). Arrows: aim direction; dashed: no usable truss",
+    ax.set_title("Camera layout (plan view). Arrows: aim direction; dashed grey: no usable truss"
+                 " / tripod strip limits",
                  fontsize=9, loc="left")
     ax.grid(color=GRID, lw=0.5)
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1), frameon=False)
@@ -106,35 +120,59 @@ def layout_figure(site: Site, plan: Plan) -> str:
 
 def level_figure(site: Site, ev: Evaluation, k: int) -> str:
     plt = _mpl()
-    from matplotlib.colors import BoundaryNorm, ListedColormap, LinearSegmentedColormap
-    xs, ys, zs = ev.axes
-    shape = (len(xs), len(ys), len(zs))
-    n = ev.n_cams.reshape(shape)[:, :, k].T
-    p95 = ev.p95_mm.reshape(shape)[:, :, k].T
+    from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
+    g = ev.grid
+    xs, ys, zs = g.xs, g.ys, g.zs
+    lvl = g.level_of()
+    on = lvl == k
+    grid_idx = np.where(on[:g.n_grid])[0]
+    ring_idx = np.where(on)[0]
+    ring_idx = ring_idx[ring_idx >= g.n_grid]
+    inside = g.inside
+    n_map = np.full(inside.shape, np.nan)
+    p_map = np.full(inside.shape, np.nan)
+    n_map[inside] = ev.n_cams[grid_idx]
+    p_map[inside] = ev.p95_mm[grid_idx]
+    n_map, p_map = n_map.T, p_map.T
     limit = site.requirements.p95_mm
     xe, ye = _edges(xs), _edges(ys)
+    poly = site.volume.polygon
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4.8), layout="constrained")
 
     cmap = ListedColormap([STATUS["0"], STATUS["1"], STATUS["2"], STATUS["3+"]])
-    a1.pcolormesh(xe, ye, np.minimum(n, 3), cmap=cmap, norm=BoundaryNorm([-0.5, 0.5, 1.5, 2.5, 3.5], 4),
-                  ec=SURFACE, lw=1)
-    if len(xs) * len(ys) <= 400:
+    norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5, 3.5], 4)
+    q1 = a1.pcolormesh(xe, ye, np.ma.masked_invalid(np.minimum(n_map, 3)), cmap=cmap, norm=norm, ec=SURFACE,
+                       lw=1)
+    rp = ev.points[ring_idx]
+    a1.scatter(rp[:, 0], rp[:, 1], c=np.minimum(ev.n_cams[ring_idx], 3), cmap=cmap, norm=norm, s=14,
+               marker="s", ec=SURFACE, lw=0.6, zorder=3)
+    if inside.sum() <= 400:
         for i, x in enumerate(xs):
             for j, y in enumerate(ys):
-                a1.text(x, y, str(n[j, i]), ha="center", va="center", fontsize=6,
-                        color="#ffffff" if n[j, i] == 0 or n[j, i] >= 3 else TEXT)
+                if np.isfinite(n_map[j, i]):
+                    v = int(n_map[j, i])
+                    a1.text(x, y, str(v), ha="center", va="center", fontsize=6,
+                            color="#ffffff" if v == 0 or v >= 3 else TEXT)
     handles = [plt.Rectangle((0, 0), 1, 1, color=STATUS[k_]) for k_ in ("0", "1", "2", "3+")]
     a1.legend(handles, ["0 cameras", "1 camera", "2 cameras", "3+ cameras"], loc="upper center",
               bbox_to_anchor=(0.5, -0.12), ncol=4, frameon=False, fontsize=7)
-    a1.set_title(f"Cameras seeing each point, Z = {zs[k]:.1f} m", fontsize=9, loc="left")
+    a1.set_title(f"Cameras seeing each point, Z = {zs[k]:.1f} m (squares: edge points)", fontsize=9,
+                 loc="left")
 
     ramp = LinearSegmentedColormap.from_list("blue", BLUE_RAMP)
-    shown = np.where(np.isfinite(p95), np.minimum(p95, 2 * limit), 2 * limit)
-    m = a2.pcolormesh(xe, ye, shown, cmap=ramp, vmin=0, vmax=2 * limit, ec=SURFACE, lw=1)
-    fail = ~(p95 <= limit)
+
+    def shown(p):
+        return np.where(np.isfinite(p), np.minimum(p, 2 * limit), 2 * limit)
+
+    m = a2.pcolormesh(xe, ye, np.ma.masked_where(np.isnan(p_map), shown(p_map)), cmap=ramp, vmin=0,
+                      vmax=2 * limit, ec=SURFACE, lw=1)
+    fail = ~(p_map <= limit) & ~np.isnan(p_map)
     if fail.any():
-        a2.pcolormesh(xe, ye, np.ma.masked_where(~fail, np.ones_like(shown)), cmap=ListedColormap(["none"]),
+        a2.pcolormesh(xe, ye, np.ma.masked_where(~fail, np.ones_like(p_map)), cmap=ListedColormap(["none"]),
                       hatch="////", ec=STATUS["0"], lw=1)
+    rpv = ev.p95_mm[ring_idx]
+    a2.scatter(rp[:, 0], rp[:, 1], c=shown(rpv), cmap=ramp, vmin=0, vmax=2 * limit, s=14, marker="s",
+               ec=np.where(rpv <= limit, SURFACE, STATUS["0"]), lw=0.8, zorder=3)
     cb = fig.colorbar(m, ax=a2, shrink=0.85)
     cb.set_label(f"predicted p95 3D error (mm), capped at {2 * limit:g}")
     cb.ax.axhline(limit, color=TEXT, lw=1)
@@ -142,7 +180,13 @@ def level_figure(site: Site, ev: Evaluation, k: int) -> str:
               [f"over {limit:g} mm or < 2 cameras"], loc="upper center", bbox_to_anchor=(0.5, -0.12),
               frameon=False, fontsize=7)
     a2.set_title(f"Predicted accuracy, Z = {zs[k]:.1f} m", fontsize=9, loc="left")
-    for a in (a1, a2):
+    for a, mesh in ((a1, q1), (a2, m)):
+        outline = plt.Polygon(poly, closed=True, fill=False, ec=TEXT2, lw=1, zorder=4)
+        a.add_patch(outline)
+        mesh.set_clip_path(outline)          # cells never spill past the drawn volume
+        for coll in a.collections:
+            if coll is not mesh and coll.get_array() is not None and coll.get_offsets().size == 0:
+                coll.set_clip_path(outline)
         a.set_aspect("equal")
         a.set_xlabel("X (m)")
         a.set_ylabel("Y (m)")
@@ -169,11 +213,8 @@ img {{ max-width:100%; }}
 def write_report(path: str | Path, site: Site, plan: Plan, ev: Evaluation, title: str | None = None):
     s = plan.summary
     req = site.requirements
-    xs, ys, zs = ev.axes
-    shape = (len(xs), len(ys), len(zs))
-    meets3 = ev.meets.reshape(shape)
-    n3 = ev.n_cams.reshape(shape)
-    p3 = ev.p95_mm.reshape(shape)
+    zs = ev.grid.zs
+    lvl = ev.grid.level_of()
     ok_all = s["fraction_meeting_all_requirements"] >= 1.0 - 1e-12
 
     def pct(v):
@@ -195,12 +236,17 @@ def write_report(path: str | Path, site: Site, plan: Plan, ev: Evaluation, title
     tiles_html = "".join(f'<div class="tile"><span class="muted">{a}</span><b>{b}</b>'
                          f'<span class="muted">{c}</span></div>' for a, b, c in tiles)
 
-    level_rows = "".join(
-        f"<tr><td>{z:.1f}</td><td>{pct(np.mean(meets3[:, :, k]))}</td>"
-        f"<td>{pct(np.mean(n3[:, :, k] >= req.min_cameras))}</td><td>{int(n3[:, :, k].min())}</td>"
-        f"<td>{np.nanmedian(np.where(np.isfinite(p3[:, :, k]), p3[:, :, k], np.nan)):.1f}</td>"
-        f"<td>{(f'{p3[:, :, k].max():.1f}' if np.isfinite(p3[:, :, k]).all() else 'unbounded')}</td></tr>"
-        for k, z in enumerate(zs))
+    def level_row(k, z):
+        m = lvl == k
+        p = ev.p95_mm[m]
+        fin = p[np.isfinite(p)]
+        worst_k = f"{p.max():.1f}" if np.isfinite(p).all() else "unbounded"
+        med = f"{np.median(fin):.1f}" if fin.size else "n/a"
+        return (f"<tr><td>{z:.1f}</td><td>{pct(np.mean(ev.meets[m]))}</td>"
+                f"<td>{pct(np.mean(ev.n_cams[m] >= req.min_cameras))}</td><td>{int(ev.n_cams[m].min())}</td>"
+                f"<td>{med}</td><td>{worst_k}</td></tr>")
+
+    level_rows = "".join(level_row(k, z) for k, z in enumerate(zs))
 
     cam_rows = "".join(
         f"<tr><td>{c.id}</td><td>{c.mount_type}</td><td>{c.mount_id}</td>"
@@ -216,6 +262,7 @@ def write_report(path: str | Path, site: Site, plan: Plan, ev: Evaluation, title
                           f'src="data:image/png;base64,{level_figure(site, ev, k)}">'
                           for k, z in enumerate(zs))
     noise = req.noise
+    vertex_list = ", ".join(f"V{k} ({x:g}, {y:g})" for k, (x, y) in enumerate(site.volume.polygon))
     verdict = ('<p class="ok"><b>Every evaluation point meets the requirements.</b></p>' if ok_all else
                f'<p class="bad"><b>{pct(1 - s["fraction_meeting_all_requirements"])} of evaluation points '
                f'do not meet the requirements</b> (hatched / non-green cells below).</p>')
@@ -223,12 +270,17 @@ def write_report(path: str | Path, site: Site, plan: Plan, ev: Evaluation, title
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title or 'IDPS camera plan')}</title><style>{CSS}</style></head><body><main>
 <h1>{html.escape(title or 'IDPS camera plan')}: {html.escape(site.name)}</h1>
-<p class="muted">Flight volume X {site.volume_min[0]:g}..{site.volume_max[0]:g} m, Y {site.volume_min[1]:g}..{site.volume_max[1]:g} m,
-Z {site.volume_min[2]:g}..{site.volume_max[2]:g} m. Coordinates are in the tracking frame (origin = calibration square).
+<p class="muted">Flight volume: {len(site.volume.polygon)}-vertex floor outline
+({site.volume.floor_area_m2:,.0f} m&sup2;) extruded from Z {site.volume.z_min:g} to {site.volume.z_max:g} m
+({site.volume.volume_m3:,.0f} m&sup3;); bounding box X {site.volume_min[0]:g}..{site.volume_max[0]:g} m,
+Y {site.volume_min[1]:g}..{site.volume_max[1]:g} m. Vertices: {vertex_list}. Coordinates are in the tracking frame (origin = calibration square).
 Evaluated on {s['evaluation_points']} points spaced about {site.eval_spacing_m[0]:g} x {site.eval_spacing_m[1]:g} x {site.eval_spacing_m[2]:g} m,
 including the boundary. Predictions assume the <b>error budget</b>: centroid {noise.sigma_px:g} px,
 camera rotation {noise.sigma_rot_rad * 1e3:g} mrad, camera position {noise.sigma_pos_m * 1e3:g} mm,
-timing {noise.sigma_t_s * 1e3:g} ms at {noise.speed_mps:g} m/s. No occlusion by drones or obstacles is modelled.</p>
+timing {noise.sigma_t_s * 1e3:g} ms at {noise.speed_mps:g} m/s. No occlusion by drones or obstacles is modelled.
+The optimiser designed for <b>&ge; {site.design.min_cameras} cameras and p95 &le; {site.design.p95_mm:g} mm</b>
+(margin over the requirement of &ge; {req.min_cameras} cameras and {req.p95_mm:g} mm) so the plan tolerates
+occlusion and a lost camera.</p>
 {verdict}
 <div class="tiles">{tiles_html}</div>
 <h2>Layout</h2>

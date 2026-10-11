@@ -7,7 +7,7 @@ import numpy as np
 
 from idps.core.noise import P95_PER_RMS
 from idps.coverage.fisher import contributions, rms_mm
-from idps.coverage.volume import volume_grid
+from idps.coverage.volume import EvalGrid, distance_to_polygon, volume_grid
 from idps.plan.candidates import CandidateSet, generate_candidates
 from idps.plan.model import Plan, PlannedCamera, install_angles
 from idps.plan.optimizer import Optimiser
@@ -16,8 +16,7 @@ from idps.plan.site import Site
 
 @dataclass
 class Evaluation:
-    points: np.ndarray        # (V, 3)
-    axes: tuple               # (xs, ys, zs)
+    grid: EvalGrid
     n_cams: np.ndarray        # (V,)
     p95_mm: np.ndarray        # (V,) predicted p95 3D error; inf if < 2 cameras
     meets: np.ndarray         # (V,) bool
@@ -25,13 +24,18 @@ class Evaluation:
     robust: np.ndarray        # (V,) bool: still meets requirements if any one camera is lost
     summary: dict
 
+    @property
+    def points(self) -> np.ndarray:
+        return self.grid.points
 
-def site_grid(site: Site):
-    return volume_grid(site.volume_min, site.volume_max, site.eval_spacing_m, site.eval_inset_m)
+
+def site_grid(site: Site) -> EvalGrid:
+    return volume_grid(site.volume, site.eval_spacing_m, site.eval_inset_m)
 
 
 def evaluate(site: Site, cameras: list[PlannedCamera]) -> Evaluation:
-    pts, axes = site_grid(site)
+    grid = site_grid(site)
+    pts = grid.points
     req = site.requirements
     V = len(pts)
     if cameras:
@@ -54,7 +58,8 @@ def evaluate(site: Site, cameras: list[PlannedCamera]) -> Evaluation:
         critical[k] = int((meets & ~meets_k).sum())
         robust &= meets_k
 
-    vol = float(np.prod(site.volume_max - site.volume_min))
+    vol = site.volume.volume_m3
+    g = slice(0, grid.n_grid)     # volume estimates use the regular grid only
     finite = p95[np.isfinite(p95)]
     by_count = {str(k): float(np.mean(np.minimum(n, 3) == k)) for k in range(3)}
     by_count["3+"] = float(np.mean(n >= 3))
@@ -69,28 +74,24 @@ def evaluate(site: Site, cameras: list[PlannedCamera]) -> Evaluation:
         "fraction_meeting_with_any_one_camera_lost": float(robust.mean()),
         "fraction_with_min_cameras": float(np.mean(n >= req.min_cameras)),
         "fraction_by_camera_count": by_count,
-        "volume_below_min_cameras_m3": float(np.mean(n < req.min_cameras) * vol),
-        "volume_over_accuracy_limit_m3": float(np.mean(~(p95 <= req.p95_mm)) * vol),
+        "volume_below_min_cameras_m3": float(np.mean(n[g] < req.min_cameras) * vol) if grid.n_grid else 0.0,
+        "volume_over_accuracy_limit_m3": float(np.mean(~(p95[g] <= req.p95_mm)) * vol) if grid.n_grid else 0.0,
         "p95_error_mm_median": float(np.median(finite)) if finite.size else None,
         "p95_error_mm_worst": float(p95.max()) if np.isfinite(p95).all() else None,
         "requirements": {"min_cameras": req.min_cameras, "p95_mm": req.p95_mm,
                          "noise": req.noise.to_dict()},
+        "design_margin": {"min_cameras": site.design.min_cameras, "p95_mm": site.design.p95_mm},
     }
-    return Evaluation(pts, axes, n, p95, meets, critical, robust, summary)
+    return Evaluation(grid, n, p95, meets, critical, robust, summary)
 
 
 def _outside_note(site: Site, x: float, y: float) -> str:
-    (x0, y0), (x1, y1) = site.volume_min[:2], site.volume_max[:2]
-    parts = []
-    if x < x0:
-        parts.append(f"{x0 - x:.2f} m beyond the -X boundary")
-    if x > x1:
-        parts.append(f"{x - x1:.2f} m beyond the +X boundary")
-    if y < y0:
-        parts.append(f"{y0 - y:.2f} m beyond the -Y boundary")
-    if y > y1:
-        parts.append(f"{y - y1:.2f} m beyond the +Y boundary")
-    return ", ".join(parts) if parts else "inside the volume footprint"
+    """Installer-friendly location relative to the drawn volume outline."""
+    d, e, along = distance_to_polygon(np.array([[x, y]]), site.volume.polygon)
+    k = int(e[0])
+    k2 = (k + 1) % len(site.volume.polygon)
+    side = "inside" if site.volume.contains_xy(np.array([[x, y]]))[0] else "outside"
+    return (f"{d[0]:.2f} m {side} edge E{k} (V{k}->V{k2}), {along[0]:.2f} m along it from V{k}")
 
 
 def build_cameras(site: Site, cands: CandidateSet, selected: list[int]) -> list[PlannedCamera]:
@@ -148,7 +149,7 @@ def optimise(site: Site, log=print, max_cameras: int | None = None):
     for w in site.warnings():
         log(f"warning: {w}")
     cands = generate_candidates(site)
-    pts, _ = site_grid(site)
+    pts = site_grid(site).points
     result = Optimiser(site, cands, pts, log=log).run(max_cameras=max_cameras)
     cams = build_cameras(site, cands, result.selected)
     ev = evaluate(site, cams)

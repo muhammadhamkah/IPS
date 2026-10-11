@@ -1,0 +1,30 @@
+# Irregular venue: a six-sided (L-shaped) floor outline extruded to 15 m.
+# No trusses: tripods only, in a strip 1-2 m outside the outline, except along
+# the glass wall (edge E1), where tripods are not allowed.
+name: Irregular venue (L-shape)
+volume:
+  polygon: [[0, 0], [40, 0], [40, 15], [20, 15], [20, 30], [0, 30]]
+  z: [0, 15]
+sensor: OV9281
+lenses_mm: [2.8]
+
+requirements: {min_cameras: 3, p95_mm: 10, noise: tight}
+design: {min_cameras: 4, p95_mm: 7}
+
+visibility: {max_range_m: 70}
+evaluation: {spacing_m: [4, 4, 3], inset_m: 0.5}
+
+tripod_zones:
+  - id: outside
+    offset_m: [1, 2]
+    height_m: [2, 15]
+    edges: [0, 2, 3, 4, 5]          # every edge except E1 (glass wall)
+
+candidates:
+  tripod_step_m: 3
+  tripod_heights_m: [3, 8, 14]
+  tripod_elevations_deg: [0, 20, 40, 60]
+  azimuth_step_deg: 30
+  max_cameras_per_mount: 3
+
+optimiser: {max_cameras: 120}

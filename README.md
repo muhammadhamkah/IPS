@@ -27,15 +27,19 @@ It also predicts which parts of the volume have 3+ cameras and meet the accuracy
 ```bash
 pip install -e '.[dev]'                       # numpy, pyyaml, matplotlib, pytest
 idps-plan optimise examples/sites/lab.yaml  -o out/lab
+idps-plan optimise examples/sites/venue_50x20x20.yaml -o out/venue --verify-spacing 2
 idps-plan optimise examples/sites/hall.yaml -o out/hall --verify-spacing 5
 # What-if: edit out/hall/plan.yaml (move/remove a camera), then
 idps-plan evaluate out/hall/plan.yaml -o out/hall-edited
 ```
 
 **Site file contents** (see `examples/sites/*.yaml`):
-* the flight volume;
+* the flight volume, drawn as floor XY vertices and extruded in Z, so any venue shape works
+  (50 × 20 × 20 m, L-shaped, …);
 * trusses as lines with height, usable segments (gaps = missing truss) and extra trusses;
-* tripod floor zones with a height range (up to 20 m);
+* tripod zones as a strip outside the drawn outline (optionally only along chosen edges) or
+  as floor polygons, with a height range (up to 20 m);
+* a design margin (e.g. ≥ 4 cameras, 7 mm) that the optimiser aims for;
 * no-go zones;
 * lens options;
 * requirements (minimum cameras, p95 mm, error budget);

@@ -11,6 +11,10 @@ requirements:
   p95_mm: 10
   noise: tight
 
+design:                   # what the optimiser aims for: margin for occlusion / a lost camera
+  min_cameras: 4
+  p95_mm: 7
+
 visibility: {max_range_m: 120}
 evaluation: {spacing_m: [10, 10, 5], inset_m: 1.0}
 

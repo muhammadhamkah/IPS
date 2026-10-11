@@ -14,6 +14,7 @@ import yaml
 from idps.core.camera import SENSORS, Sensor
 from idps.core.noise import NoiseBudget, noise_from_config
 from idps.coverage.fisher import VisibilityLimits
+from idps.coverage.volume import Volume, distance_to_polygon, points_in_polygon
 
 
 @dataclass
@@ -34,9 +35,17 @@ class Truss:
 
 @dataclass
 class TripodZone:
+    """Floor area where tripods may stand. Exactly one of:
+      * polygon: explicit floor polygon (a `rect` is converted to one);
+      * offset_m: a strip outside the volume edge, between offset_m[0] and
+        offset_m[1] metres from it, optionally only along `edges` (indices;
+        edge k runs from volume vertex k to vertex k+1).
+    """
     id: str
-    rect: tuple[float, float, float, float]   # xmin, ymin, xmax, ymax
     height_range_m: tuple[float, float]
+    polygon: np.ndarray | None = None
+    offset_m: tuple[float, float] | None = None
+    edges: list[int] | None = None
 
 
 @dataclass
@@ -59,27 +68,43 @@ class Requirements:
 
 
 @dataclass
+class DesignMargin:
+    """What the optimiser aims for. Stricter than the requirement so the plan
+    survives occlusion and lost cameras (docs/RISKS.md section 0.1)."""
+    min_cameras: int
+    p95_mm: float
+
+
+@dataclass
 class Site:
     name: str
-    volume_min: np.ndarray
-    volume_max: np.ndarray
+    volume: Volume
     sensor: Sensor
     lenses_mm: list[float]
     requirements: Requirements
+    design: DesignMargin
     limits: VisibilityLimits
     eval_spacing_m: tuple[float, float, float]
     eval_inset_m: float
     trusses: list[Truss]
     tripod_zones: list[TripodZone]
-    no_go_zones: list[tuple[float, float, float, float]]
+    no_go_zones: list[np.ndarray]          # floor polygons
     candidates: CandidateSettings
     max_cameras: int
     notes: str = ""
     source_path: str | None = None
 
+    @property
+    def volume_min(self) -> np.ndarray:
+        return self.volume.bbox_min
+
+    @property
+    def volume_max(self) -> np.ndarray:
+        return self.volume.bbox_max
+
     def warnings(self) -> list[str]:
         out = []
-        top = self.volume_max[2]
+        top = self.volume.z_max
         for t in self.trusses:
             if t.height_m - self.candidates.truss_drop_m < top:
                 out.append(f"truss {t.id}: cameras would hang at {t.height_m - self.candidates.truss_drop_m:.1f} m,"
@@ -87,11 +112,15 @@ class Site:
             for s0, s1 in t.usable:
                 if s0 < 0 or s1 > t.length + 1e-6 or s1 <= s0:
                     out.append(f"truss {t.id}: usable segment [{s0}, {s1}] outside 0..{t.length:.1f} m")
+        n_edges = len(self.volume.polygon)
         for z in self.tripod_zones:
-            x0, y0, x1, y1 = z.rect
-            if (x0 < self.volume_max[0] and x1 > self.volume_min[0]
-                    and y0 < self.volume_max[1] and y1 > self.volume_min[1]):
-                out.append(f"tripod zone {z.id} overlaps the flight volume footprint")
+            if z.polygon is not None:
+                inside = points_in_polygon(z.polygon, self.volume.polygon)
+                if inside.any() or points_in_polygon(self.volume.polygon, z.polygon).any():
+                    out.append(f"tripod zone {z.id} overlaps the flight volume; tripods inside the"
+                               f" volume are skipped")
+            if z.edges and max(z.edges) >= n_edges:
+                out.append(f"tripod zone {z.id}: edge index out of range (volume has {n_edges} edges)")
             if z.height_range_m[1] > 20.0:
                 out.append(f"tripod zone {z.id}: height above 20 m")
         if not self.trusses and not self.tripod_zones:
@@ -102,6 +131,20 @@ class Site:
 def _rect(v) -> tuple[float, float, float, float]:
     x0, y0, x1, y1 = (float(a) for a in v)
     return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+
+
+def _rect_polygon(v) -> np.ndarray:
+    x0, y0, x1, y1 = _rect(v)
+    return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], float)
+
+
+def _volume(vol: dict) -> Volume:
+    """Either {polygon: [[x, y], ...], z: [z_min, z_max]} or {min: [...], max: [...]}."""
+    if "polygon" in vol:
+        z = vol.get("z", vol.get("height_m"))
+        z = (0.0, float(z)) if np.isscalar(z) else (float(z[0]), float(z[1]))
+        return Volume(np.array(vol["polygon"], float), z[0], z[1])
+    return Volume.box(vol["min"], vol["max"])
 
 
 def site_from_dict(d: dict, source_path: str | None = None) -> Site:
@@ -115,6 +158,11 @@ def site_from_dict(d: dict, source_path: str | None = None) -> Site:
         p95_mm=float(req.get("p95_mm", 10.0)),
         noise=noise_from_config(req.get("noise", "tight")),
     )
+    des = d.get("design", {}) or {}
+    design = DesignMargin(min_cameras=int(des.get("min_cameras", requirements.min_cameras)),
+                          p95_mm=float(des.get("p95_mm", requirements.p95_mm)))
+    if design.min_cameras < requirements.min_cameras or design.p95_mm > requirements.p95_mm:
+        raise ValueError("design margin must be at least as strict as the requirements")
     vis = d.get("visibility", {})
     limits = VisibilityLimits(
         max_range_m=float(vis.get("max_range_m", 120.0)),
@@ -138,7 +186,18 @@ def site_from_dict(d: dict, source_path: str | None = None) -> Site:
     for z in d.get("tripod_zones", []) or []:
         h = z.get("height_m", [2.0, 20.0])
         h = (float(h), float(h)) if np.isscalar(h) else (float(h[0]), float(h[1]))
-        zones.append(TripodZone(str(z["id"]), _rect(z["rect"]), h))
+        if "offset_m" in z:
+            off = z["offset_m"]
+            off = (float(off), float(off)) if np.isscalar(off) else (float(off[0]), float(off[1]))
+            edges = z.get("edges")
+            zones.append(TripodZone(str(z["id"]), h, offset_m=off,
+                                    edges=None if edges is None else [int(e) for e in edges]))
+        elif "polygon" in z:
+            zones.append(TripodZone(str(z["id"]), h, polygon=np.array(z["polygon"], float)))
+        elif "rect" in z:
+            zones.append(TripodZone(str(z["id"]), h, polygon=_rect_polygon(z["rect"])))
+        else:
+            raise ValueError(f"tripod zone {z.get('id')}: needs offset_m, polygon or rect")
 
     c = d.get("candidates", {}) or {}
     defaults = CandidateSettings()
@@ -146,17 +205,18 @@ def site_from_dict(d: dict, source_path: str | None = None) -> Site:
 
     return Site(
         name=str(d.get("name", "site")),
-        volume_min=np.array(vol["min"], float),
-        volume_max=np.array(vol["max"], float),
+        volume=_volume(vol),
         sensor=SENSORS[sensor_name],
         lenses_mm=[float(x) for x in d.get("lenses_mm", [2.8])],
         requirements=requirements,
+        design=design,
         limits=limits,
         eval_spacing_m=spacing,
         eval_inset_m=float(ev.get("inset_m", 0.5)),
         trusses=trusses,
         tripod_zones=zones,
-        no_go_zones=[_rect(r) for r in d.get("no_go_zones", []) or []],
+        no_go_zones=[np.array(r, float) if np.ndim(r) == 2 else _rect_polygon(r)
+                     for r in d.get("no_go_zones", []) or []],
         candidates=cand,
         max_cameras=int(d.get("optimiser", {}).get("max_cameras", 400)),
         notes=str(d.get("notes", "")),

@@ -95,3 +95,36 @@ def test_report_writes(tmp_path):
     write_report(tmp_path / "r.html", site, plan, ev)
     html = (tmp_path / "r.html").read_text()
     assert "Camera install table" in html and "data:image/png;base64" in html
+
+
+def test_polygon_volume_with_offset_tripod_zone():
+    site = small_site(
+        volume={"polygon": [[0, 0], [8, 0], [8, 4], [4, 4], [4, 8], [0, 8]], "z": [0, 3]},
+        trusses=[],
+        tripod_zones=[{"id": "ring", "offset_m": [1, 2], "height_m": [2, 3], "edges": [0, 3, 4, 5]}],
+        no_go_zones=[],
+        visibility={"max_range_m": 20},
+        evaluation={"spacing_m": 1.5, "inset_m": 0.25},
+        candidates={"tripod_step_m": 1.5, "tripod_heights_m": [2.5], "tripod_elevations_deg": [-20, 0],
+                    "azimuth_step_deg": 45},
+    )
+    assert np.isclose(site.volume.floor_area_m2, 48)
+    from idps.coverage.volume import distance_to_polygon
+    from idps.plan.candidates import tripod_positions
+    xy = tripod_positions(site, site.tripod_zones[0])
+    d, e, _ = distance_to_polygon(xy, site.volume.polygon)
+    assert (d >= 1 - 1e-6).all() and (d <= 2 * 1.5).all()   # corner points sit on the bisector
+    assert not np.isin(e, [1, 2]).any()                          # excluded edges get no tripods
+    assert not site.volume.contains_xy(xy).any()
+    plan, ev = optimise(site, log=lambda *a: None)
+    assert ev.summary["fraction_meeting_all_requirements"] == pytest.approx(1.0)
+    assert all("edge E" in c.install_note for c in plan.cameras)
+
+
+def test_design_margin_is_used_and_validated():
+    site = small_site(design={"min_cameras": 4, "p95_mm": 7})
+    plan, ev = optimise(site, log=lambda *a: None)
+    assert (ev.n_cams >= 4).all()
+    assert ev.summary["design_margin"] == {"min_cameras": 4, "p95_mm": 7.0}
+    with pytest.raises(ValueError):
+        small_site(design={"min_cameras": 2})

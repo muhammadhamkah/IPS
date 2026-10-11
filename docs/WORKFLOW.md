@@ -30,9 +30,10 @@ the following inputs.
 
 | Input | Example | Why it is needed |
 |---|---|---|
-| Flight volume | Box 100 × 100 × 30 m, or several boxes, or a mesh | The region where every point must meet the accuracy and coverage target |
+| Flight volume | **Drawn per venue:** the floor outline as XY vertices (any shape, e.g. a 50 × 20 m rectangle, an L-shape, a hexagon), extruded in Z to the flight ceiling (e.g. 0–20 m). Vertices are numbered V0, V1, …; edge Ek runs from Vk to Vk+1 | The region where every point must meet the accuracy and coverage target. Venues differ, so the volume is never assumed |
 | **Trusses** | For each truss: its line (start/end XY), height, and **which segments are usable**. Missing sections are marked, and **additional trusses** can be added (e.g. a hired truss line). Drawn on a plan view or imported from CSV/DXF | Cameras may only be placed on usable truss segments. Walls are not used (decision D11) |
-| **Tripod zones** | Floor areas where tripods may stand (e.g. outside the flight volume, away from walkways), with **tripod height from 1 m up to 20 m** (per zone, or chosen by the optimiser within that range) | Used where there is no truss, and for upward-looking coverage of the edges and corners |
+| **Tripod zones** | Either a **strip outside the drawn volume** (e.g. 1–3 m from its edges, optionally only along chosen edges), or explicit floor polygons. **Tripod height from 1 m up to 20 m** (per zone, or chosen by the optimiser within that range). Tripods are never placed inside the flight volume | Used where there is no truss, and for upward-looking coverage of the edges and corners. A strip follows any venue shape automatically |
+| Design margin | e.g. ≥ 4 cameras and p95 ≤ 7 mm | What the optimiser aims for, stricter than the requirement, so the plan tolerates occlusion and a lost camera |
 | No-go zones | Doors, walkways, lights, emergency exits | Excluded from mounting |
 | Obstacles | Columns, nets, hanging equipment | Occlusion |
 | Hardware catalogue | Sensor (OV9281), lens options (2.8 / 3.6 / 4 / 6 / 8 mm), servo pan/tilt ranges, gimbal geometry | Field of view, resolution, aim limits |
@@ -52,8 +53,8 @@ the following inputs.
    | … | | | | | | |
 
    * The *Measure from* column turns coordinates into **tape-measure instructions** relative
-     to physical features: corners, wall edges, column centres. Installers never need to
-     work in abstract XYZ.
+     to the drawn outline: "1.50 m outside edge E2 (V2→V3), 12.00 m along it from V2", or
+     "Truss T2, 18.00 m from its start end". Installers never need to work in abstract XYZ.
    * The plan also lists the **spacing to neighbouring cameras** along each wall or truss.
      It is the installer's cross-check while placing cameras.
 3. **Beacon table:** position and tape-measure instructions for every fixed reference
