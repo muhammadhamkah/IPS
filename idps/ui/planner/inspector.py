@@ -7,8 +7,8 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
-                               QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
-                               QVBoxLayout, QWidget)
+                               QScrollArea, QSizePolicy, QSpinBox, QTableWidget, QTableWidgetItem,
+                               QTabWidget, QVBoxLayout, QWidget)
 
 from idps.core.noise import PRESETS
 
@@ -189,6 +189,7 @@ class Inspector(QTabWidget):
         s.setWidget(w)
         s.setWidgetResizable(True)
         s.setFrameShape(QScrollArea.Shape.NoFrame)
+        s.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # content fits the panel width
         return s
 
     def _clear(self):
@@ -234,9 +235,12 @@ class Inspector(QTabWidget):
             v = Volume(np.array(pts, float), vol["z"][0], max(vol["z"][1], vol["z"][0] + 1e-3))
             perim = float(v.edge_lengths().sum())
             bb = v.bbox_max - v.bbox_min
-            form.addRow("Footprint", QLabel(f"{bb[0]:.2f} x {bb[1]:.2f} m (bounding box)"))
-            form.addRow("Floor area", QLabel(f"{v.floor_area_m2:,.1f} m²  ·  perimeter {perim:.1f} m"))
-            form.addRow("Volume", QLabel(f"{v.volume_m3:,.0f} m³"))
+            for label, text in (("Footprint", f"{bb[0]:.2f} × {bb[1]:.2f} m (bounding box)"),
+                                ("Floor area", f"{v.floor_area_m2:,.1f} m², perimeter {perim:.1f} m"),
+                                ("Volume", f"{v.volume_m3:,.0f} m³")):
+                lab = QLabel(text)
+                lab.setWordWrap(True)
+                form.addRow(label, lab)
         table = VertexTable(self._edit_vertex)
         table.load(pts)
         if vertex is not None and vertex < len(pts):
@@ -316,10 +320,11 @@ class Inspector(QTabWidget):
         sel = self.canvas.selection
         for kind, idx, name, detail in rows:
             row = QHBoxLayout()
-            pick = QPushButton(f"{name}  ·  {detail}" if detail else name)
+            pick = QPushButton(name)
             pick.setFlat(True)
             pick.setStyleSheet("text-align: left;" + ("font-weight: bold;" if sel == (kind, idx) else ""))
-            pick.setToolTip("Select")
+            pick.setToolTip(f"Select {name}" + (f" ({detail})" if detail else ""))
+            pick.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)   # shrink, never overflow
             pick.clicked.connect(lambda _=False, k=kind, i=idx: self.canvas.set_selection((k, i)))
             rm = QPushButton("Remove")
             rm.setToolTip(f"Remove {name} (⌘Z to undo)")
@@ -335,8 +340,9 @@ class Inspector(QTabWidget):
         all_z = QPushButton("Remove all tripod zones")
         all_z.setEnabled(bool(d["tripod_zones"]))
         all_z.clicked.connect(lambda: self.doc.edit("Remove all tripod zones", lambda dd: dd["tripod_zones"].clear()))
-        bulk.addWidget(all_t)
-        bulk.addWidget(all_z)
+        for b in (all_t, all_z):
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            bulk.addWidget(b)
         lay.addLayout(bulk)
         return box
 

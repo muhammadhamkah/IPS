@@ -334,3 +334,47 @@ def test_right_click_delete_truss(win, app):
     menu.actions()[0].trigger()
     assert win.doc.data["trusses"] == []
     assert c.context_menu_at(c.mapFromScene(QPointF(500, 500))) is None
+
+
+def test_3d_projection_presets_fit_and_pick(win, app):
+    import math
+
+    import numpy as np
+    from idps.ui.main_window import EXAMPLES
+    from idps.ui.planner.worker import PlanWorker
+    win.open_doc(str(EXAMPLES / "lab.yaml"))
+    got = {}
+    w = PlanWorker(win.doc.to_site_dict(), None)
+    w.finished.connect(lambda plan, ev, site: got.update(plan=plan, ev=ev, site=site))
+    w.run()
+    win._plan_done(got["plan"], got["ev"], got["site"])
+    win.show_view("3d")
+    app.processEvents()
+    v = win.view3d
+    assert win.views.currentIndex() == 1 and win.a_view3d.isChecked()
+    # the orbit target projects to the centre of the view
+    P, z = v.project([v.target])
+    assert P[0] == pytest.approx([v.width() / 2, v.height() / 2]) and z[0] > 0
+    # top view looks straight down: +X goes right, +Y goes up the screen
+    v.set_view("top")
+    P, _ = v.project([v.target, v.target + [1, 0, 0], v.target + [0, 1, 0]])
+    assert P[1, 0] > P[0, 0] and abs(P[1, 1] - P[0, 1]) < 1e-6 * v.height() + 1e-3
+    assert P[2, 1] < P[0, 1]
+    # fit: every camera is on screen
+    v.set_view("iso")
+    P, z = v.project([c.position_m for c in got["plan"].cameras])
+    assert (z > 0).all() and (P[:, 0] >= 0).all() and (P[:, 0] <= v.width()).all()
+    assert (P[:, 1] >= 0).all() and (P[:, 1] <= v.height()).all()
+    # clicking a camera selects it everywhere
+    from PySide6.QtCore import QPointF as QPF
+    v._pick(QPF(*P[2]))
+    assert win.canvas.selection == ("camera", 2)
+    assert win.results.table.currentRow() == 2
+    # painting with cones for all cameras and the coverage layer must not fail
+    v.show_cones = "all"
+    img = v.grab()
+    assert not img.isNull()
+    # choosing a drawing tool returns to the 2D plan
+    win.set_tool("truss")
+    assert win.views.currentIndex() == 0
+    assert math.isfinite(v.dist)

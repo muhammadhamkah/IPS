@@ -9,10 +9,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QLabel, QMainWindow, QMessageBox, QSizePolicy,
-                               QSplitter, QTabWidget, QToolBar, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+                               QPushButton, QSizePolicy, QSplitter, QStackedWidget, QTabWidget, QToolBar,
+                               QVBoxLayout, QWidget)
 
 from idps.ui.planner.canvas import TOOLS, PlanCanvas
+from idps.ui.planner.view3d import View3D
 from idps.ui.planner.document import SiteDocument
 from idps.ui.planner.inspector import Inspector
 from idps.ui.planner.results import ResultsPanel
@@ -49,9 +51,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("IDPS[*]")
         self.resize(1440, 900)
 
-        # Planner page: canvas | inspector, results underneath
+        # Planner page: (2D plan | 3D view) + inspector, results underneath
+        self.view3d = View3D(self.doc, self.canvas)
+        self.views = QStackedWidget()
+        self.views.addWidget(self.canvas)
+        self.views.addWidget(self._view3d_page())
         top = QSplitter(Qt.Orientation.Horizontal)
-        top.addWidget(self.canvas)
+        top.addWidget(self.views)
         top.addWidget(self.inspector)
         top.setStretchFactor(0, 1)
         top.setSizes([1060, 380])
@@ -88,6 +94,8 @@ class MainWindow(QMainWindow):
         self.results.exportRequested.connect(self.export_plan)
         self.results.reportRequested.connect(self.open_report)
         self.results.cameraSelected.connect(lambda k: self.canvas.set_selection(("camera", k)))
+        self.results.mode_group.buttonClicked.connect(lambda _: self.view3d.update())
+        self.results.level.valueChanged.connect(lambda _: self.view3d.update())
 
         geo = self.settings.value("window/geometry")
         if geo is not None:
@@ -122,7 +130,15 @@ class MainWindow(QMainWindow):
         self.a_delete = self._act("Delete", self.canvas.delete_selection)
         self.a_zoom_in = self._act("Zoom In", lambda: self.canvas.zoom(1.25), S.ZoomIn)
         self.a_zoom_out = self._act("Zoom Out", lambda: self.canvas.zoom(0.8), S.ZoomOut)
-        self.a_fit = self._act("Zoom to Fit", self.canvas.zoom_to_fit, "Ctrl+0")
+        self.a_fit = self._act("Zoom to Fit", self.zoom_to_fit, "Ctrl+0")
+        self.view_group = QActionGroup(self)
+        self.a_view2d = self._act("2D Plan", lambda: self.show_view("2d"), "Ctrl+1",
+                                  "Top-down plan for drawing the venue (⌘1)", checkable=True)
+        self.a_view3d = self._act("3D View", lambda: self.show_view("3d"), "Ctrl+2",
+                                  "3D view of the volume, trusses, tripods and cameras (⌘2)", checkable=True)
+        for a in (self.a_view2d, self.a_view3d):
+            self.view_group.addAction(a)
+        self.a_view2d.setChecked(True)
         self.a_run = self._act("Plan Cameras", self.run_plan, "Ctrl+R", "Find camera count, positions and pan/tilt")
         self.a_cancel = self._act("Cancel Planning", self.cancel_plan, "Ctrl+.")
         self.a_about = self._act("About IDPS", self.about)
@@ -160,6 +176,9 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.snap_combo)
         tb.addSeparator()
         tb.addAction(self.a_fit)
+        tb.addSeparator()
+        tb.addAction(self.a_view2d)
+        tb.addAction(self.a_view3d)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
@@ -192,6 +211,9 @@ class MainWindow(QMainWindow):
         t.addSeparator()
         t.addAction(self.a_snap)
         v = mb.addMenu("View")
+        v.addAction(self.a_view2d)
+        v.addAction(self.a_view3d)
+        v.addSeparator()
         for a in (self.a_zoom_in, self.a_zoom_out, self.a_fit):
             v.addAction(a)
         p = mb.addMenu("Plan")
@@ -203,7 +225,55 @@ class MainWindow(QMainWindow):
             QUrl.fromLocalFile(str(EXAMPLES.parents[1] / "docs" / "WORKFLOW.md"))))
 
     # ------------------------------------------------------------ state
+    def _view3d_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(8, 4, 8, 4)
+        for label, name in (("3D", "iso"), ("Top", "top"), ("Front", "front"), ("Side", "side")):
+            b = QPushButton(label)
+            b.setToolTip(f"{label} view")
+            b.clicked.connect(lambda _=False, n=name: self.view3d.set_view(n))
+            bar.addWidget(b)
+        fit = QPushButton("Fit")
+        fit.clicked.connect(self.view3d.fit)
+        bar.addWidget(fit)
+        bar.addSpacing(16)
+        bar.addWidget(QLabel("Camera view cones:"))
+        cones = QComboBox()
+        cones.addItems(["Selected camera", "All cameras", "None"])
+        cones.currentIndexChanged.connect(
+            lambda i: (setattr(self.view3d, "show_cones", ["selected", "all", "none"][i]), self.view3d.update()))
+        bar.addWidget(cones)
+        cov = QCheckBox("Coverage layer")
+        cov.setChecked(True)
+        cov.toggled.connect(lambda on: (setattr(self.view3d, "show_coverage", on), self.view3d.update()))
+        bar.addWidget(cov)
+        bar.addStretch(1)
+        lay.addLayout(bar)
+        lay.addWidget(self.view3d, 1)
+        return page
+
+    def show_view(self, which: str):
+        three = which == "3d"
+        self.views.setCurrentIndex(1 if three else 0)
+        (self.a_view3d if three else self.a_view2d).setChecked(True)
+        if three:
+            self.view3d.setFocus()
+        else:
+            self.canvas.setFocus()
+
+    def zoom_to_fit(self):
+        if self.views.currentIndex() == 1:
+            self.view3d.fit()
+        else:
+            self.canvas.zoom_to_fit()
+
     def set_tool(self, key):
+        if self.views.currentIndex() == 1 and key != "select":
+            self.show_view("2d")                 # drawing happens on the 2D plan
         self.tool_actions[key].setChecked(True)
         self.canvas.set_tool(key)
         self.canvas.setFocus()
