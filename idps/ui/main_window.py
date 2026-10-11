@@ -318,9 +318,18 @@ class MainWindow(QMainWindow):
         if not self.doc.data["trusses"] and not self.doc.data["tripod_zones"]:
             if not self._offer_tripod_strip():
                 return
+        site_dict = self.doc.to_site_dict()
+        problem = self._site_problem(site_dict)
+        if problem:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText("The venue needs a fix before planning")
+            box.setInformativeText(problem)
+            box.setWindowModality(Qt.WindowModality.WindowModal)
+            self._exec_dialog(box)
+            return
         self.results.running(True)
         self.a_run.setEnabled(False)
-        site_dict = self.doc.to_site_dict()
         self.thread, self.worker = start_worker(self, site_dict, str(self.doc.path) if self.doc.path else None)
         keep = (self.thread, self.worker)
         self._running.append(keep)
@@ -334,6 +343,22 @@ class MainWindow(QMainWindow):
         if keep in self._running:
             self._running.remove(keep)
         keep[0].deleteLater()
+
+    def _site_problem(self, site_dict) -> str | None:
+        """Validate in the UI thread and explain problems in plain words."""
+        z0, z1 = site_dict["volume"]["z"]
+        if z1 <= z0:
+            return (f"The flight volume's top (Top Z = {z1:g} m) must be above its floor (Floor Z = {z0:g} m). "
+                    "Set them under Venue & requirements → Flight volume height, or click inside the volume "
+                    "and use the Inspector.")
+        try:
+            from idps.plan.site import site_from_dict
+            site = site_from_dict(site_dict)
+        except (ValueError, KeyError, TypeError) as exc:
+            return f"{exc}"
+        if site.volume.volume_m3 <= 0:
+            return "The flight volume is empty."
+        return None
 
     def _offer_tripod_strip(self) -> bool:
         """No mounts yet: offer the common default (tripods in a 1-3 m strip
@@ -376,7 +401,15 @@ class MainWindow(QMainWindow):
     def _plan_failed(self, msg):
         self._plan_finished()
         self.results.log("Planning failed.")
-        QMessageBox.critical(self, "Planning failed", msg)
+        summary, _, detail = msg.partition("\n\n")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("Planning failed")
+        box.setInformativeText(summary)
+        if detail:
+            box.setDetailedText(detail)          # traceback stays available, but out of the way
+        box.setWindowModality(Qt.WindowModality.WindowModal)
+        self._exec_dialog(box)
 
     def _plan_cancelled(self):
         self._plan_finished()

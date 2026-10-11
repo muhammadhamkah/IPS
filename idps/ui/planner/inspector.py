@@ -13,8 +13,41 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleS
 from idps.core.noise import PRESETS
 
 
+class _NoStrayWheel:
+    """Number fields ignore scroll/trackpad gestures unless clicked into first,
+    so scrolling the inspector never silently changes a value (a classic Qt
+    pitfall that let the volume height drift to 0)."""
+
+    def _setup(self):
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, e):
+        if self.hasFocus():
+            super().wheelEvent(e)
+        else:
+            e.ignore()                   # let the scroll area scroll instead
+
+
+class DSpin(_NoStrayWheel, QDoubleSpinBox):
+    def __init__(self):
+        super().__init__()
+        self._setup()
+
+
+class ISpin(_NoStrayWheel, QSpinBox):
+    def __init__(self):
+        super().__init__()
+        self._setup()
+
+
+class Combo(_NoStrayWheel, QComboBox):
+    def __init__(self):
+        super().__init__()
+        self._setup()
+
+
 def dspin(lo, hi, dec=2, suffix=" m", step=0.5) -> QDoubleSpinBox:
-    w = QDoubleSpinBox()
+    w = DSpin()
     w.setRange(lo, hi)
     w.setDecimals(dec)
     w.setSingleStep(step)
@@ -25,10 +58,50 @@ def dspin(lo, hi, dec=2, suffix=" m", step=0.5) -> QDoubleSpinBox:
 
 
 def ispin(lo, hi) -> QSpinBox:
-    w = QSpinBox()
+    w = ISpin()
     w.setRange(lo, hi)
     w.setKeyboardTracking(False)
     return w
+
+
+MIN_HEIGHT_M = 0.5
+
+
+def sync_z_editors(doc, z0, z1):
+    """Show the document's heights without emitting edits."""
+    z = doc.data["volume"]["z"]
+    for w in (z0, z1):
+        w.blockSignals(True)
+    z0.setMaximum(500)
+    z1.setMinimum(0)
+    z0.setValue(z[0])
+    z1.setValue(z[1])
+    z1.setMinimum(z[0] + MIN_HEIGHT_M)
+    z0.setMaximum(max(z[1] - MIN_HEIGHT_M, z0.minimum()))
+    for w in (z0, z1):
+        w.blockSignals(False)
+
+
+def volume_z_editors(doc):
+    """Floor Z / Top Z spin boxes bound to the document; top is kept at least
+    MIN_HEIGHT_M above the floor."""
+    z0, z1 = dspin(-50, 500), dspin(0, 500)
+    z0.setToolTip("Floor of the flight volume (minimum Z), usually 0 m")
+    z1.setToolTip("Top of the flight volume (maximum Z): the height the outline is extruded to")
+    sync_z_editors(doc, z0, z1)
+
+    def set_floor():
+        v = z0.value()
+        if v != doc.data["volume"]["z"][0]:
+            doc.edit("Volume floor", lambda d: d["volume"]["z"].__setitem__(0, v))
+
+    def set_top():
+        v = z1.value()
+        if v != doc.data["volume"]["z"][1]:
+            doc.edit("Volume height", lambda d: d["volume"]["z"].__setitem__(1, v))
+    z0.editingFinished.connect(set_floor)
+    z1.editingFinished.connect(set_top)
+    return z0, z1
 
 
 def parse_floats(text: str) -> list[float]:
@@ -151,13 +224,9 @@ class Inspector(QTabWidget):
         vol = d["volume"]
         box = QGroupBox("Flight volume")
         form = QFormLayout(box)
-        z0, z1 = dspin(-50, 500), dspin(0, 500)
-        z0.setValue(vol["z"][0])
-        z1.setValue(vol["z"][1])
-        z0.editingFinished.connect(lambda: self.doc.edit("Volume floor", lambda dd: dd["volume"]["z"].__setitem__(0, z0.value())))
-        z1.editingFinished.connect(lambda: self.doc.edit("Volume height", lambda dd: dd["volume"]["z"].__setitem__(1, z1.value())))
-        form.addRow("Floor Z", z0)
-        form.addRow("Top Z (extrude to)", z1)
+        z0, z1 = volume_z_editors(self.doc)
+        form.addRow("Floor Z (min)", z0)
+        form.addRow("Top Z (max, extrude to)", z1)
         pts = vol["polygon"]
         if len(pts) >= 3:
             from idps.coverage.volume import Volume
@@ -408,6 +477,12 @@ class SettingsPage(QWidget):
         self.doc = doc
         lay = QVBoxLayout(self)
         lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.vol_box = QGroupBox("Flight volume height")
+        vol_form = QFormLayout(self.vol_box)
+        self.z0, self.z1 = volume_z_editors(doc)
+        vol_form.addRow("Floor Z (min)", self.z0)
+        vol_form.addRow("Top Z (max)", self.z1)
+        lay.addWidget(self.vol_box)
         self.widgets = {}
         groups = {}
         for group, label, path, kind, extra in self.FIELDS:
@@ -437,7 +512,7 @@ class SettingsPage(QWidget):
             w = dspin(extra[0], extra[1], 2, extra[2], 0.5)
             w.editingFinished.connect(lambda: self._set(path, w.value()))
         elif kind == "preset":
-            w = QComboBox()
+            w = Combo()
             w.addItems(list(PRESETS))
             w.activated.connect(lambda _: self._set(path, w.currentText()))
         else:
@@ -492,6 +567,7 @@ class SettingsPage(QWidget):
         self.doc.edit("Settings", f)
 
     def refresh(self):
+        sync_z_editors(self.doc, self.z0, self.z1)
         for path, (w, kind) in self.widgets.items():
             try:
                 v = self._get(path)

@@ -194,3 +194,57 @@ class _FakeThread:
 
     def deleteLater(self):
         pass
+
+
+def test_scrolling_over_unfocused_number_field_does_not_change_it(win, app):
+    from PySide6.QtCore import QPointF as QPF
+    from PySide6.QtGui import QWheelEvent
+    from idps.ui.planner.inspector import DSpin
+    c = win.canvas
+    c.resetTransform()
+    c.scale(20, -20)
+    draw_rect(win)
+    win.canvas.set_selection(("volume", None))
+    app.processEvents()
+    top = [s for s in win.inspector.findChildren(DSpin) if s.isVisible() and s.value() == 10.0][0]
+    ev = QWheelEvent(QPF(5, 5), QPF(5, 5), QPoint(0, -120), QPoint(0, -120), Qt.MouseButton.NoButton,
+                     Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(top, ev)
+    assert top.value() == 10.0
+    assert win.doc.data["volume"]["z"] == [0.0, 10.0]
+
+
+def test_top_cannot_go_below_floor_and_bad_heights_explained(win, monkeypatch):
+    from idps.ui.planner.inspector import volume_z_editors
+    c = win.canvas
+    c.resetTransform()
+    c.scale(20, -20)
+    draw_rect(win)
+    z0, z1 = volume_z_editors(win.doc)
+    assert z1.minimum() == pytest.approx(0.5) and z0.maximum() == pytest.approx(9.5)
+    # a file edited by hand can still contain bad heights: planning explains instead of crashing
+    win.doc.edit("bad", lambda d: d["volume"]["z"].__setitem__(1, 0.0))
+    win.inspector._add_strip()
+    shown = []
+    monkeypatch.setattr(win, "_exec_dialog", lambda box: shown.append(box.informativeText()))
+    monkeypatch.setattr("idps.ui.main_window.start_worker", lambda *a: (_ for _ in ()).throw(AssertionError("started")))
+    win.run_plan()
+    assert shown and "Top Z" in shown[0] and "Floor Z" in shown[0]
+
+
+def test_settings_tab_has_volume_height(win):
+    from idps.ui.planner.inspector import DSpin
+    page = win.inspector.settings
+    vals = sorted(s.value() for s in page.vol_box.findChildren(DSpin))
+    assert vals == [0.0, 10.0]
+
+
+def test_edit_height_on_settings_tab(win, app):
+    page = win.inspector.settings
+    page.z1.setValue(14.0)
+    page.z1.editingFinished.emit()
+    app.processEvents()
+    assert win.doc.data["volume"]["z"][1] == pytest.approx(14.0)
+    win.a_undo.trigger()
+    app.processEvents()
+    assert page.z1.value() == pytest.approx(10.0)
