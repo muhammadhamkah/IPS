@@ -85,7 +85,8 @@ engine computes it. The station sends the raw evidence instead (`peak`, `area`, 
 
 ## 3. HEALTH (`msg_type = 2`, 1 Hz)
 
-The payload is msgpack. It is not on the hot path, so it is easier to extend.
+The payload is a UTF-8 JSON object (v1; chosen over msgpack so the C++ station needs no extra
+library). It is not on the hot path, so it is easier to extend.
 
 ```json
 {

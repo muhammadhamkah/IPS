@@ -1,0 +1,18 @@
+# Same lab and drones, but a Raspberry Pi 3B-style station: binned 640x400
+# sensor mode and Wi-Fi with NTP-class timing (free-running cameras). Compare
+# the engine's accuracy against lab_three_drones.yaml.
+name: Lab - Pi 3B profile over Wi-Fi
+plan: ../plans/lab.yaml
+duration_s: 20
+seed: 1
+
+camera_model: {sensor: OV9281_640x400, fps: 120, exposure_us: 500, peak_at_10m: 60, threshold_dn: 20,
+               proc_latency_ms: 8}
+timing: {sync: free_run}
+network: {loss: 0.01, latency_ms: 6, jitter_ms: 4}
+calibration_error: {rot_mrad: 0.1, pos_mm: 2}
+
+drones:
+  - {id: 1, marker_id: 17, trajectory: {type: hover, position: [0, 0, 1.0]}}
+  - {id: 2, marker_id: 42, trajectory: {type: circle, center: [0, 0, 1.5], radius: 2.0, speed: 2.0, z_amplitude: 0.5}}
+  - {id: 3, marker_id: 99, trajectory: {type: line, start: [-2.5, -2, 2], end: [2.5, 2, 2], speed: 4.0}}

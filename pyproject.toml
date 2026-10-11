@@ -17,6 +17,7 @@ dev = ["pytest>=8", "matplotlib>=3.8", "PySide6-Essentials>=6.6"]
 
 [project.scripts]
 idps-plan = "idps.plan.cli:main"
+idps-sim = "idps.sim.cli:main"
 
 [project.gui-scripts]
 idps-dashboard = "idps.ui.app:main"

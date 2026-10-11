@@ -4,7 +4,7 @@ A low-cost, modular optical positioning system for indoor drones. It is built fr
 Raspberry Pi 4B camera stations with OV9281 global-shutter sensors, coded active 850 nm IR
 markers, and a central PC engine with a live 3D dashboard.
 
-**Status:** architecture proposal. No production code has been written yet.
+**Status:** Phase 0 (no hardware needed). Done: protocol, planner + desktop dashboard, simulator. Next: positioning engine.
 
 | Document | Contents |
 |---|---|
@@ -90,6 +90,45 @@ idps-plan evaluate out/hall/plan.yaml -o out/hall-edited
   * which points fail if any one camera is lost.
 
 Run the tests with `python3 -m pytest`.
+
+## Simulator (`idps-sim`)
+
+Virtual camera stations that speak the real wire protocol, so the positioning engine and
+dashboard can be built and tested without hardware.
+
+* **Cameras:** taken from a planner `plan.yaml`.
+* **Drones:** hover, line, circle, figure-8, waypoint or random-swarm trajectories at a
+  fixed yaw. Tilt follows acceleration, so marker lever-arm effects are real.
+* **Markers:** coded LEDs.
+* **Imperfections modelled:**
+  * lens distortion;
+  * brightness falling with distance, and saturation;
+  * centroid noise;
+  * occlusion by other drones and by the drone's own body;
+  * merged blobs;
+  * reflections and false blobs;
+  * frame drops;
+  * free-running versus PTP versus hardware-triggered timing, with clock offsets;
+  * network loss and latency;
+  * calibration error.
+
+```bash
+idps-sim run examples/scenarios/lab_three_drones.yaml -o out/sim            # fast, to files
+idps-sim listen --port 47600 &                                              # check the stream
+idps-sim run examples/scenarios/venue_swarm.yaml --dest 127.0.0.1:47600 --realtime
+```
+
+**Outputs:**
+* `packets.idpsraw`: every packet with its send time, for replay;
+* `truth.csv`: true drone reference point, marker position, tilt and LED level at 120 Hz;
+* `calibration.yaml`: the true camera poses, and the *estimated* poses the engine is given
+  (perturbed by the scenario's calibration error).
+
+`examples/scenarios/lab_pi3b_wifi.yaml` models a Raspberry Pi 3B station (binned 640×400,
+Wi-Fi, free-running cameras).
+
+The wire format is in `protocol/idps_protocol.h`; the Python mirror is `idps/protocol/`;
+golden vectors are in `protocol/vectors/`.
 
 ## Key findings so far
 

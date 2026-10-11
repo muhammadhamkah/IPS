@@ -245,7 +245,25 @@ architecture supports this, with the constraints below.
   * **If it fails:** upgrade the same gimbal design to worm-gear servos or add a brake. The
     software does not change.
 
-### R4: Raspberry Pi 4B sustained 120 FPS (M)
+### R4: Raspberry Pi sustained 120 FPS (M; H for the Pi 3B)
+
+**Prototype hardware (decision D16): Raspberry Pi 3B + OV9281, both mounted on the pan/tilt
+servos.** Compared with the Pi 4B assumed elsewhere:
+* **CPU:** a Cortex-A53 at 1.2 GHz, roughly 2–3× slower than the 4B's A72. Full-resolution
+  (1280×800) detection at 120 FPS is unlikely to fit in 8.33 ms. The likely mode is the
+  OV9281's 2×2 binned **640×400** (a quarter of the pixels, half the angular resolution) or a
+  lower frame rate.
+* **Network:** 100 Mbit Ethernet via USB 2.0, adding timestamp jitter. Wi-Fi is 2.4 GHz only.
+  No hardware PTP.
+* **Simulator:** `examples/scenarios/lab_pi3b_wifi.yaml` models this profile (binned sensor,
+  free-running cameras on Wi-Fi). The planner accepts `sensor: OV9281_640x400` to show the
+  camera-count cost.
+* **Recommendation:** use the 3B for Phase 1–3 bring-up. Benchmark it in Phase 2 before buying
+  more stations; a Pi 4B or Pi 5 costs little more and removes this risk.
+* **Mounting the Pi on the gimbal** adds moving mass and cable stiffness to the servos (R3).
+  Where possible, put only the camera on the gimbal, with a 30–50 cm CSI ribbon to a fixed Pi.
+
+### R4a: Raspberry Pi 4B sustained 120 FPS (M)
 
 * **Evidence:**
   * The OV9281 sensor supports 1280×800 at up to 120 FPS; whether the Pi 4B libcamera
@@ -544,5 +562,6 @@ architecture supports this, with the constraints below.
 | D11 | Mounting options | **Decided:** overhead trusses and tripods (up to 20 m); no wall mounts |
 | D13 | Calibrating the upper volume | **Decided:** wand only the walkable height (OptiTrack practice), then a continuous-calibration drone flight over the whole volume; continuous calibration may stay on during operation |
 | D14 | Bumped tripod recovery | **Decided:** return the tripod to its taped marks → gimbal to the saved angles → reload the saved calibration → automatic 6-DOF beacon re-pose and verification; no re-wand |
+| D16 | Prototype station hardware | **Decided (prototype):** Raspberry Pi 3B + OV9281 on servo pan/tilt. See R4 for limits and the recommended Pi 4B/5 upgrade |
 | D15 | Planner mounting inputs | **Decided:** volume; truss lines with height, usable and missing segments, additional trusses; tripod floor zones with height up to 20 m |
 | D12 | Calibration tools | **Decided:** OptiTrack-style wand + ground square at origin. Proposed: 1 m × 1 m L-frame with 4 LEDs (origin, X 0.5, X 1.0, Y 1.0). **Proposed for the hall:** long-baseline floor markers + laser distance meter (R18) |
