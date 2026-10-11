@@ -280,10 +280,16 @@ def test_fine_check_finds_gaps_between_grid_samples():
     plan, ev = optimise(site_from_dict(d), log=lambda *a: None)
     fc = plan.summary["fine_check"]
     assert fc["spacing_m"] <= 0.5 and fc["points"] > 10 * ev.summary["evaluation_points"]
-    # steep tilts leave thin gaps up top that the 2 m grid misses; the planner re-plans with them
-    assert plan.summary["optimiser"]["fine_check_rounds"] > 1 and fc["failing"] == 0
-    weaker = fine_check(site_from_dict(d), plan.cameras[1:])          # lose a camera: gaps are found and located
-    assert weaker["failing"] > 0 and weaker["worst_spots"] and "fall short" in fine_check_text(weaker)
+    # steep tilts leave thin gaps up top that the 2 m grid misses: the fine check finds them (also by
+    # zooming to 1 cm at view edges), the planner re-plans with them, and says so when no mount can help
+    assert plan.summary["optimiser"]["fine_check_rounds"] > 1
+    assert fc["zoom_failing"] > 0 and fc["resolution_m"] == 0.01 and not fc["guaranteed"]
+    assert "falls short" in fine_check_text(fc) and fc["worst_spots"]
+    # with near-level tilts allowed, the same venue is proven down to 1 cm
+    d["candidates"]["truss_elevations_deg"] = [-90, -60, -35, -15, 0]
+    plan2, _ = optimise(site_from_dict(d), log=lambda *a: None)
+    fc2 = plan2.summary["fine_check"]
+    assert fc2["guaranteed"] and fc2["failing"] == 0 and "proven" in fine_check_text(fc2)
     lab = load_site(ROOT / "examples" / "sites" / "lab.yaml")
     ok = fine_check(lab, Plan.load(ROOT / "examples" / "plans" / "lab.yaml").cameras)
     assert ok["failing"] == 0 and "every point meets" in fine_check_text(ok)

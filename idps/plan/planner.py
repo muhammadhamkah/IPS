@@ -86,12 +86,12 @@ def evaluate(site: Site, cameras: list[PlannedCamera]) -> Evaluation:
 
 
 def fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_000, finest_m: float = 0.25,
-               cancel=None) -> dict:
-    return _fine_check(site, cameras, max_points, finest_m, cancel)[0]
+               cancel=None, resolution_m: float = 0.01) -> dict:
+    return _fine_check(site, cameras, max_points, finest_m, cancel, resolution_m)[0]
 
 
 def _fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_000, finest_m: float = 0.25,
-                cancel=None):
+                cancel=None, resolution_m: float = 0.01, zoom_budget: int = 3_000_000):
     """Re-check a finished layout on a much denser grid than the optimiser uses.
 
     The planner works on a coarse grid (metres) because coverage only changes where a point
@@ -129,13 +129,26 @@ def _fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_
         unproven[a:a + chunk] = ~fail[a:a + chunk] & (sure < req.min_cameras)
     g = slice(0, grid.n_grid)
     out["guarantee_radius_m"] = float(radius)
-    out["unproven"] = int(unproven.sum())        # meets at the sample, but a camera's view edge is within reach
-    out["guaranteed"] = bool(not fail.any() and not unproven.any())
-    out["failing"] = int(fail.sum())
+    out["unproven_before_zoom"] = int(unproven.sum())
+    # Zoom into the cells that are not proven (a camera's view edge passes through them): split each
+    # in eight, again and again, down to cells under resolution_m. Every piece is either proven
+    # (fully inside enough views) or, at the finest level, checked directly.
+    region = (float(grid.zs[0]), float(grid.zs[-1]), float(site.eval_inset_m))   # the volume the requirement covers
+    leaves_bad, n_leaves, exhausted = _zoom(site, pos, R, f_px, pts[unproven], spacing / 2, resolution_m,
+                                            zoom_budget, cancel, region)
+    out["resolution_m"] = resolution_m
+    out["zoom_cells_checked"] = n_leaves
+    out["zoom_failing"] = int(len(leaves_bad))
+    out["zoom_incomplete"] = bool(exhausted)
+    out["unproven"] = int(unproven.sum()) if exhausted else 0
+    out["guaranteed"] = bool(not fail.any() and not len(leaves_bad) and not exhausted)
+    out["failing"] = int(fail.sum()) + int(len(leaves_bad))
     out["fraction_meeting"] = float(1 - fail.mean())
-    out["failing_volume_m3"] = float(fail[g].mean() * vol) if grid.n_grid else 0.0
-    if fail.any():                                   # where: group failing points into ~2 m cells
-        P = pts[fail]
+    leaf = spacing / 2 ** int(np.ceil(np.log2(spacing / resolution_m)))      # edge of the finest zoom cell
+    out["failing_volume_m3"] = (float(fail[g].mean() * vol) if grid.n_grid else 0.0) + len(leaves_bad) * leaf ** 3
+    bad_pts = np.vstack([pts[fail], leaves_bad]) if len(leaves_bad) else pts[fail]
+    if len(bad_pts):                                 # where: group failing points into ~2 m cells
+        P = bad_pts
         cells: dict = {}
         for p in P:
             cells.setdefault(tuple(np.floor(p / 2.0).astype(int)), []).append(p)
@@ -143,24 +156,74 @@ def _fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_
         out["worst_spots"] = [{"x": float(np.mean(c, 0)[0]), "y": float(np.mean(c, 0)[1]),
                                "z_min": float(np.min(c, 0)[2]), "z_max": float(np.max(c, 0)[2]),
                                "points": len(c)} for c in spots]
-    return out, pts[fail]
+    return out, bad_pts
+
+
+def _zoom(site, pos, R, f_px, centres, half, resolution_m, budget, cancel, region):
+    """Adaptive check of cubes (centre, half-size) that a single sample could not prove.
+    Only the part of each cube inside the required region (the volume less its inset from the
+    walls, floor-layer to top-layer) is checked. Returns (failing leaf centres, cells checked,
+    budget exhausted)."""
+    from idps.coverage.volume import distance_to_polygon
+    req = site.requirements
+    vol = site.volume
+    z_lo, z_hi, inset = region
+    bad, n_checked = [], 0
+    cubes = np.asarray(centres, float).reshape(-1, 3)
+    offs = np.array([[i, j, k] for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)], float)
+    while len(cubes):
+        if cancel is not None and cancel():
+            return np.zeros((0, 3)), n_checked, True
+        half = half / 2
+        kids = (cubes[:, None, :] + offs[None] * half).reshape(-1, 3)
+        inside = (kids[:, 2] >= z_lo - 1e-9) & (kids[:, 2] <= z_hi + 1e-9) & vol.contains_xy(kids[:, :2])
+        if inside.any() and inset > 0:
+            d, _, _ = distance_to_polygon(kids[inside, :2], vol.polygon)
+            inside[np.nonzero(inside)[0][d < inset * 0.999]] = False
+        kids = kids[inside]
+        n_checked += len(kids)
+        if n_checked > budget:
+            return np.zeros((0, 3)), n_checked, True
+        leaf = 2 * half <= resolution_m + 1e-9
+        nxt = []
+        for a in range(0, len(kids), 20000):
+            K = kids[a:a + 20000]
+            sure = guaranteed_visible(pos, R, f_px, K, site.sensor, site.limits, half * np.sqrt(3)).sum(0)
+            open_ = sure < req.min_cameras
+            if leaf:                                   # cell under the resolution: check it directly
+                vis, inf = contributions(pos, R, f_px, K[open_], site.sensor, req.noise, site.limits)
+                p95 = rms_mm(inf.sum(0)) * P95_PER_RMS
+                ok = (vis.sum(0) >= req.min_cameras) & (p95 <= req.p95_mm)
+                bad.append(K[open_][~ok])
+            else:
+                nxt.append(K[open_])
+        cubes = np.vstack(nxt) if nxt else np.zeros((0, 3))
+    return (np.vstack(bad) if bad else np.zeros((0, 3))), n_checked, False
 
 
 def fine_check_text(fc: dict) -> str:
     sp = fc["spacing_m"]
-    head = f"Fine check every {sp * 100:.0f} cm ({fc['points']:,} points):"
+    res = fc.get("resolution_m", sp) * 100
+    head = f"Fine check every {sp * 100:.0f} cm ({fc['points']:,} points)"
+    zoom = fc.get("unproven_before_zoom", 0)
+    if zoom and not fc.get("zoom_incomplete"):
+        head += (f", zooming to {res:.0f} cm at the {zoom:,} spots where a camera's view edge passes close "
+                 f"({fc.get('zoom_cells_checked', 0):,} cells)")
+    head += ":"
     if not fc["failing"]:
         if fc.get("guaranteed"):
-            return (f"{head} every point meets the requirement, and the camera count is guaranteed for the "
-                    f"whole space between them, at any resolution (each sample's {fc['guarantee_radius_m'] * 100:.0f} cm "
-                    f"surroundings lie fully inside enough cameras' views).")
-        return (f"{head} every point meets the requirement. At {fc.get('unproven', 0):,} of them a camera's view "
-                f"edge passes within {fc.get('guarantee_radius_m', 0) * 100:.0f} cm, so the space right there is "
-                f"not proven; the coverage tiles still count it as covered.")
+            return (f"{head} every point meets the requirement, and the camera count is proven for the whole "
+                    f"volume down to {res:.0f} cm and finer.")
+        return (f"{head} every point meets the requirement, but {fc.get('unproven', 0):,} spots near camera view "
+                f"edges could not be fully zoomed into (too many to check): the coverage tiles count them as covered.")
     where = "; ".join(f"X {s['x']:.1f}, Y {s['y']:.1f}, {s['z_min']:.1f}–{s['z_max']:.1f} m high"
                       for s in fc["worst_spots"][:3])
-    return (f"{head} {fc['failing']:,} points ({100 * (1 - fc['fraction_meeting']):.2f} %, about "
-            f"{fc['failing_volume_m3']:,.1f} m³) fall short between the planning grid's samples, mostly near {where}.")
+    n_zoom = fc.get("zoom_failing", 0)
+    n_grid = fc["failing"] - n_zoom
+    found = ", ".join(x for x in (f"{n_grid:,} of the {sp * 100:.0f} cm points" if n_grid else "",
+                                  f"{n_zoom:,} cells of {res:.0f} cm found by zooming" if n_zoom else "") if x)
+    return (f"{head} about {fc['failing_volume_m3']:,.2f} m³ falls short of the requirement ({found}), "
+            f"mostly near {where}.")
 
 
 def _outside_note(site: Site, x: float, y: float) -> str:
@@ -245,12 +308,15 @@ def optimise(site: Site, log=print, max_cameras: int | None = None, cancel=None)
     pts = site_grid(site).points
     extra = np.zeros((0, 3))
     seconds = 0.0
+    result = None
+    prev: list = []
     for rnd in range(4):
         # The optimiser works on a coarse grid; the fine check looks between its samples. Any
         # point found short there is added to the optimiser's points and the layout re-planned,
         # until the fine check passes (or nothing more can be gained).
-        result = Optimiser(site, cands, np.vstack([pts, extra]), log=log).run(max_cameras=max_cameras,
-                                                                             cancel=cancel)
+        # later rounds keep the layout so far and only add what the gaps need
+        result = Optimiser(site, cands, np.vstack([pts, extra]), log=log).run(
+            max_cameras=max_cameras, cancel=cancel, initial=result.selected if rnd else ())
         seconds += result.seconds
         cams = build_cameras(site, cands, result.selected)
         log("Fine check of the finished layout…")
@@ -258,6 +324,11 @@ def optimise(site: Site, log=print, max_cameras: int | None = None, cancel=None)
         log(fine_check_text(fc))
         if not len(bad) or rnd == 3:
             break
+        if rnd and sorted(result.selected) == prev:
+            log("No allowed camera position closes the remaining gaps: add mounts (a truss or tripod zone) "
+                "near them, allow more cameras per mount, or allow more tilt angles.")
+            break
+        prev = sorted(result.selected)
         if len(bad) > 3000:
             bad = bad[np.random.default_rng(rnd).choice(len(bad), 3000, replace=False)]
         before = len(extra)
