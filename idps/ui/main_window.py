@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                                QPushButton, QSizePolicy, QSplitter, QStackedWidget, QTabWidget, QToolBar,
                                QVBoxLayout, QWidget)
 
@@ -106,6 +106,7 @@ class MainWindow(QMainWindow):
         geo = self.settings.value("window/geometry")
         if geo is not None:
             self.restoreGeometry(geo)
+        self.fit_to_screen()
         self._title(self.doc.title())
         self.canvas.toolChanged.connect(self._tool_changed)
         self.canvas.set_tool("select")
@@ -244,7 +245,8 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        bar = QHBoxLayout()
+        from idps.ui.flow import flow_row
+        bar_box, bar = flow_row()                 # wraps onto two lines in a narrow window
         bar.setContentsMargins(8, 4, 8, 4)
         for label, name in (("3D", "iso"), ("Top", "top"), ("Front", "front"), ("Side", "side")):
             b = QPushButton(label)
@@ -273,10 +275,27 @@ class MainWindow(QMainWindow):
         self.cov_combo.currentIndexChanged.connect(
             lambda i: (setattr(self.view3d, "coverage_mode", self.cov_combo.itemData(i)), self.view3d.update()))
         bar.addWidget(self.cov_combo)
-        bar.addStretch(1)
-        lay.addLayout(bar)
+        lay.addWidget(bar_box)
         lay.addWidget(self.view3d, 1)
         return page
+
+    def fit_to_screen(self):
+        """Keep the window inside the screen's usable area (menu bar and Dock excluded), e.g. on a
+        laptop, or when a size saved on a bigger external display is restored."""
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        frame = self.frameGeometry().size() - self.geometry().size()      # title bar
+        w = min(self.width(), avail.width() - frame.width())
+        h = min(self.height(), avail.height() - frame.height())
+        if (w, h) != (self.width(), self.height()):
+            self.resize(w, h)
+        g = self.frameGeometry()
+        x = min(max(g.x(), avail.x()), avail.right() - g.width() + 1)
+        y = min(max(g.y(), avail.y()), avail.bottom() - g.height() + 1)
+        if (x, y) != (g.x(), g.y()):
+            self.move(x, y)
 
     def _tab_changed(self, i: int):
         """The drawing toolbar belongs to the Planner."""

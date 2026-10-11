@@ -595,3 +595,20 @@ def test_live_tab_brain_alerts_and_accept(win, app):
     win.grab()                                                  # renders the live layers
     live.stop()
     assert live.show_sim is None and not live.cards
+
+
+def test_window_fits_a_laptop_screen(win, app):
+    """Control bars wrap instead of forcing the window wider than a 13-inch laptop."""
+    assert win.minimumSizeHint().width() <= 900
+    win.show_view("3d")
+    app.processEvents()
+    assert win.minimumSizeHint().width() <= 900
+    win.resize(860, 700)
+    app.processEvents()
+    assert win.width() <= 900
+    # a size saved on a big external display is pulled back inside the screen
+    avail = win.screen().availableGeometry()
+    win.resize(avail.width() + 600, avail.height() + 400)
+    win.fit_to_screen()
+    assert win.frameGeometry().width() <= avail.width() + 1
+    assert win.frameGeometry().height() <= avail.height() + 1

@@ -19,6 +19,7 @@ from idps.monitor.brain import Brain
 from idps.monitor.model import (BLIND_SPOT, CAMERA_MOVED, CAMERA_OFFLINE, FIX_ACCEPTED, LIVED_WITH, OPEN,
                                 RESOLVED)
 from idps.ui import theme
+from idps.ui.flow import flow_row
 from idps.ui.live.view import LiveView3D
 from idps.ui.planner.results import Tile
 from idps.ui.planner.worker import start_fn_worker
@@ -121,7 +122,7 @@ class LiveTab(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 6, 8, 6)
-        bar = QHBoxLayout()
+        bar_box, bar = flow_row()                 # wraps in a narrow window
         self.start_btn = QPushButton("Start simulated show")
         self.start_btn.setToolTip("Fly simulated drones over the planned layout; the brain monitors it live")
         self.start_btn.clicked.connect(self.toggle)
@@ -152,11 +153,11 @@ class LiveTab(QWidget):
         self.fault_menu.aboutToShow.connect(self._build_fault_menu)
         self.fault_btn.setEnabled(False)
         bar.addWidget(self.fault_btn)
-        bar.addStretch(1)
+        bar.addSpacing(16)
         self.clock = QLabel("")
         self.clock.setStyleSheet("color: palette(placeholder-text);")
         bar.addWidget(self.clock)
-        lay.addLayout(bar)
+        lay.addWidget(bar_box)
 
         split = QSplitter(Qt.Orientation.Horizontal)
         self.view = LiveView3D(window.doc, window.canvas)
@@ -164,13 +165,14 @@ class LiveTab(QWidget):
         side = QWidget()
         sl = QVBoxLayout(side)
         sl.setContentsMargins(6, 0, 0, 0)
-        tiles = QHBoxLayout()
+        tiles_box, tiles = flow_row()
         self.t_drones = Tile("Drones tracked")
         self.t_cams = Tile("Cameras online")
         self.t_issues = Tile("Open alerts")
         for t in (self.t_drones, self.t_cams, self.t_issues):
+            t.setMinimumWidth(120)
             tiles.addWidget(t)
-        sl.addLayout(tiles)
+        sl.addWidget(tiles_box)
         self.status = QLabel("Plan the cameras in the Planner tab, then start the show. The brain watches "
                              "tracking and every station on its own and only asks you to decide.")
         self.status.setWordWrap(True)

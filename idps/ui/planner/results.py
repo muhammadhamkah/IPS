@@ -4,10 +4,11 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QFrame, QHBoxLayout, QHeaderView, QLabel,
-                               QProgressBar, QPushButton, QSlider, QTableWidget, QTableWidgetItem,
+                               QProgressBar, QPushButton, QSizePolicy, QSlider, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
 from idps.ui import theme
+from idps.ui.flow import flow_row
 
 COLUMNS = ["ID", "Mount", "X (m)", "Y (m)", "Z (m)", "Base heading", "Pan", "Tilt", "Lens", "Spacing",
            "Critical", "Install note"]
@@ -53,7 +54,6 @@ class ResultsPanel(QWidget):
         lay.setContentsMargins(8, 6, 8, 6)
 
         # --- run row
-        row = QHBoxLayout()
         self.run_btn = QPushButton("Plan cameras")
         self.run_btn.setDefault(True)
         self.run_btn.setToolTip("Find camera count, positions and pan/tilt (⌘R)")
@@ -77,26 +77,27 @@ class ResultsPanel(QWidget):
         self.report_btn.clicked.connect(self.reportRequested)
         for b in (self.export_btn, self.report_btn):
             b.setEnabled(False)
-        for w in (self.run_btn, self.cancel_btn, self.progress, self.status, self.stale):
-            row.addWidget(w)
-        row.addStretch(1)
-        row.addWidget(self.export_btn)
-        row.addWidget(self.report_btn)
-        lay.addLayout(row)
+        row_box, row = flow_row(self.run_btn, self.cancel_btn, self.progress, self.export_btn, self.report_btn)
+        lay.addWidget(row_box)
+        for w in (self.status, self.stale):        # long messages wrap instead of widening the window
+            w.setWordWrap(True)
+            w.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            lay.addWidget(w)
 
         # --- summary tiles
-        tiles = QHBoxLayout()
+        tiles_box, tiles = flow_row()
         self.t_cams = Tile("Cameras")
         self.t_meets = Tile("Meets requirement")
         self.t_cov = Tile("≥ N cameras")
         self.t_n1 = Tile("Survives a lost camera")
         self.t_acc = Tile("Predicted p95 error")
         for t in (self.t_cams, self.t_meets, self.t_cov, self.t_n1, self.t_acc):
+            t.setMinimumWidth(170)
             tiles.addWidget(t)
-        lay.addLayout(tiles)
+        lay.addWidget(tiles_box)
 
         # --- overlay controls
-        orow = QHBoxLayout()
+        orow_box, orow = flow_row()
         orow.addWidget(QLabel("Show on plan:"))
         self.mode_group = QButtonGroup(self)
         for i, (key, label) in enumerate((("none", "Layout only"), ("count", "Cameras per point"),
@@ -120,8 +121,7 @@ class ResultsPanel(QWidget):
         self.legend = QLabel("")
         orow.addSpacing(16)
         orow.addWidget(self.legend)
-        orow.addStretch(1)
-        lay.addLayout(orow)
+        lay.addWidget(orow_box)
 
         # --- camera table
         self.table = QTableWidget(0, len(COLUMNS))
