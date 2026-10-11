@@ -55,9 +55,12 @@ class CandidateSettings:
     truss_elevations_deg: list[float] = field(default_factory=lambda: [-90.0, -60.0, -35.0])
     tripod_step_m: float = 5.0
     tripod_heights_m: list[float] = field(default_factory=lambda: [4.0, 12.0, 20.0])
-    tripod_elevations_deg: list[float] = field(default_factory=lambda: [0.0, 25.0, 50.0, 75.0])
+    tripod_elevations_deg: list[float] = field(default_factory=lambda: [0.0, -15.0, -30.0, -50.0])
     azimuth_step_deg: float = 30.0
     max_cameras_per_mount: int = 1
+    # Drones always fly below the cameras (decision D17): no camera is placed lower than the
+    # top of the flight volume plus this margin, and cameras only look level or down.
+    min_height_above_volume_m: float = 0.0
     min_camera_spacing_m: float = 1.5      # between cameras on different mounts
 
 
@@ -107,9 +110,10 @@ class Site:
         out = []
         top = self.volume.z_max
         for t in self.trusses:
-            if t.height_m - self.candidates.truss_drop_m < top:
+            if t.height_m - self.candidates.truss_drop_m < top + self.candidates.min_height_above_volume_m:
                 out.append(f"truss {t.id}: cameras would hang at {t.height_m - self.candidates.truss_drop_m:.1f} m,"
-                           f" inside the flight volume (top {top:.1f} m)")
+                           f" below the flight ceiling ({top:.1f} m); cameras must be above the drones, so this "
+                           f"truss is not used")
             for s0, s1 in t.usable:
                 if s0 < 0 or s1 > t.length + 1e-6 or s1 <= s0:
                     out.append(f"truss {t.id}: usable segment [{s0}, {s1}] outside 0..{t.length:.1f} m")
@@ -124,6 +128,10 @@ class Site:
                 out.append(f"tripod zone {z.id}: edge index out of range (volume has {n_edges} edges)")
             if z.height_range_m[1] > 20.0:
                 out.append(f"tripod zone {z.id}: height above 20 m")
+            need = top + self.candidates.min_height_above_volume_m
+            if z.height_range_m[1] < need - 1e-9:
+                out.append(f"tripod zone {z.id}: masts reach only {z.height_range_m[1]:g} m, below the flight "
+                           f"ceiling ({need:g} m); cameras must be above the drones, so this zone is not used")
         if not self.trusses and not self.tripod_zones:
             out.append("no trusses or tripod zones: nowhere to mount cameras")
         return out

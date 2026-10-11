@@ -400,7 +400,8 @@ class Inspector(QTabWidget):
         form.addRow("Usable sections", seg)
         top = self.doc.data["volume"]["z"][1]
         if t["height_m"] - self.doc.data["candidates"].get("truss_drop_m", 0.3) < top:
-            warn = QLabel(f"⚠︎ Cameras would hang inside the flight volume (top {top:g} m).")
+            warn = QLabel(f"⚠︎ Cameras would hang below the flight ceiling ({top:g} m), so drones could fly above "
+                          f"them. This truss is not used; raise it.")
             warn.setStyleSheet("color: #d03b3b;")
             warn.setWordWrap(True)
             form.addRow(warn)
@@ -423,6 +424,18 @@ class Inspector(QTabWidget):
         h1.editingFinished.connect(lambda: self._set(("tripod_zones", i, "height_m", 1), h1.value()))
         form.addRow("Tripod height from", h0)
         form.addRow("Tripod height up to", h1)
+        ceiling = self.doc.data["volume"]["z"][1] + self.doc.data["candidates"].get("min_height_above_volume_m", 0.0)
+        if z["height_m"][1] < ceiling - 1e-9:
+            warn = QLabel(f"⚠︎ Masts must reach the flight ceiling ({ceiling:g} m): cameras are always above the "
+                          f"drones. This zone is not used.")
+            warn.setStyleSheet("color: #d03b3b;")
+            warn.setWordWrap(True)
+            form.addRow(warn)
+        elif z["height_m"][0] < ceiling:
+            note = QLabel(f"Cameras go at {ceiling:g} m or higher (the flight ceiling).")
+            note.setStyleSheet("color: palette(placeholder-text);")
+            note.setWordWrap(True)
+            form.addRow(note)
         if strip:
             o0, o1 = dspin(0, 100), dspin(0, 100)
             o0.setValue(z["offset_m"][0])
@@ -520,6 +533,8 @@ class SettingsPage(QWidget):
         ("Cameras", "Max cameras", ("optimiser", "max_cameras"), "int", (1, 2000)),
         ("Cameras", "Cameras per mount", ("candidates", "max_cameras_per_mount"), "int", (1, 6)),
         ("Cameras", "Min spacing between cameras", ("candidates", "min_camera_spacing_m"), "float", (0, 50, " m")),
+        ("Cameras", "Min height above flight ceiling", ("candidates", "min_height_above_volume_m"), "float",
+         (0, 20, " m")),
         ("Candidate density", "Truss spacing", ("candidates", "truss_step_m"), "float", (0.5, 50, " m")),
         ("Candidate density", "Camera drop below truss", ("candidates", "truss_drop_m"), "float", (0, 5, " m")),
         ("Candidate density", "Truss tilt angles (°)", ("candidates", "truss_elevations_deg"), "list", None),

@@ -46,6 +46,7 @@ def test_fixed_yaw_body_axes():
 
 def test_run_is_deterministic_and_packets_decode(tmp_path):
     a, b = MemorySink(), MemorySink()
+    n = len(short().cameras)
     Simulation(short()).run(a)
     Simulation(short()).run(b)
     assert [p for _, p in a.packets] == [p for _, p in b.packets]
@@ -59,7 +60,7 @@ def test_run_is_deterministic_and_packets_decode(tmp_path):
         else:
             health += 1
             assert "plan_camera_id" in body
-    assert frames > 8 * 110 and health == 8            # ~120 frames/s/station, health at 0.5 s
+    assert frames > n * 110 and health == n            # ~120 frames/s/station, health at 0.5 s
 
 
 def test_noise_free_observations_hit_true_projection():
@@ -68,11 +69,13 @@ def test_noise_free_observations_hit_true_projection():
                camera_model__frame_drop_prob=0.0, camera_model__distortion=(0, 0, 0, 0, 0),
                camera_model__saturation_dn=10**9)
     sim = Simulation(sc)
-    st = sim.stations[0]
-    t = st.frame_time(10)
-    centres, mpos, ups, _ = sim.state(t)
-    obs, truth = st.observe(t, mpos, ups, np.ones(len(mpos)), centres, sim.marker_drone)
-    assert obs, "camera 1 should see at least one marker"
+    for st in sim.stations:                       # a station that sees a marker at this moment
+        t = st.frame_time(10)
+        centres, mpos, ups, _ = sim.state(t)
+        obs, truth = st.observe(t, mpos, ups, np.ones(len(mpos)), centres, sim.marker_drone)
+        if obs:
+            break
+    assert obs, "some camera should see at least one marker"
     for m, (i, u, v) in zip(obs, truth):
         Xc = st.R @ (mpos[i] - st.pos)
         assert m.x == pytest.approx(st.cx + st.f * Xc[0] / Xc[2], abs=1e-6)
@@ -119,7 +122,7 @@ def test_files_truth_calibration_and_raw_log(tmp_path):
     write_calibration(sim, tmp_path / "cal.yaml")
     recs = list(read_raw(tmp_path / "p.idpsraw"))
     assert len(recs) == stats.packets
-    assert all(P.decode(b)[0].station_id in range(1, 9) for _, b in recs)
+    assert all(P.decode(b)[0].station_id in range(1, len(sc.cameras) + 1) for _, b in recs)
     assert all(t1 <= t2 for (t1, _), (t2, _) in zip(recs, recs[1:]))     # log is in send order
     lines = (tmp_path / "truth.csv").read_text().splitlines()
     assert lines[1].startswith("t_s,") and len(lines) - 2 == 3 * 61          # 3 drones at 120 Hz for 0.5 s

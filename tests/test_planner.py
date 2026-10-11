@@ -48,7 +48,29 @@ def test_candidates_respect_usable_segments_and_no_go():
 
 def test_site_warnings():
     site = small_site(trusses=[{"id": "low", "start": [0, 0], "end": [1, 0], "height_m": 1.0}])
-    assert any("inside the flight volume" in w for w in site.warnings())
+    assert any("below the flight ceiling" in w for w in site.warnings())
+
+
+def test_cameras_always_above_the_drones():
+    """Decision D17: drones never fly higher than a camera. No candidate sits below the
+    volume top, none looks up, and short masts / low trusses are left out with a warning."""
+    from idps.plan.candidates import generate_candidates
+    site = small_site(trusses=[{"id": "low", "start": [-3, 0], "end": [3, 0], "height_m": 1.5},
+                               {"id": "high", "start": [-3, 1], "end": [3, 1], "height_m": 3.0}],
+                      tripod_zones=[{"id": "short", "rect": [-3, 2.5, 3, 3], "height_m": [1.0, 1.8]},
+                                    {"id": "tall", "rect": [-3, -3, 3, -2.5], "height_m": [1.0, 4.0]}],
+                      candidates={"truss_step_m": 1, "tripod_step_m": 1, "tripod_heights_m": [1.5, 3.0],
+                                  "tripod_elevations_deg": [20, 0, -20], "azimuth_step_deg": 90})
+    c = generate_candidates(site)
+    assert (c.pos[:, 2] >= site.volume.z_max - 1e-9).all()
+    assert (c.el <= 0).all()
+    assert set(c.mount_id) == {"high", "tall"}
+    assert sorted(set(c.pos[c.mount_id == "tall", 2])) == [2.0, 3.0]      # from the ceiling up
+    w = " ".join(site.warnings())
+    assert "truss low" in w and "tripod zone short" in w
+    site2 = small_site(trusses=[], tripod_zones=[{"id": "short", "rect": [-3, 2.5, 3, 3], "height_m": [1, 1.8]}])
+    with pytest.raises(ValueError, match="above the drones"):
+        generate_candidates(site2)
 
 
 def test_optimise_small_site_meets_requirements_and_roundtrips(tmp_path):
@@ -176,7 +198,7 @@ def _short_venue():
         "trusses": [{"id": "T1", "start": [-9.5, 7.5], "end": [17.5, 7.5], "height_m": 11.5},
                     {"id": "T2", "start": [-11, -5.5], "end": [18, -5.5], "height_m": 11.5}],
         "candidates": {"truss_step_m": 3, "tripod_step_m": 3, "tripod_heights_m": [3, 10, 18],
-                       "tripod_elevations_deg": [0, 25, 50], "azimuth_step_deg": 30,
+                       "tripod_elevations_deg": [0, -15, -30, -50], "azimuth_step_deg": 30,
                        "max_cameras_per_mount": 1, "min_camera_spacing_m": 1.5},
         "optimiser": {"max_cameras": 200},
     }

@@ -66,8 +66,9 @@ alert only for a *repeated* problem, with the evidence and a fix. The operator j
 happened:
 * cameras that should see the region but see drones there far less often than elsewhere are
   called **blocked** (set pieces, rigging, a banner);
-* cameras that are more than 15° below the drones are called out separately. The marker on top
-  of a drone is hidden from them by the drone's own body, and cameras above that height fix it.
+* cameras more than 15° below the drones break the rule that drones always fly below the
+  cameras (D17). The marker on top of a drone is hidden from them by its own body. The planner
+  never places a camera there, so this only fires if drones fly above the planned ceiling.
 
 Losses while a camera was offline or knocked are explained by that fault and are not reported
 twice.
@@ -90,7 +91,7 @@ twice.
   names the lines of sight to walk. From then on it only suggests adding a camera from a new
   direction.
 * *Lived with:* no more alerts unless the loss rate at least doubles.
-* *Quiet:* issues that go quiet resolve themselves. An issue that comes back soon after is
+* *Quiet:* issues that go quiet resolve themselves. An issue that comes back at the same spot is
   reopened rather than duplicated.
 
 **Rehearsal.** Until the positioning engine exists, a simulated show feeds the brain

@@ -32,7 +32,7 @@ the following inputs.
 |---|---|---|
 | Flight volume | **Drawn per venue:** the floor outline as XY vertices (any shape, e.g. a 50 × 20 m rectangle, an L-shape, a hexagon), extruded in Z to the flight ceiling (e.g. 0–20 m). Vertices are numbered V0, V1, …; edge Ek runs from Vk to Vk+1 | The region where every point must meet the accuracy and coverage target. Venues differ, so the volume is never assumed |
 | **Trusses** | For each truss: its line (start/end XY), height, and **which segments are usable**. Missing sections are marked, and **additional trusses** can be added (e.g. a hired truss line). Drawn on a plan view or imported from CSV/DXF | Cameras may only be placed on usable truss segments. Walls are not used (decision D11) |
-| **Tripod zones** | Either a **strip outside the drawn volume** (e.g. 1–3 m from its edges, optionally only along chosen edges), or explicit floor polygons. **Tripod height from 1 m up to 20 m** (per zone, or chosen by the optimiser within that range). Tripods are never placed inside the flight volume | Used where there is no truss, and for upward-looking coverage of the edges and corners. A strip follows any venue shape automatically |
+| **Tripod zones** | Either a **strip outside the drawn volume** (e.g. 1–3 m from its edges, optionally only along chosen edges), or explicit floor polygons. **Tripod height from 1 m up to 20 m** (per zone, or chosen by the optimiser within that range). Tripods are never placed inside the flight volume. **Cameras are always at or above the flight ceiling** (drones never fly higher than a camera, D17), so a mast must reach the volume's Top Z; shorter masts are not used | Used where there is no truss, looking level or down across the volume from its edges. A strip follows any venue shape automatically |
 | Design margin | e.g. ≥ 4 cameras and p95 ≤ 7 mm | What the optimiser aims for, stricter than the requirement, so the plan tolerates occlusion and a lost camera |
 | No-go zones | Doors, walkways, lights, emergency exits | Excluded from mounting |
 | Obstacles | Columns, nets, hanging equipment | Occlusion |
@@ -131,10 +131,8 @@ At this stage the aim is **coarse**: servo accuracy plus the base orientation er
    The dashboard shows live wand-sample coverage per camera and per floor region. Collection
    stops when every camera that can see the walkable layer has enough well-spread samples.
    The upper volume is calibrated by drone flight (item 6 below).
-   * Cameras aimed up at the upper edges and corners may **not see the walkable layer at all**,
-     and those cannot be wand-calibrated. In the 148-camera truss + tripod layout, 32 upward-
-     aimed tripod cameras are in this group. The planner lists them. They are calibrated by
-     one of:
+   * Cameras aimed level across the top of the volume may **not see the walkable layer at all**,
+     and those cannot be wand-calibrated. The planner lists them. They are calibrated by one of:
      * the **continuous-calibration flight** (item 6), from drone markers co-observed with
        already-calibrated cameras; or
      * **tilt-down wanding:** during wanding their servos tilt down to see the wand, and

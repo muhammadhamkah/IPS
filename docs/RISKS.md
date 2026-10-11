@@ -564,4 +564,5 @@ servos.** Compared with the Pi 4B assumed elsewhere:
 | D14 | Bumped tripod recovery | **Decided:** return the tripod to its taped marks → gimbal to the saved angles → reload the saved calibration → automatic 6-DOF beacon re-pose and verification; no re-wand |
 | D16 | Prototype station hardware | **Decided (prototype):** Raspberry Pi 3B + OV9281 on servo pan/tilt. See R4 for limits and the recommended Pi 4B/5 upgrade |
 | D15 | Planner mounting inputs | **Decided:** volume; truss lines with height, usable and missing segments, additional trusses; tripod floor zones with height up to 20 m |
+| D17 | Cameras vs drones height | **Decided:** drones always fly below the cameras. Every camera is at or above the flight ceiling (plus an optional margin) and looks level or down; trusses and tripod masts that can't reach the ceiling are not used. A volume taller than the 20 m tripods (e.g. the 30 m hall) is trusses only |
 | D12 | Calibration tools | **Decided:** OptiTrack-style wand + ground square at origin. Proposed: 1 m × 1 m L-frame with 4 LEDs (origin, X 0.5, X 1.0, Y 1.0). **Proposed for the hall:** long-baseline floor markers + laser distance meter (R18) |

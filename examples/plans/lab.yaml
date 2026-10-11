@@ -2,14 +2,14 @@ format: idps-plan/1
 site_name: Lab prototype
 site_file: examples/sites/lab.yaml
 summary:
-  cameras: 8
-  cameras_on_trusses: 0
+  cameras: 9
+  cameras_on_trusses: 1
   cameras_on_tripods: 8
   tripods: 8
   evaluation_points: 585
   volume_m3: 108.0
   fraction_meeting_all_requirements: 1.0
-  fraction_meeting_with_any_one_camera_lost: 0.9230769230769231
+  fraction_meeting_with_any_one_camera_lost: 0.9931623931623932
   fraction_with_min_cameras: 1.0
   fraction_by_camera_count:
     '0': 0.0
@@ -18,8 +18,8 @@ summary:
     3+: 1.0
   volume_below_min_cameras_m3: 0.0
   volume_over_accuracy_limit_m3: 0.0
-  p95_error_mm_median: 2.905681744396511
-  p95_error_mm_worst: 5.121635067426021
+  p95_error_mm_median: 2.9703696801919017
+  p95_error_mm_worst: 5.819906314538206
   requirements:
     min_cameras: 3
     p95_mm: 10.0
@@ -33,44 +33,44 @@ summary:
     min_cameras: 4
     p95_mm: 7.0
   optimiser:
-    candidates: 8702
-    seconds: 5.0
+    candidates: 4526
+    seconds: 1.9
     stopped_because: all evaluation points meet the requirements
 cameras:
 - id: C001
-  mount_type: tripod
-  mount_id: north
+  mount_type: truss
+  mount_id: T1
   position_m:
-  - -4.0
-  - 3.5
-  - 3.0
-  azimuth_deg: 330.0
-  elevation_deg: -15.0
+  - -2.0
+  - 0.0
+  - 3.3
+  azimuth_deg: 300.0
+  elevation_deg: -40.0
   lens_mm: 2.8
-  along_truss_m: null
+  along_truss_m: 2.0
   base_heading_deg: 315.0
-  pan_deg: 15.0
-  tilt_deg: -15.0
-  install_note: Tripod (zone north) at X -4.00, Y 3.50; 1.12 m outside edge E2 (V2->V3), 6.00 m along it from V2; camera at
-    3.00 m on the mast; gimbal pan-zero towards azimuth 315 deg; mast height 3.00 m
-  neighbour_spacing_m: 0.5
+  pan_deg: -15.0
+  tilt_deg: -40.0
+  install_note: 'Truss T1: 2.00 m from its start end (-4.0, 0.0), camera hung 0.30 m below the truss; gimbal pan-zero towards
+    azimuth 315 deg'
+  neighbour_spacing_m: null
 - id: C002
   mount_type: tripod
-  mount_id: north
+  mount_id: east
   position_m:
-  - -4.0
   - 4.0
+  - -1.0
   - 3.0
-  azimuth_deg: 300.0
+  azimuth_deg: 180.0
   elevation_deg: -30.0
   lens_mm: 2.8
   along_truss_m: null
-  base_heading_deg: 315.0
-  pan_deg: -15.0
+  base_heading_deg: 180.0
+  pan_deg: 0.0
   tilt_deg: -30.0
-  install_note: Tripod (zone north) at X -4.00, Y 4.00; 1.41 m outside edge E2 (V2->V3), 6.00 m along it from V2; camera at
-    3.00 m on the mast; gimbal pan-zero towards azimuth 315 deg; mast height 3.00 m
-  neighbour_spacing_m: 0.5
+  install_note: Tripod (zone east) at X 4.00, Y -1.00; 1.00 m outside edge E1 (V1->V2), 2.00 m along it from V1; camera at
+    3.00 m on the mast; gimbal pan-zero towards azimuth 180 deg; mast height 3.00 m
+  neighbour_spacing_m: 3.1623
 - id: C003
   mount_type: tripod
   mount_id: north
@@ -87,8 +87,25 @@ cameras:
   tilt_deg: -15.0
   install_note: Tripod (zone north) at X -3.00, Y 4.00; 1.00 m outside edge E2 (V2->V3), 6.00 m along it from V2; camera at
     3.00 m on the mast; gimbal pan-zero towards azimuth 315 deg; mast height 3.00 m
-  neighbour_spacing_m: 1.0
+  neighbour_spacing_m: 3.0
 - id: C004
+  mount_type: tripod
+  mount_id: north
+  position_m:
+  - 0.0
+  - 4.0
+  - 3.0
+  azimuth_deg: 270.0
+  elevation_deg: -15.0
+  lens_mm: 2.8
+  along_truss_m: null
+  base_heading_deg: 270.0
+  pan_deg: 0.0
+  tilt_deg: -15.0
+  install_note: Tripod (zone north) at X 0.00, Y 4.00; 1.00 m outside edge E2 (V2->V3), 3.00 m along it from V2; camera at
+    3.00 m on the mast; gimbal pan-zero towards azimuth 270 deg; mast height 3.00 m
+  neighbour_spacing_m: 3.0
+- id: C005
   mount_type: tripod
   mount_id: north
   position_m:
@@ -104,24 +121,7 @@ cameras:
   tilt_deg: -15.0
   install_note: Tripod (zone north) at X 3.00, Y 4.00; 1.00 m outside edge E1 (V1->V2), 6.00 m along it from V1; camera at
     3.00 m on the mast; gimbal pan-zero towards azimuth 225 deg; mast height 3.00 m
-  neighbour_spacing_m: 1.0
-- id: C005
-  mount_type: tripod
-  mount_id: north
-  position_m:
-  - 4.0
-  - 4.0
-  - 2.0
-  azimuth_deg: 210.0
-  elevation_deg: -15.0
-  lens_mm: 2.8
-  along_truss_m: null
-  base_heading_deg: 225.0
-  pan_deg: -15.0
-  tilt_deg: -15.0
-  install_note: Tripod (zone north) at X 4.00, Y 4.00; 1.41 m outside edge E1 (V1->V2), 6.00 m along it from V1; camera at
-    2.00 m on the mast; gimbal pan-zero towards azimuth 225 deg; mast height 2.00 m
-  neighbour_spacing_m: 1.0
+  neighbour_spacing_m: 3.0
 - id: C006
   mount_type: tripod
   mount_id: south
@@ -138,7 +138,7 @@ cameras:
   tilt_deg: -15.0
   install_note: Tripod (zone south) at X -3.00, Y -4.00; 1.00 m outside edge E0 (V0->V1), 0.00 m along it from V0; camera
     at 3.00 m on the mast; gimbal pan-zero towards azimuth 45 deg; mast height 3.00 m
-  neighbour_spacing_m: 3.0
+  neighbour_spacing_m: 2.2361
 - id: C007
   mount_type: tripod
   mount_id: south
@@ -173,3 +173,20 @@ cameras:
   install_note: Tripod (zone south) at X 3.00, Y -4.00; 1.00 m outside edge E0 (V0->V1), 6.00 m along it from V0; camera at
     3.00 m on the mast; gimbal pan-zero towards azimuth 135 deg; mast height 3.00 m
   neighbour_spacing_m: 3.0
+- id: C009
+  mount_type: tripod
+  mount_id: west
+  position_m:
+  - -4.0
+  - -2.0
+  - 3.0
+  azimuth_deg: 30.0
+  elevation_deg: -30.0
+  lens_mm: 2.8
+  along_truss_m: null
+  base_heading_deg: 45.0
+  pan_deg: -15.0
+  tilt_deg: -30.0
+  install_note: Tripod (zone west) at X -4.00, Y -2.00; 1.00 m outside edge E3 (V3->V0), 5.00 m along it from V3; camera at
+    3.00 m on the mast; gimbal pan-zero towards azimuth 45 deg; mast height 3.00 m
+  neighbour_spacing_m: 2.2361

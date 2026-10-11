@@ -357,10 +357,9 @@ class Brain:
                     iss = cand
                     break
             info = self._describe(evs, centre, radius)
-            if iss is None:                      # the same place came back soon after resolving: reopen it
+            if iss is None:                      # the same place came back after resolving: reopen it
                 for cand in self.issues.values():
                     if cand.kind == BLIND_SPOT and cand.state == RESOLVED and cand.location is not None and \
-                            self.now - cand.last_seen <= self.s.window_s and \
                             np.linalg.norm(cand.location - centre) <= cand.radius_m + self.s.cell_m:
                         iss = cand
                         iss.state = OPEN
@@ -461,9 +460,10 @@ class Brain:
         below = [c for c in names if looks_up(c)]
         many = len(names) > 1
         if names and len(below) >= 0.6 * len(names):
-            ev_text += (f"{', '.join(names)} had the drones in view but did not see them. "
-                        f"{'They are' if many else 'It is'} below the drones there, and the marker on top of each "
-                        f"drone is hidden by its body from below: cameras above this height fix it.")
+            ev_text += (f"{', '.join(names)} had the drones in view but did not see them: "
+                        f"{'they are' if many else 'it is'} below the drones there, which breaks the rule that "
+                        f"drones always fly below the cameras (the marker on top is hidden by the drone's body). "
+                        f"Raise {'them' if many else 'it'} above the flight ceiling, or keep the drones lower.")
         elif blocked:
             ev_text += (f"{', '.join(blocked)} should see this region but see drones there far less often than "
                         f"elsewhere: likely a blocked line of sight (set pieces, rigging, a banner).")

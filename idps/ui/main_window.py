@@ -468,6 +468,13 @@ class MainWindow(QMainWindow):
             return f"{exc}"
         if site.volume.volume_m3 <= 0:
             return "The flight volume is empty."
+        ceiling = site.volume.z_max + site.candidates.min_height_above_volume_m
+        reach = [t.height_m - site.candidates.truss_drop_m for t in site.trusses] + \
+                [z.height_range_m[1] for z in site.tripod_zones]
+        if reach and max(reach) < ceiling - 1e-9:
+            return (f"Cameras must be above the drones, but no truss or tripod reaches the flight ceiling "
+                    f"({ceiling:g} m; the highest mount gives {max(reach):g} m). Raise the trusses or the tripod "
+                    f"mast heights, or lower the volume's Top Z.")
         return None
 
     def _offer_tripod_strip(self) -> bool:

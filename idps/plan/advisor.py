@@ -276,7 +276,7 @@ class Advisor:
         cs = self.site.candidates
         els = cs.truss_elevations_deg if cam.mount_type == "truss" else cs.tripod_elevations_deg
         aims = [(0.0, e) if abs(abs(e) - 90) < 1e-6 else (a, e)
-                for e in els for a in np.arange(0.0, 360.0, cs.azimuth_step_deg)]
+                for e in els if e <= 1e-6 for a in np.arange(0.0, 360.0, cs.azimuth_step_deg)]
         aims = sorted(set((round(a, 3), round(e, 3)) for a, e in aims)
                       - {(round(cam.azimuth_deg % 360, 3), round(cam.elevation_deg, 3))})
         if not aims:
