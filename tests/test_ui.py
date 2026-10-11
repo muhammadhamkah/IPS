@@ -278,3 +278,59 @@ def test_window_close_then_undo_signals_do_not_raise(app):
     w.deleteLater()
     app.processEvents()
     doc.undo.setClean()           # used to call a lambda on the deleted window
+
+
+def _venue_with_mounts(win):
+    c = win.canvas
+    c.resetTransform()
+    c.scale(20, -20)
+    draw_rect(win)
+    win.set_tool("truss")
+    c.centerOn(0, 0)
+    click(c, -9, 7)
+    click(c, 9, 7)
+    win.set_tool("select")
+    win.inspector._add_strip()
+    win.canvas.set_selection(None)
+
+
+def test_mounts_list_one_click_remove(win, app):
+    from PySide6.QtWidgets import QPushButton
+    _venue_with_mounts(win)
+    app.processEvents()
+    btn = win.inspector.findChild(QPushButton, "remove_truss_0")
+    assert btn is not None
+    btn.click()
+    app.processEvents()
+    assert win.doc.data["trusses"] == [] and len(win.doc.data["tripod_zones"]) == 1
+    win.inspector.findChild(QPushButton, "remove_zone_0").click()
+    app.processEvents()
+    assert win.doc.data["tripod_zones"] == []
+    win.a_undo.trigger()
+    win.a_undo.trigger()
+    assert len(win.doc.data["trusses"]) == 1 and len(win.doc.data["tripod_zones"]) == 1
+
+
+def test_remove_all_and_item_delete_button(win, app):
+    from PySide6.QtWidgets import QPushButton
+    _venue_with_mounts(win)
+    app.processEvents()
+    [b for b in win.inspector.findChildren(QPushButton)
+     if b.text() == "Remove all tripod zones" and b.isVisible()][0].click()
+    app.processEvents()
+    assert win.doc.data["tripod_zones"] == []
+    win.canvas.set_selection(("truss", 0))
+    app.processEvents()
+    [b for b in win.inspector.findChildren(QPushButton) if b.text() == "Delete Truss T1" and b.isVisible()][0].click()
+    assert win.doc.data["trusses"] == []
+
+
+def test_right_click_delete_truss(win, app):
+    _venue_with_mounts(win)
+    c = win.canvas
+    c.centerOn(0, 0)
+    menu = c.context_menu_at(c.mapFromScene(QPointF(0, 7)))
+    assert menu is not None and menu.actions()[0].text() == "Delete Truss T1"
+    menu.actions()[0].trigger()
+    assert win.doc.data["trusses"] == []
+    assert c.context_menu_at(c.mapFromScene(QPointF(500, 500))) is None

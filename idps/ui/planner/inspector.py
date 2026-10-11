@@ -216,6 +216,7 @@ class Inspector(QTabWidget):
             self.sel_layout.addWidget(self._nogo_box(sel[1]))
         elif kind == "camera":
             self.sel_layout.addWidget(self._camera_box(sel[1]))
+        self.sel_layout.addWidget(self._mounts_box())
         self.settings.refresh()
 
     # ---------------------------------------------------------------- volume
@@ -292,6 +293,53 @@ class Inspector(QTabWidget):
         lay.addWidget(tips)
         return box
 
+    def _delete_button(self, kind, idx):
+        b = QPushButton(f"Delete {self.canvas.item_name(kind, idx)}")
+        b.setToolTip("Remove it from the venue (⌫ on the canvas; ⌘Z to undo)")
+        b.clicked.connect(lambda: self.canvas.delete_item(kind, idx))
+        return b
+
+    def _mounts_box(self):
+        """Every truss, tripod zone and no-go area with one-click remove."""
+        d = self.doc.data
+        box = QGroupBox("Mounts && areas")
+        lay = QVBoxLayout(box)
+        rows = [("truss", i, f"Truss {t['id']}", f"{t['height_m']:g} m high") for i, t in enumerate(d["trusses"])]
+        for i, z in enumerate(d["tripod_zones"]):
+            what = (f"strip {z['offset_m'][0]:g}–{z['offset_m'][1]:g} m out" if "offset_m" in z else "drawn area")
+            rows.append(("zone", i, f"Tripods {z['id']}", f"{what}, masts {z['height_m'][0]:g}–{z['height_m'][1]:g} m"))
+        rows += [("nogo", i, f"No-go area {i + 1}", "") for i in range(len(d["no_go_zones"]))]
+        if not rows:
+            empty = QLabel("No trusses or tripod zones yet.")
+            empty.setStyleSheet("color: palette(placeholder-text);")
+            lay.addWidget(empty)
+        sel = self.canvas.selection
+        for kind, idx, name, detail in rows:
+            row = QHBoxLayout()
+            pick = QPushButton(f"{name}  ·  {detail}" if detail else name)
+            pick.setFlat(True)
+            pick.setStyleSheet("text-align: left;" + ("font-weight: bold;" if sel == (kind, idx) else ""))
+            pick.setToolTip("Select")
+            pick.clicked.connect(lambda _=False, k=kind, i=idx: self.canvas.set_selection((k, i)))
+            rm = QPushButton("Remove")
+            rm.setToolTip(f"Remove {name} (⌘Z to undo)")
+            rm.setObjectName(f"remove_{kind}_{idx}")
+            rm.clicked.connect(lambda _=False, k=kind, i=idx: self.canvas.delete_item(k, i))
+            row.addWidget(pick, 1)
+            row.addWidget(rm)
+            lay.addLayout(row)
+        bulk = QHBoxLayout()
+        all_t = QPushButton("Remove all trusses")
+        all_t.setEnabled(bool(d["trusses"]))
+        all_t.clicked.connect(lambda: self.doc.edit("Remove all trusses", lambda dd: dd["trusses"].clear()))
+        all_z = QPushButton("Remove all tripod zones")
+        all_z.setEnabled(bool(d["tripod_zones"]))
+        all_z.clicked.connect(lambda: self.doc.edit("Remove all tripod zones", lambda dd: dd["tripod_zones"].clear()))
+        bulk.addWidget(all_t)
+        bulk.addWidget(all_z)
+        lay.addLayout(bulk)
+        return box
+
     def _add_strip(self):
         def add(d):
             n = len(d["tripod_zones"]) + 1
@@ -348,6 +396,7 @@ class Inspector(QTabWidget):
             warn.setStyleSheet("color: #d03b3b;")
             warn.setWordWrap(True)
             form.addRow(warn)
+        form.addRow(self._delete_button("truss", i))
         return box
 
     # ---------------------------------------------------------------- zones
@@ -402,6 +451,7 @@ class Inspector(QTabWidget):
             table = VertexTable(lambda r, c, v: self._set(("tripod_zones", i, "polygon", r, c), v))
             table.load(z["polygon"], prefix="P")
             form.addRow(table)
+        form.addRow(self._delete_button("zone", i))
         return box
 
     def _nogo_box(self, i):
@@ -411,6 +461,7 @@ class Inspector(QTabWidget):
         table.load(self.doc.data["no_go_zones"][i], prefix="P")
         form.addRow(table)
         form.addRow(QLabel("No cameras or tripods are placed here (doors, walkways, exits)."))
+        form.addRow(self._delete_button("nogo", i))
         return box
 
     def _camera_box(self, k):

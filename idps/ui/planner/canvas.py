@@ -713,10 +713,48 @@ class PlanCanvas(QGraphicsView):
         self.viewport().update()
 
     def delete_selection(self):
-        s = self.selection
-        if not s:
-            return
-        kind, idx = s
+        if self.selection:
+            self.delete_item(*self.selection)
+
+    def item_name(self, kind, idx) -> str:
+        d = self.doc.data
+        if kind == "truss":
+            return f"Truss {d['trusses'][idx]['id']}"
+        if kind == "zone":
+            z = d["tripod_zones"][idx]
+            return ("Tripod strip " if "offset_m" in z else "Tripod area ") + z["id"]
+        if kind == "nogo":
+            return f"No-go area {idx + 1}"
+        if kind == "vertex":
+            return f"Vertex V{idx}"
+        return "Volume outline"
+
+    def contextMenuEvent(self, e):
+        """Right-click / two-finger click: delete the item under the pointer."""
+        menu = self.context_menu_at(e.pos())
+        if menu is not None:
+            menu.exec(e.globalPos())
+
+    def context_menu_at(self, pos):
+        from PySide6.QtWidgets import QMenu
+        sp = self.mapToScene(pos)
+        hit = self._hit(sp.x(), sp.y())
+        if hit is None or hit[0] == "camera":
+            return None
+        kind, idx, vtx = hit
+        if kind == "volume" and vtx is not None:
+            kind, idx = "vertex", vtx
+        elif kind == "truss" or vtx is None:
+            pass
+        else:
+            vtx = None                                   # zone / no-go vertex: act on the whole item
+        self.set_selection((kind, idx))
+        menu = QMenu(self)
+        act = menu.addAction(f"Delete {self.item_name(kind, idx)}")
+        act.triggered.connect(lambda: self.delete_item(kind, idx))
+        return menu
+
+    def delete_item(self, kind, idx):
         if kind == "vertex":
             if len(self.doc.data["volume"]["polygon"]) <= 3:
                 self.message.emit("The volume outline needs at least 3 vertices.")
