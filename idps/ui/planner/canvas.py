@@ -122,6 +122,7 @@ class PlanCanvas(QGraphicsView):
         self.overlay_level = 0
         self.highlight_camera: int | None = None
         self.show_dimensions = True      # install measurements once a plan exists
+        self.preview = None              # advisor Recommendation being previewed
         self.ruler: list = []            # Measure tool points
         self.overlay = OverlayItem()
 
@@ -150,6 +151,8 @@ class PlanCanvas(QGraphicsView):
                                    float(z["offset_m"][1]), 1e9).tolist()
         if self.result is not None:
             pts += [c.position_m[:2] for c in self.result[0].cameras]
+        if self.preview is not None:
+            pts.append(self.preview.new_camera.position_m[:2])
         if not pts:
             pts = [(-10, -10), (10, 10)]
         a = np.array(pts, float)
@@ -371,6 +374,8 @@ class PlanCanvas(QGraphicsView):
         if self.result is not None and self.show_dimensions:
             self._draw_dimensions(p, tok)
         self._draw_ruler(p, tok)
+        if self.preview is not None and self.result is not None:
+            self._draw_preview(p, tok)
 
         # drawing preview
         if self.tool not in ("select", "measure") and (self.pending or self.cursor_pt):
@@ -465,6 +470,32 @@ class PlanCanvas(QGraphicsView):
                     self._dim(p, foot, foot + out * off, 0, f"{off:.2f}", col)
                 prev = s
             self._text(p, QPointF(*o), "0", col, dx=-10, dy=-10, size=8)
+
+    def _draw_preview(self, p: QPainter, tok):
+        """Advisor suggestion: dashed ghost camera at the new spot and aim, with an
+        arrow from the old position for a move."""
+        r = self.preview
+        px = self.px()
+        c = QColor(tok["select"])
+        new = r.new_camera
+        x, y = new.position_m[0], new.position_m[1]
+        if r.camera_id:
+            old = next((k for k in self.result[0].cameras if k.id == r.camera_id), None)
+            if old is not None and r.kind == "move":
+                p.setPen(QPen(c, 2 * px, Qt.PenStyle.DashLine))
+                p.drawLine(QPointF(*old.position_m[:2]), QPointF(x, y))
+                self._dim(p, old.position_m[:2], (x, y), 18,
+                          f"{np.linalg.norm(np.subtract(new.position_m[:2], old.position_m[:2])):.2f} m", c)
+        az, el = math.radians(new.azimuth_deg), math.radians(new.elevation_deg)
+        L = 40 * px * max(0.25, math.cos(el))
+        p.setPen(QPen(c, 2.4 * px))
+        if math.cos(el) > 0.05:
+            p.drawLine(QPointF(x, y), QPointF(x + L * math.cos(az), y + L * math.sin(az)))
+        p.setPen(QPen(c, 2.2 * px, Qt.PenStyle.DashLine))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(x, y), 11 * px, 11 * px)
+        self._text(p, QPointF(x, y), ("+ " if r.kind == "add" else "") + f"{new.id} (suggested)", c,
+                   dx=14, dy=-12, size=10, bold=True)
 
     def _draw_ruler(self, p: QPainter, tok):
         pts = list(self.ruler)

@@ -484,3 +484,50 @@ def test_measure_tool_and_dimensions_toggle(win, app):
     assert c.ruler == []
     win.a_dims.trigger()
     assert c.show_dimensions is False
+
+
+def test_advisor_panel_find_apply_and_auto_fix(win, app):
+    import time
+
+    from PySide6.QtWidgets import QPushButton
+    from idps.ui.planner.worker import PlanWorker
+
+    def setup(d):
+        d["volume"]["polygon"] = [[-10, -5], [-10, 7], [17.5, 7], [17.5, -5]]
+        d["volume"]["z"] = [0.0, 10.0]
+        d["trusses"] = [{"id": "T1", "start": [-9.5, 7.5], "end": [17.5, 7.5], "height_m": 11.5},
+                        {"id": "T2", "start": [-11, -5.5], "end": [18, -5.5], "height_m": 11.5}]
+    win.doc.edit("setup", setup)
+    got = {}
+    w = PlanWorker(win.doc.to_site_dict(), None)
+    w.finished.connect(lambda p, e, s: got.update(p=p, e=e, s=s))
+    w.run()
+    win._plan_done(got["p"], got["e"], got["s"])
+    win.inspector._add_strip()
+    adv = win.advisor
+    assert "fail the requirement" in adv.status.text()
+
+    def wait():
+        t0 = time.time()
+        while (adv.worker is not None or adv._running) and time.time() - t0 < 240:
+            app.processEvents()
+            time.sleep(0.02)
+        for _ in range(3):
+            app.processEvents()
+
+    def buttons(prefix):
+        return [b for b in adv.findChildren(QPushButton) if b.text().startswith(prefix) and not b.isHidden()]
+    adv.find_fixes()
+    wait()
+    assert buttons("Show") and buttons("Apply")
+    buttons("Show")[0].click()
+    assert win.canvas.preview is not None and win.view3d.preview is not None
+    before = got["e"].summary["fraction_meeting_all_requirements"]
+    buttons("Apply")[0].click()
+    after = win.canvas.result[1].summary["fraction_meeting_all_requirements"]
+    assert after > before and win.canvas.preview is None
+    adv.auto_fix()
+    wait()
+    buttons("Apply all")[0].click()
+    assert win.canvas.result[1].summary["fraction_meeting_all_requirements"] == pytest.approx(1.0)
+    assert "✅" in adv.status.text()

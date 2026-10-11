@@ -49,6 +49,7 @@ class View3D(QWidget):
         self.fov = math.radians(45)
         self.show_cones = "selected"         # "none" | "selected" | "all"
         self.coverage_mode = "slice"         # "slice" | "volume" | "problems" | "off"
+        self.preview = None                  # advisor Recommendation being previewed
         self._drag = None
         self._fitted = False
         self._gizmo_hits: list = []          # (QRectF or (centre, radius), action) built while painting
@@ -584,6 +585,21 @@ class View3D(QWidget):
                 prims.append((float(z[0]) - 0.01, "dot", (P[0], 6.5 if hl else 4.5, colour, tok["surface"])))
             if hl or len(plan.cameras) <= 40:
                 self._text(prims, pos, c.id, tok["text"] if hl else tok["text2"], hl, 10 if hl else 9)
+        if self.preview is not None:                     # advisor suggestion: ghost camera + view cone
+            r = self.preview
+            col = QColor(tok["select"])
+            new_pos = np.array(r.new_camera.position_m, float)
+            if r.kind == "move" and r.camera_id:
+                old = next((c for c in plan.cameras if c.id == r.camera_id), None)
+                if old is not None:
+                    self._line(prims, old.position_m, new_pos, QPen(col, 2, Qt.PenStyle.DashLine))
+            if r.new_camera.mount_type == "tripod":
+                self._line(prims, (new_pos[0], new_pos[1], 0), new_pos, QPen(col, 2, Qt.PenStyle.DashLine))
+            self._cone(prims, r.new_camera, new_pos, col, sensor_aspect, True)
+            P, z = self.project([new_pos])
+            if z[0] > 0.05:
+                prims.append((float(z[0]) - 0.02, "dot", (P[0], 7, col, tok["surface"])))
+            self._text(prims, new_pos, f"{r.new_camera.id} (suggested)", col, True, 10)
         # several cameras on one mount: say so, otherwise their aim lines look like one odd camera
         for (x, y, z), n in mount_counts(plan.cameras).items():
             if n > 1:

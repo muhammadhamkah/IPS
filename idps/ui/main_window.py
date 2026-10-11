@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QMai
                                QVBoxLayout, QWidget)
 
 from idps.ui.planner.canvas import TOOLS, PlanCanvas
+from idps.ui.planner.advisor_panel import AdvisorPanel
 from idps.ui.planner.view3d import View3D
 from idps.ui.planner.document import SiteDocument
 from idps.ui.planner.inspector import Inspector
@@ -46,6 +47,10 @@ class MainWindow(QMainWindow):
         self.thread = self.worker = None
         self._running = []          # (thread, worker) kept alive until the thread has finished
         self.last_site = None
+        self.advisor = AdvisorPanel(self)
+        self.inspector.addTab(Inspector._scroll(self.advisor), "Advisor")
+        self.advisor.applyRequested.connect(self.apply_fixes)
+        self.advisor.previewRequested.connect(self.preview_fix)
 
         self.setUnifiedTitleAndToolBarOnMac(True)
         self.setWindowTitle("IDPS[*]")
@@ -499,8 +504,47 @@ class MainWindow(QMainWindow):
         self.canvas.zoom_to_fit()                # include every planned camera
         self.view3d.fit()
         if ev.summary["fraction_meeting_all_requirements"] < 0.9999:
-            self.results.log(self.results.status.text() + "  Not every point meets the requirement: in the 3D "
-                             "view set Coverage to “Problems only” to see where.")
+            self.results.log(self.results.status.text() + "  Not every point meets the requirement: the "
+                             "Advisor tab suggests fixes; 3D view → Coverage → “Problems only” shows where.")
+        self.preview_fix(None)
+        self.advisor.refresh_health()
+
+    def preview_fix(self, rec):
+        """Show a suggested change on the plan and 3D view before applying it."""
+        self.canvas.preview = rec
+        self.view3d.preview = rec
+        self.canvas.viewport().update()
+        self.view3d.update()
+        if rec is not None:
+            self.canvas.zoom_to_fit()            # includes the suggested position
+            self.statusBar().showMessage(f"{rec.title}: {rec.detail}", 15000)
+
+    def apply_fixes(self, recs):
+        """Apply advisor changes in order, re-evaluate, and show the result."""
+        from idps.plan.advisor import apply
+        from idps.plan.model import Plan
+        from idps.plan.planner import evaluate
+        from idps.plan.site import site_from_dict
+        if self.canvas.result is None or not recs:
+            return
+        site = site_from_dict(self.doc.to_site_dict(), str(self.doc.path) if self.doc.path else None)
+        plan, _ = self.canvas.result
+        cams = list(plan.cameras)
+        for r in recs:
+            cams = apply(cams, r)
+        ev = evaluate(site, cams)
+        summary = dict(ev.summary)
+        summary["optimiser"] = {**plan.summary.get("optimiser", {}),
+                                "stopped_because": f"edited by the advisor ({len(recs)} change(s))"}
+        new_plan = Plan(plan.site_name, plan.site_file, cams, summary)
+        self.last_site = site
+        self.canvas.set_result(new_plan, ev)
+        self.results.show_result(new_plan, ev)
+        self.preview_fix(None)
+        self.advisor.refresh_health()
+        self.view3d.update()
+        changed = ", ".join(r.title for r in recs)
+        self.statusBar().showMessage(f"Applied: {changed}. ⌘R re-plans from scratch if you prefer.", 15000)
 
     def _plan_failed(self, msg):
         self._plan_finished()

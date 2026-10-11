@@ -165,3 +165,67 @@ def test_cli_writes_measurements(tmp_path):
     rows = (tmp_path / "measurements.csv").read_text().splitlines()
     assert rows[0].startswith("reference,measure_from") and len(rows) > 1
     assert "Install measurements" in (tmp_path / "report.html").read_text()
+
+
+def _short_venue():
+    d = {
+        "name": "short", "volume": {"polygon": [[-10, -5], [-10, 7], [17.5, 7], [17.5, -5]], "z": [0, 10]},
+        "lenses_mm": [2.8], "requirements": {"min_cameras": 3, "p95_mm": 10, "noise": "tight"},
+        "design": {"min_cameras": 4, "p95_mm": 7}, "visibility": {"max_range_m": 80},
+        "evaluation": {"spacing_m": [2, 2, 2], "inset_m": 0.5},
+        "trusses": [{"id": "T1", "start": [-9.5, 7.5], "end": [17.5, 7.5], "height_m": 11.5},
+                    {"id": "T2", "start": [-11, -5.5], "end": [18, -5.5], "height_m": 11.5}],
+        "candidates": {"truss_step_m": 3, "tripod_step_m": 3, "tripod_heights_m": [3, 10, 18],
+                       "tripod_elevations_deg": [0, 25, 50], "azimuth_step_deg": 30,
+                       "max_cameras_per_mount": 1, "min_camera_spacing_m": 1.5},
+        "optimiser": {"max_cameras": 200},
+    }
+    return d
+
+
+def test_advisor_recommendations_are_real_improvements():
+    from idps.plan.advisor import Advisor, apply
+    d = _short_venue()
+    plan, ev = optimise(site_from_dict(d), log=lambda *a: None)
+    d["tripod_zones"] = [{"id": "s", "offset_m": [1, 3], "height_m": [2, 20]}]
+    site = site_from_dict(d)
+    adv = Advisor(site, plan.cameras)
+    h = adv.health()
+    assert h.failing > 0 and h.worst_camera is not None
+    recs = adv.recommend(top=6)
+    assert recs and recs[0].points_fixed > 0
+    for r in recs:                                    # every claim checks out when applied
+        e2 = evaluate(site, apply(plan.cameras, r))
+        assert int((~e2.meets).sum()) == r.failing_after
+        assert r.detail
+    kinds = {r.kind for r in recs}
+    assert "add" in kinds
+    add = next(r for r in recs if r.kind == "add")
+    assert "tripod" in add.detail and " m out from the edge" in add.detail
+    P = np.array([c.position_m for c in plan.cameras])
+    assert np.linalg.norm(P - np.array(add.new_camera.position_m), axis=1).min() >= 1.5 - 1e-9   # spacing kept
+
+
+def test_auto_fix_reaches_full_coverage():
+    from idps.plan.advisor import auto_fix
+    d = _short_venue()
+    plan, _ = optimise(site_from_dict(d), log=lambda *a: None)
+    d["tripod_zones"] = [{"id": "s", "offset_m": [1, 3], "height_m": [2, 20]}]
+    site = site_from_dict(d)
+    steps, cams = auto_fix(site, plan.cameras)
+    assert steps and steps[-1].failing_after == 0
+    assert all(a.failing_after == b.failing_before for a, b in zip(steps, steps[1:]))
+    assert evaluate(site, cams).summary["fraction_meeting_all_requirements"] == pytest.approx(1.0)
+
+
+def test_reaim_prefers_servo_move_from_existing_base():
+    from idps.plan.advisor import SERVO_PAN_LIMIT_DEG, Advisor
+    d = _short_venue()
+    plan, _ = optimise(site_from_dict(d), log=lambda *a: None)
+    adv = Advisor(site_from_dict(d), plan.cameras)
+    for r in adv.recommend(top=10, kinds=("reaim",)):
+        old = next(c for c in plan.cameras if c.id == r.camera_id)
+        if r.new_camera.base_heading_deg == old.base_heading_deg:
+            assert abs(r.new_camera.pan_deg) <= SERVO_PAN_LIMIT_DEG and "No physical move" in r.detail
+        else:
+            assert "Turn the gimbal base" in r.detail
