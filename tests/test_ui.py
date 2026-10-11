@@ -531,3 +531,67 @@ def test_advisor_panel_find_apply_and_auto_fix(win, app):
     buttons("Apply all")[0].click()
     assert win.canvas.result[1].summary["fraction_meeting_all_requirements"] == pytest.approx(1.0)
     assert "✅" in adv.status.text()
+
+
+def test_live_tab_brain_alerts_and_accept(win, app):
+    """Live tab: simulated show, injected faults, alert cards, Accept / Live with it."""
+    from PySide6.QtWidgets import QPushButton
+    from idps.plan.model import Plan
+    from idps.plan.planner import evaluate
+    from idps.plan.site import site_from_dict
+    win.open_doc("examples/sites/lab.yaml")
+    site = site_from_dict(win.doc.to_site_dict(), str(win.doc.path))
+    plan = Plan.load("examples/plans/lab.yaml")
+    win._plan_done(plan, evaluate(site, plan.cameras), site)
+    win.tabs.setCurrentIndex(1)
+    assert not win.toolbar.isVisible()                    # drawing tools belong to the Planner
+    live = win.live
+    live.n_drones.setValue(6)
+    assert live.start()
+    live.step(50)
+    assert live.view.drones and not live.brain.issues
+    cams = [c.id for c in live.show_sim.cams]
+    live.fault_bump(cams[2])
+    live.fault_offline(cams[5])
+    live.step(20)
+    kinds = {i.kind for i in live.brain.issues.values()}
+    assert {"camera_moved", "camera_offline"} <= kinds
+    moved = next(i for i in live.brain.issues.values() if i.kind == "camera_moved")
+    card = live.cards[moved.id]
+    restore = card.findChild(QPushButton, "accept")
+    assert restore.text() == "Restore camera" and not restore.isHidden()
+    restore.click()
+    live.step(2)
+    assert moved.state == "resolved"
+    off = next(i for i in live.brain.issues.values() if i.kind == "camera_offline")
+    live.cards[off.id].findChild(QPushButton, "live_with").click()
+    assert off.state == "lived_with"
+    live.wait_analysis(120)
+    live.fault_offline(cams[5], False)
+    live.step(2)
+    assert off.state == "resolved"
+
+    live.fault_obstruction()
+    for _ in range(300):
+        live.step(10)
+        if any(i.kind == "blind_spot" for i in live.brain.issues.values()):
+            break
+    iss = next(i for i in live.brain.issues.values() if i.kind == "blind_spot")
+    for _ in range(5):
+        live.wait_analysis(240)
+        live.step(1)
+    live.wait_analysis(240)
+    live.step(1)
+    if iss.fixes:
+        before = list(win.canvas.result[0].cameras)
+        live.show_issue(iss.id)
+        assert live.view.highlight == iss.id and live.view.preview is iss.fixes[0]
+        live.cards[iss.id].findChild(QPushButton, "accept").click()
+        assert iss.state == "fix_accepted"
+        assert win.canvas.result[0].cameras != before            # the plan follows the accepted fix
+        assert live.show_sim.cams == list(win.canvas.result[0].cameras)
+    else:
+        assert iss.fix_text                                     # explains why nothing fits
+    win.grab()                                                  # renders the live layers
+    live.stop()
+    assert live.show_sim is None and not live.cards

@@ -363,6 +363,7 @@ class View3D(QWidget):
         self._trusses(prims, tok)
         self._coverage(prims)
         self._cameras(prims, tok)
+        self._extra(prims, tok)
         for _, kind, payload in sorted(prims, key=lambda q: -q[0]):
             if kind == "poly":
                 pts, pen, brush = payload
@@ -389,6 +390,9 @@ class View3D(QWidget):
         self._overlay_text(p, tok)
         self._draw_gizmo(p, tok)
         p.end()
+
+    def _extra(self, prims, tok):
+        """Subclasses add their own layers here (e.g. live drones and alerts)."""
 
     def _line(self, prims, a, b, pen):
         (P, z) = self.project([a, b])

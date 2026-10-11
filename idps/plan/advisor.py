@@ -16,7 +16,7 @@ camera health into the same functions.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -50,6 +50,26 @@ class Recommendation:
 
 
 @dataclass
+class Focus:
+    """Restrict the advisor to a problem region seen live (a repeated tracking loss).
+
+    Only evaluation points within `radius_m` of `center` count. `blocked` cameras are
+    the ones the model expects to see the region but that the live data shows do not
+    (scenery, a banner, rigging): their contribution there is removed, also after a
+    re-aim, since turning a camera does not clear its line of sight. `min_cameras`
+    defaults to the requirement; the brain raises it by one when the model looks fine
+    but tracking still drops (merged blobs, reflections), to buy margin there."""
+    center: tuple
+    radius_m: float
+    blocked: frozenset = frozenset()
+    min_cameras: int | None = None
+    points: object = None             # (K, 3) where the losses actually happened: evaluated too
+    block_at: object = None           # measured line-of-sight blocks at those points:
+                                      # {camera id: (position when measured, (K,) bool)}. They hold while the
+                                      # camera stays where it was (also after a re-aim), not after a move.
+
+
+@dataclass
 class Health:
     cameras: int
     points: int
@@ -61,12 +81,36 @@ class Health:
 
 
 class Advisor:
-    def __init__(self, site: Site, cameras: list[PlannedCamera], move_radius_m: float = 4.0):
+    def __init__(self, site: Site, cameras: list[PlannedCamera], move_radius_m: float = 4.0,
+                 focus: Focus | None = None, offline: frozenset | set = frozenset()):
+        """offline: ids of cameras that are down. They stay in the layout (and keep their
+        ids) but contribute nothing, and are never re-aimed or moved."""
         self.site, self.cams = site, list(cameras)
         self.grid = site_grid(site)
         self.pts = self.grid.points
+        extra = 0
+        if focus is not None and focus.points is not None and len(focus.points):
+            extra = len(focus.points)
+            self.pts = np.vstack([self.pts, np.asarray(focus.points, float).reshape(-1, 3)])
         req = site.requirements
-        self.obj = Objective(req.min_cameras, req.p95_mm / P95_PER_RMS)
+        self.focus = focus
+        self.offline = set(offline)
+        # Per-point camera requirement: raised inside the focus region. Points elsewhere keep the
+        # plain requirement and still count, so a fix for one region cannot break another.
+        self.need = np.full(len(self.pts), req.min_cameras)
+        self.mask = None
+        if focus is not None:
+            d = np.linalg.norm(self.pts - np.asarray(focus.center, float), axis=1)
+            r = float(focus.radius_m)
+            while (d <= r).sum() < 8 and r < 50:      # make sure the region holds some points
+                r *= 1.5
+            self.mask = d <= r
+            if extra:
+                self.mask[-extra:] = True
+            if focus.min_cameras is not None:
+                self.need[self.mask] = int(focus.min_cameras)
+        self.min_cameras = int(self.need.max())
+        self.obj = Objective(self.need, req.p95_mm / P95_PER_RMS)
         self.move_radius = move_radius_m
         self._cands: CandidateSet | None = None
         if self.cams:
@@ -74,6 +118,17 @@ class Advisor:
             R = np.array([c.R for c in self.cams])
             f = np.array([site.sensor.f_px(c.lens_mm) for c in self.cams])
             self.vis, self.inf = self._contrib(pos, R, f)
+            for k, c in enumerate(self.cams):
+                if c.id in self.offline:
+                    self.vis[k], self.inf[k] = False, 0.0
+                elif self._is_blocked(c.id):
+                    self.vis[k, self.mask], self.inf[k, self.mask] = False, 0.0
+            if extra and focus.block_at:
+                P0 = len(self.pts) - extra
+                for k, c in enumerate(self.cams):
+                    B = self._measured_block(c)
+                    if B is not None:
+                        self.vis[k, P0:][B], self.inf[k, P0:][B] = False, 0.0
         else:
             self.vis = np.zeros((0, len(self.pts)), bool)
             self.inf = np.zeros((0, len(self.pts), 6))
@@ -85,18 +140,34 @@ class Advisor:
         return contributions(np.atleast_2d(pos), R.reshape(-1, 3, 3), f_px, self.pts, self.site.sensor,
                              self.site.requirements.noise, self.site.limits)
 
+    def _measured_block(self, cam: PlannedCamera):
+        """(K,) mask of loss points this camera was measured not to see through, or None."""
+        if self.focus is None or not self.focus.block_at or cam.id not in self.focus.block_at:
+            return None
+        pos, B = self.focus.block_at[cam.id]
+        if np.linalg.norm(np.asarray(pos, float) - np.asarray(cam.position_m, float)) > 0.01:
+            return None                                      # moved since: the evidence no longer applies
+        return np.asarray(B, bool)
+
+    def _is_blocked(self, cam_id) -> bool:
+        return self.focus is not None and cam_id in self.focus.blocked
+
     def _failing(self, n, info):
-        """Points failing the *requirement* (not the design margin)."""
+        """Points failing the *requirement* (not the design margin), with the raised camera
+        count inside a focus region."""
         req = self.site.requirements
         p95 = rms_mm(info) * P95_PER_RMS
-        return ~((n >= req.min_cameras) & (p95 <= req.p95_mm))
+        return ~((n >= self.need) & (p95 <= req.p95_mm))
+
+    def _deficit(self, n, info):
+        return self.obj.voxel_deficit(n, info)
 
     def _evaluate(self, n0, info0, vis, inf):
         """For C options added to base state (n0, info0): failing count and total deficit."""
         n = n0[None, :] + vis
         info = info0[None, :, :] + inf
         fail = self._failing(n, info).sum(axis=1)
-        deficit = self.obj.voxel_deficit(n, info).sum(axis=1)
+        deficit = self._deficit(n, info).sum(axis=1)
         return fail, deficit
 
     @property
@@ -106,17 +177,26 @@ class Advisor:
         return self._cands
 
     def health(self) -> Health:
+        """Whole-layout health; in focus mode, of the focus region only."""
         fail = self._failing(self.n, self.info)
+        if self.mask is not None:
+            fail = fail & self.mask
         g = self.grid
         vol = self.site.volume.volume_m3
         frac_bad_grid = float(fail[:g.n_grid].mean()) if g.n_grid else float(fail.mean())
         worst, worst_pts = None, 0
         for k, c in enumerate(self.cams):
-            extra = int((self._failing(self.n - self.vis[k], self.info - self.inf[k]) & ~fail).sum())
+            if c.id in self.offline:
+                continue
+            lost = self._failing(self.n - self.vis[k], self.info - self.inf[k])
+            if self.mask is not None:
+                lost &= self.mask
+            extra = int((lost & ~fail).sum())
             if extra > worst_pts:
                 worst, worst_pts = c.id, extra
-        return Health(len(self.cams), len(self.pts), int(fail.sum()), float(1 - fail.mean()),
-                      frac_bad_grid * vol, worst, worst_pts)
+        npts = len(self.pts) if self.mask is None else int(self.mask.sum())
+        return Health(len(self.cams) - len(self.offline & {c.id for c in self.cams}), npts, int(fail.sum()),
+                      float(1 - fail.sum() / max(npts, 1)), frac_bad_grid * vol, worst, worst_pts)
 
     # ------------------------------------------------------------- fixes
     def _spacing_ok(self, positions, exclude: int | None, mount_keys=None, own_key=None):
@@ -147,7 +227,7 @@ class Advisor:
 
     def recommend(self, top: int = 6, kinds=("reaim", "move", "add"), progress=None) -> list[Recommendation]:
         base_fail = int(self._failing(self.n, self.info).sum())
-        base_def = float(self.obj.voxel_deficit(self.n, self.info).sum())
+        base_def = float(self._deficit(self.n, self.info).sum())
         if base_fail == 0:
             return []
         recs: list[Recommendation] = []
@@ -155,6 +235,8 @@ class Advisor:
 
         if "reaim" in kinds or "move" in kinds:
             for k, cam in enumerate(self.cams):
+                if cam.id in self.offline:
+                    continue
                 if progress:
                     progress(f"Checking {cam.id} ({k + 1}/{len(self.cams)})")
                 n0, info0 = self.n - self.vis[k], self.info - self.inf[k]
@@ -203,6 +285,12 @@ class Advisor:
         el = np.array([e for _, e in aims])
         pos = np.repeat(np.array(cam.position_m, float)[None], len(aims), 0)
         vis, inf = self._contrib(pos, rotation_from_az_el(az, el), np.full(len(aims), self.site.sensor.f_px(cam.lens_mm)))
+        if self._is_blocked(cam.id):                        # its line of sight there stays blocked
+            vis[:, self.mask], inf[:, self.mask] = False, 0.0
+        B = self._measured_block(cam)
+        if B is not None:
+            P0 = len(self.pts) - len(B)
+            vis[:, P0:][:, B], inf[:, P0:][:, B] = False, 0.0
         fail, deficit = self._evaluate(n0, info0, vis, inf)
         b = int(np.lexsort((deficit, fail))[0])
         if fail[b] >= base_fail and deficit[b] >= base_def - 1e-6:
@@ -279,7 +367,7 @@ def _where(site: Site, cam: PlannedCamera) -> str:
 
 
 def auto_fix(site: Site, cameras: list[PlannedCamera], max_steps: int = 12, kinds=("reaim", "move", "add"),
-             progress=None, cancel=None):
+             progress=None, cancel=None, focus: Focus | None = None, offline=frozenset()):
     """Apply the best fix, re-check, repeat. Returns (ordered list of fixes, final cameras).
     Stops when every point meets the requirement, nothing helps, or max_steps is reached."""
     steps: list[Recommendation] = []
@@ -287,13 +375,16 @@ def auto_fix(site: Site, cameras: list[PlannedCamera], max_steps: int = 12, kind
     for step in range(max_steps):
         if cancel is not None and cancel():
             break
-        adv = Advisor(site, cams)
+        adv = Advisor(site, cams, focus=focus, offline=offline)
         recs = adv.recommend(top=1, kinds=kinds,
                              progress=(lambda m, s=step: progress(f"Step {s + 1}: {m}")) if progress else None)
         if not recs:
             break
         steps.append(recs[0])
         cams = apply(cams, recs[0])
+        if focus is not None and recs[0].kind == "move" and recs[0].camera_id in focus.blocked:
+            # moved away from whatever blocked it: judge its new view on the model
+            focus = replace(focus, blocked=focus.blocked - {recs[0].camera_id})
         if recs[0].failing_after == 0:
             break
     return steps, cams

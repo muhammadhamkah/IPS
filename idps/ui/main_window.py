@@ -74,9 +74,9 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.addTab(page, "Planner")
-        self.tabs.addTab(placeholder("Live tracking\n\nReal-time 3D positions, camera health, latency and "
-                                     "recording arrive with the positioning engine (roadmap phases 3-7)."),
-                         "Live tracking")
+        from idps.ui.live.tab import LiveTab
+        self.live = LiveTab(self)
+        self.tabs.addTab(self.live, "Live tracking")
         self.tabs.addTab(placeholder("Calibration\n\nAim cameras to plan, wand + calibration square, "
                                      "continuous calibration and tripod restore (roadmap phase 6)."),
                          "Calibration")
@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
 
         self._actions()
         self._toolbar()
+        self.tabs.currentChanged.connect(self._tab_changed)
         self._menus()
         self.cursor_label = QLabel("")
         self.statusBar().addPermanentWidget(self.cursor_label)
@@ -170,6 +171,7 @@ class MainWindow(QMainWindow):
 
     def _toolbar(self):
         tb = QToolBar("Tools")
+        self.toolbar = tb
         tb.setMovable(False)
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.addToolBar(tb)
@@ -275,6 +277,10 @@ class MainWindow(QMainWindow):
         lay.addLayout(bar)
         lay.addWidget(self.view3d, 1)
         return page
+
+    def _tab_changed(self, i: int):
+        """The drawing toolbar belongs to the Planner."""
+        self.toolbar.setVisible(i == 0)
 
     def _tool_changed(self, tool: str):
         """Keep the toolbar's highlighted tool in step with the canvas (e.g. after
@@ -599,6 +605,7 @@ class MainWindow(QMainWindow):
         if not self._maybe_save():
             e.ignore()
             return
+        self.live.shutdown()
         for thread, worker in list(self._running):
             worker.stop()
             thread.quit()

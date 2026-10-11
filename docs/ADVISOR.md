@@ -31,7 +31,7 @@ the show itself, the system says what is wrong, why, and the exact fix. The fix 
 | **Planning** (done) | Venue, mounts, planned cameras, predicted coverage and accuracy | Points failing ≥ 3 cameras / ≤ 10 mm; most critical camera; single-camera-loss robustness | Add a camera at …, re-aim C004, raise the truss |
 | **Install** | Planned positions; as-installed cameras from the crew checklist | Install tolerance per camera | "C012 is mounted 0.4 m off plan: still fine" or "re-aim it" |
 | **Calibration** | Wand samples, bundle-adjustment residuals, as-built poses, beacon visibility | Unwanded regions, high-residual cameras, coverage recomputed with *actual* poses | "Wand more near V2 above 2 m", "C007 sees only 5 beacons: re-aim it to pan +12°" |
-| **Show / flight** | Station health (FPS, drops, PTP offset, temperature), live re-pose drift, packets, tracks where drones are lost | Camera knocked, a station down, timing drift, a repeated blind spot | "C004 moved: run Restore", "drones lose tracking above 8 m near V2: add a camera at …" |
+| **Show / flight** (brain, simulated feed now) | Station health (FPS, drops, PTP offset, temperature), live re-pose drift, packets, tracks where drones are lost | Camera knocked, a station down, timing drift, a repeated blind spot | "C004 moved: run Restore", "drones lose tracking above 8 m near V2: add a camera at …" |
 
 The same engine serves every phase; only its inputs change. During calibration and flight it is
 fed *measured* data (actual poses, observed per-point coverage, dropped stations) instead of
@@ -50,8 +50,61 @@ engine's QA stage (ARCHITECTURE §5.1).
   servo pan range (a re-aim beyond ±90° asks for the gimbal base to be turned).
   Mounts drawn after planning, such as a tripod strip, are used too.
 
+## The brain: live monitoring (`idps/monitor/`, Live tracking tab)
+
+The operator does not describe problems: the brain watches every tick on its own and raises an
+alert only for a *repeated* problem, with the evidence and a fix. The operator just decides:
+**Accept fix** or **Live with it**.
+
+| What it watches | How it decides | What it recommends |
+|---|---|---|
+| **Tracking loss** | Each drone seen by fewer than the required cameras for ≥ 0.2 s is a loss episode. Episodes are clustered in 2 m cells over the last 3 minutes. A *pattern* is ≥ 5 episodes from ≥ 2 drones (or ≥ 10 from one drone over ≥ 30 s), so a one-off occlusion by another drone stays silent. | A focused advisor run (below): re-aim / move / add, with tape-measure dimensions |
+| **Camera offline** | No data for 1 s | Get it back online; a motorised stop-gap re-aim of a neighbour if the others don't cover its area (otherwise the alert is downgraded to a warning) |
+| **Camera knocked** | Live re-pose differs from calibration by ≥ 0.5 mrad (critical ≥ 2 mrad) | **Restore**: the servos re-aim it to the calibrated view and the saved calibration is reloaded, with no re-wand |
+
+**Why it happens.** For each pattern the brain compares what the model expected with what
+happened:
+* cameras that should see the region but see drones there far less often than elsewhere are
+  called **blocked** (set pieces, rigging, a banner);
+* cameras that are more than 15° below the drones are called out separately. The marker on top
+  of a drone is hidden from them by the drone's own body, and cameras above that height fix it.
+
+Losses while a camera was offline or knocked are explained by that fault and are not reported
+twice.
+
+**Focused fixes.** `Advisor(focus=Focus(...))` scores fixes for the problem region:
+* The places where drones were actually lost become evaluation points.
+* At those points, an existing camera that had the drone in view but missed it counts as
+  blocked. This evidence is tied to the camera's position, so it survives a re-aim (same line of
+  sight) and is cleared by a move.
+* Every other point in the venue still counts, so a fix for one region cannot break another.
+* If no change meets the requirement there, the brain asks for one camera of margin.
+* When a fix only partly helps, the alert says so and names what else to do: clear the
+  obstruction, or add a tripod zone or truss nearby.
+
+**Follow-up.**
+* *Accepted:* the plan, install sheet and Planner update. The brain ignores losses for 5 s
+  while things settle, then confirms the fix once drones pass through the region for 90 s
+  without a loss. If losses continue, it reopens the alert with the next step.
+* *Two rounds without a cure:* the alert says something physical is probably in the way and
+  names the lines of sight to walk. From then on it only suggests adding a camera from a new
+  direction.
+* *Lived with:* no more alerts unless the loss rate at least doubles.
+* *Quiet:* issues that go quiet resolve themselves. An issue that comes back soon after is
+  reopened rather than duplicated.
+
+**Rehearsal.** Until the positioning engine exists, a simulated show feeds the brain
+(`idps/monitor/simsource.py`):
+* drones fly a repeating formation route inside the polygon volume;
+* each station's detections are modelled per drone, covering field of view, brightness, the
+  drone's own body, other drones and scenery boxes;
+* **Inject fault** can hang obstructions where the drones fly, take a camera offline, or knock
+  one.
+
 ## Next steps
 
 1. Feed calibration results (as-built poses, residuals) into `Advisor` in place of planned poses.
-2. Live health rules in the engine QA stage, raised as advisor alerts with a fix attached.
-3. AI assistant panel, after the owners decide on connectivity and keys.
+2. Connect the brain to the positioning engine: `TrackSample` per drone per frame batch and
+   `StationStatus` from the HEALTH packets and the live re-pose.
+3. AI assistant panel, after the owners decide on connectivity and keys. It would explain alerts
+   and answer questions about them, using the brain's numbers.

@@ -20,6 +20,30 @@ def distort(xn: np.ndarray, yn: np.ndarray, k):
     return xd, yd
 
 
+def segments_hit_boxes(p0, X: np.ndarray, boxes) -> np.ndarray:
+    """Segments p0 -> X[i] crossing any axis-aligned box (lo, hi) (slab test). (M,) bool."""
+    X = np.atleast_2d(np.asarray(X, float))
+    hit = np.zeros(len(X), bool)
+    if not boxes:
+        return hit
+    p0 = np.asarray(p0, float)
+    d = X - p0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        inv = np.where(np.abs(d) > 1e-12, 1.0 / d, np.inf)
+        for lo, hi in boxes:
+            t1 = (np.asarray(lo, float) - p0) * inv
+            t2 = (np.asarray(hi, float) - p0) * inv
+            # a zero direction component: inside the slab means (-inf, inf), outside means empty
+            par = np.abs(d) <= 1e-12
+            inside = (p0 >= np.asarray(lo)) & (p0 <= np.asarray(hi))
+            t1 = np.where(par, np.where(inside, -np.inf, np.inf), t1)
+            t2 = np.where(par, np.where(inside, np.inf, -np.inf), t2)
+            tmin = np.max(np.minimum(t1, t2), axis=1)
+            tmax = np.min(np.maximum(t1, t2), axis=1)
+            hit |= (tmax >= np.maximum(tmin, 0.0)) & (tmin <= 1.0)
+    return hit
+
+
 class SimStation:
     def __init__(self, station_id: int, pos, R, lens_mm: float, model: CameraModel, timing: TimingModel,
                  markers: MarkerModel, rng: np.random.Generator, duration_s: float):
@@ -51,6 +75,7 @@ class SimStation:
         self.reflections = [(rng.uniform(5, self.W - 5), rng.uniform(5, self.H - 5), rng.uniform(80, 400))
                             for _ in range(model.static_reflections)]
         self.dropped = 0
+        self.occluders: list = []         # scenery boxes (lo, hi) blocking lines of sight
 
     # ------------------------------------------------------------------
     def frame_time(self, k: int) -> float:
@@ -88,6 +113,7 @@ class SimStation:
             ok = (z > 0.3) & (u >= 0) & (u <= self.W - 1) & (v >= 0) & (v <= self.H - 1)
             ok &= cosu > mk.self_occlusion_cos
             ok &= ~self._occluded(marker_pos, drone_centres, marker_drone)
+            ok &= ~segments_hit_boxes(self.pos, marker_pos, self.occluders)
             emission = mk.emission_floor + (1 - mk.emission_floor) * np.maximum(0.0, cosu)
             peak_true = (m.peak_at_10m * levels * emission * (10.0 / np.maximum(rng_m, 0.1)) ** 2
                          * (m.exposure_us / m.exposure_ref_us))
