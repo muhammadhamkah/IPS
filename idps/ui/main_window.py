@@ -21,7 +21,7 @@ from idps.ui.planner.results import ResultsPanel
 from idps.ui.planner.worker import start_worker
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "sites"
-TOOL_KEYS = {"select": "V", "volume": "P", "truss": "T", "zone": "A", "nogo": "N"}
+TOOL_KEYS = {"select": "V", "volume": "P", "truss": "T", "zone": "A", "nogo": "N", "measure": "M"}
 
 
 def placeholder(text: str) -> QWidget:
@@ -158,6 +158,10 @@ class MainWindow(QMainWindow):
         self.a_snap = self._act("Snap to Grid", self._snap_toggled, None, "Snap clicks to the grid "
                                 "(hold Option to place freely)", checkable=True)
         self.a_snap.setChecked(True)
+        self.a_dims = self._act("Dimensions", self._dims_toggled, "Ctrl+D",
+                                "Show install measurements: distances along trusses and volume edges",
+                                checkable=True)
+        self.a_dims.setChecked(True)
 
     def _toolbar(self):
         tb = QToolBar("Tools")
@@ -167,6 +171,7 @@ class MainWindow(QMainWindow):
         for a in self.tool_actions.values():
             tb.addAction(a)
         tb.addSeparator()
+        tb.addAction(self.a_dims)
         tb.addAction(self.a_snap)
         self.snap_combo = QComboBox()
         for s in ("0.1", "0.25", "0.5", "1", "2", "5"):
@@ -214,6 +219,7 @@ class MainWindow(QMainWindow):
         v = mb.addMenu("View")
         v.addAction(self.a_view2d)
         v.addAction(self.a_view3d)
+        v.addAction(self.a_dims)
         v.addSeparator()
         for a in (self.a_zoom_in, self.a_zoom_out, self.a_fit):
             v.addAction(a)
@@ -293,6 +299,10 @@ class MainWindow(QMainWindow):
         self.tool_actions[key].setChecked(True)
         self.canvas.set_tool(key)
         self.canvas.setFocus()
+
+    def _dims_toggled(self, on):
+        self.canvas.show_dimensions = on
+        self.canvas.viewport().update()
 
     def _snap_toggled(self, on):
         self.canvas.snap_enabled = on
@@ -515,6 +525,8 @@ class MainWindow(QMainWindow):
         folder.mkdir(parents=True, exist_ok=True)
         plan.save(folder / "plan.yaml")
         plan.write_csv(folder / "cameras.csv")
+        from idps.plan.measure import chains_for_site, write_csv
+        write_csv(folder / "measurements.csv", chains_for_site(self.last_site, plan.cameras))
         write_report(folder / "report.html", self.last_site, plan, ev, "IDPS camera plan")
         return folder / "report.html"
 
@@ -525,7 +537,7 @@ class MainWindow(QMainWindow):
                                                   self.settings.value("lastDir", str(Path.home())))
         if folder:
             report = self._write_outputs(Path(folder))
-            self.statusBar().showMessage(f"Saved plan.yaml, cameras.csv and report.html to {folder}", 8000)
+            self.statusBar().showMessage(f"Saved plan.yaml, cameras.csv, measurements.csv and report.html to {folder}", 8000)
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(report)))
 
     def open_report(self):

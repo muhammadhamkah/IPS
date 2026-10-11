@@ -174,7 +174,8 @@ class Inspector(QTabWidget):
         self.setDocumentMode(True)
         self.sel_page = QWidget()
         self.sel_layout = QVBoxLayout(self.sel_page)
-        self.sel_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # No AlignTop here: with it, rows get their (underestimated) size hint and overlap;
+        # a trailing stretch keeps content at the top while honouring minimum heights.
         self.addTab(self._scroll(self.sel_page), "Inspector")
         self.settings = SettingsPage(doc)
         self.addTab(self._scroll(self.settings), "Venue && requirements")
@@ -194,7 +195,7 @@ class Inspector(QTabWidget):
 
     def _clear(self):
         while self.sel_layout.count():
-            w = self.sel_layout.takeAt(0).widget()
+            w = self.sel_layout.takeAt(0).widget()          # stretch items have no widget
             if w is not None:
                 w.hide()                 # deleteLater is deferred; hide now so panels never overlap
                 w.deleteLater()
@@ -218,6 +219,7 @@ class Inspector(QTabWidget):
         elif kind == "camera":
             self.sel_layout.addWidget(self._camera_box(sel[1]))
         self.sel_layout.addWidget(self._mounts_box())
+        self.sel_layout.addStretch(1)
         self.settings.refresh()
 
     # ---------------------------------------------------------------- volume
@@ -517,6 +519,7 @@ class SettingsPage(QWidget):
         ("Cameras", "Max detection range", ("visibility", "max_range_m"), "float", (5, 300, " m")),
         ("Cameras", "Max cameras", ("optimiser", "max_cameras"), "int", (1, 2000)),
         ("Cameras", "Cameras per mount", ("candidates", "max_cameras_per_mount"), "int", (1, 6)),
+        ("Cameras", "Min spacing between cameras", ("candidates", "min_camera_spacing_m"), "float", (0, 50, " m")),
         ("Candidate density", "Truss spacing", ("candidates", "truss_step_m"), "float", (0.5, 50, " m")),
         ("Candidate density", "Camera drop below truss", ("candidates", "truss_drop_m"), "float", (0, 5, " m")),
         ("Candidate density", "Truss tilt angles (°)", ("candidates", "truss_elevations_deg"), "list", None),

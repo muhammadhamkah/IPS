@@ -128,3 +128,40 @@ def test_design_margin_is_used_and_validated():
     assert ev.summary["design_margin"] == {"min_cameras": 4, "p95_mm": 7.0}
     with pytest.raises(ValueError):
         small_site(design={"min_cameras": 2})
+
+
+def test_min_spacing_between_mounts():
+    site = small_site(candidates={"truss_step_m": 0.5, "tripod_step_m": 0.5, "tripod_heights_m": [2.0],
+                                  "tripod_elevations_deg": [-20, 0], "azimuth_step_deg": 45,
+                                  "max_cameras_per_mount": 1, "min_camera_spacing_m": 2.0})
+    plan, ev = optimise(site, log=lambda *a: None)
+    P = np.array([c.position_m for c in plan.cameras])
+    d = np.linalg.norm(P[:, None] - P[None], axis=-1)
+    np.fill_diagonal(d, np.inf)
+    assert d.min() >= 2.0 - 1e-9
+
+
+def test_measurement_chains_truss_and_corner_tripod():
+    from idps.plan.measure import chains, describe
+    from idps.plan.model import PlannedCamera
+    poly = [[0, 0], [10, 0], [10, 6], [0, 6]]
+    trusses = [{"id": "T1", "start": [-1, 7], "end": [11, 7]}]
+    cams = [PlannedCamera("C1", "truss", "T1", [2, 7, 9], 0, -60, 2.8, along_truss_m=3.0),
+            PlannedCamera("C2", "truss", "T1", [5, 7, 9], 0, -60, 2.8, along_truss_m=6.0),
+            PlannedCamera("C3", "tripod", "s", [-2, -2, 3], 45, 0, 2.8),       # corner, beyond V0
+            PlannedCamera("C4", "tripod", "s", [4, -1.5, 3], 90, 0, 2.8)]
+    chs = {c.ref: c for c in chains(trusses, poly, cams)}
+    t = chs["T1"]
+    assert [s for s, _, _ in t.stations] == [3.0, 6.0] and t.segments() == [3.0, 3.0]
+    e0 = chs["E0 (V0->V1)"]
+    assert e0.stations[0][0] == pytest.approx(-2.0) and e0.stations[0][2] == pytest.approx(2.0)   # 2 before V0, 2 out
+    assert e0.stations[1][0] == pytest.approx(4.0) and e0.stations[1][2] == pytest.approx(1.5)
+    assert "before V0" in describe(e0)
+
+
+def test_cli_writes_measurements(tmp_path):
+    from idps.plan.cli import main
+    assert main(["optimise", str(LAB), "-o", str(tmp_path)]) == 0
+    rows = (tmp_path / "measurements.csv").read_text().splitlines()
+    assert rows[0].startswith("reference,measure_from") and len(rows) > 1
+    assert "Install measurements" in (tmp_path / "report.html").read_text()

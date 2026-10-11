@@ -465,3 +465,22 @@ def test_3d_coverage_modes_render_and_count_problems(win, app):
         win.cov_combo.setCurrentIndex(i)
         assert v.coverage_mode == win.cov_combo.itemData(i)
         assert not v.grab().isNull()
+
+
+def test_measure_tool_and_dimensions_toggle(win, app):
+    c = win.canvas
+    c.resetTransform()
+    c.scale(20, -20)
+    draw_rect(win)                                     # 20 x 10 m
+    win.set_tool("measure")
+    c.centerOn(0, 0)
+    msgs = []
+    c.message.connect(msgs.append)
+    click(c, -10, -5)                                  # snaps to V0
+    click(c, 10, -5)                                   # snaps to V3
+    assert c.ruler == [(-10.0, -5.0), (10.0, -5.0)]
+    assert "20.000 m" in msgs[-1]
+    QTest.keyClick(c.viewport(), Qt.Key.Key_Escape)
+    assert c.ruler == []
+    win.a_dims.trigger()
+    assert c.show_dimensions is False

@@ -248,6 +248,15 @@ def write_report(path: str | Path, site: Site, plan: Plan, ev: Evaluation, title
 
     level_rows = "".join(level_row(k, z) for k, z in enumerate(zs))
 
+    from idps.plan.measure import chains_for_site
+    measure_rows = ""
+    for ch in chains_for_site(site, plan.cameras):
+        line = ("Truss " if ch.kind == "truss" else "Edge ") + ch.ref
+        for (dist, ids, off), seg in zip(ch.stations, ch.segments()):
+            measure_rows += (f"<tr><td>{html.escape(line)}</td><td>{html.escape(ch.origin_label)}</td>"
+                             f"<td>{' '.join(ids)}</td><td>{dist:.2f}</td><td>{seg:.2f}</td>"
+                             f"<td>{f'{off:.2f}' if ch.kind == 'edge' else ''}</td></tr>")
+
     cam_rows = "".join(
         f"<tr><td>{c.id}</td><td>{c.mount_type}</td><td>{c.mount_id}</td>"
         f"<td>{'' if c.along_truss_m is None else f'{c.along_truss_m:.2f}'}</td>"
@@ -296,5 +305,11 @@ the requirements if this camera were missing.</p>
 <div class="scroll"><table><tr><th>ID</th><th>mount</th><th>truss/zone</th><th>along truss (m)</th><th>X</th><th>Y</th>
 <th>Z</th><th>base heading</th><th>pan</th><th>tilt</th><th>lens (mm)</th><th>spacing to neighbour (m)</th>
 <th>critical</th><th>install note</th></tr>{cam_rows}</table></div>
+<h2>Install measurements</h2>
+<p class="muted">Tape-measure positions. Trusses: distance along the truss from its start end. Tripods: distance along
+the nearest volume edge's line from its first vertex (negative or past the far vertex = on the extended line), then
+square out from the edge. <i>From previous</i> is the gap to the previous mount on the same line.</p>
+<div class="scroll"><table><tr><th>line</th><th>measure from</th><th>camera(s)</th><th>distance (m)</th>
+<th>from previous (m)</th><th>out from edge (m)</th></tr>{measure_rows}</table></div>
 </main></body></html>"""
     Path(path).write_text(doc)

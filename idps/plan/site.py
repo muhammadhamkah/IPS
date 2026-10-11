@@ -57,7 +57,8 @@ class CandidateSettings:
     tripod_heights_m: list[float] = field(default_factory=lambda: [4.0, 12.0, 20.0])
     tripod_elevations_deg: list[float] = field(default_factory=lambda: [0.0, 25.0, 50.0, 75.0])
     azimuth_step_deg: float = 30.0
-    max_cameras_per_mount: int = 2
+    max_cameras_per_mount: int = 1
+    min_camera_spacing_m: float = 1.5      # between cameras on different mounts
 
 
 @dataclass

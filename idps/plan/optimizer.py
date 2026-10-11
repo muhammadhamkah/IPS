@@ -105,6 +105,11 @@ class Optimiser:
         mount_use: dict[str, int] = {}
         cap = self.site.candidates.max_cameras_per_mount
         chosen_aims: set = set()
+        # Cameras on different mounts must be at least min_spacing apart: clustered
+        # cameras see points along near-parallel rays (poor triangulation) and are
+        # all blocked by the same obstruction.
+        spacing = float(self.site.candidates.min_camera_spacing_m)
+        blocked = np.zeros(N, bool)
         res.stopped_because = "no candidate improves the layout"
         while heap:
             if total <= 1e-9:
@@ -116,7 +121,8 @@ class Optimiser:
             check()
             _, i = heapq.heappop(heap)
             key = self.c.mount_key[i]
-            if mount_use.get(key, 0) >= cap or (key, self.c.az[i], self.c.el[i]) in chosen_aims:
+            if (blocked[i] or mount_use.get(key, 0) >= cap
+                    or (key, self.c.az[i], self.c.el[i]) in chosen_aims):
                 continue
             g = float(self._gains([i], n, info, base_def)[0])
             if g <= 1e-9:
@@ -133,6 +139,9 @@ class Optimiser:
             res.deficit_history.append(total)
             mount_use[key] = mount_use.get(key, 0) + 1
             chosen_aims.add((key, self.c.az[i], self.c.el[i]))
+            if spacing > 0:
+                near = np.linalg.norm(self.c.pos - self.c.pos[i], axis=1) < spacing
+                blocked |= near & (self.c.mount_key != key)
             if len(res.selected) % 10 == 0:
                 self.log(f"  {len(res.selected):4d} cameras  deficit {total:9.2f}"
                          f"  ({time.time() - t0:5.1f} s)")

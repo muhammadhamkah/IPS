@@ -15,6 +15,8 @@ def _write_outputs(out: Path, site, plan, ev, title):
     out.mkdir(parents=True, exist_ok=True)
     plan.save(out / "plan.yaml")
     plan.write_csv(out / "cameras.csv")
+    from idps.plan.measure import chains_for_site, write_csv
+    write_csv(out / "measurements.csv", chains_for_site(site, plan.cameras))
     try:
         from idps.plan.report import write_report
         write_report(out / "report.html", site, plan, ev, title)
@@ -22,7 +24,7 @@ def _write_outputs(out: Path, site, plan, ev, title):
         print("note: matplotlib not installed; skipping report.html", file=sys.stderr)
     print(json.dumps({k: v for k, v in plan.summary.items()
                       if k not in ("requirements", "design_margin")}, indent=2))
-    print(f"wrote {out}/plan.yaml, cameras.csv, report.html")
+    print(f"wrote {out}/plan.yaml, cameras.csv, measurements.csv, report.html")
 
 
 def main(argv=None) -> int:

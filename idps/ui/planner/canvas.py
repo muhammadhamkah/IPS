@@ -23,6 +23,7 @@ TOOLS = {
     "truss": "Draw truss",
     "zone": "Draw tripod area",
     "nogo": "Draw no-go area",
+    "measure": "Measure distance",
 }
 HANDLE_PX = 7
 HIT_PX = 9
@@ -120,6 +121,8 @@ class PlanCanvas(QGraphicsView):
         self.overlay_mode = "count"      # "none" | "count" | "accuracy"
         self.overlay_level = 0
         self.highlight_camera: int | None = None
+        self.show_dimensions = True      # install measurements once a plan exists
+        self.ruler: list = []            # Measure tool points
         self.overlay = OverlayItem()
 
         doc.changed.connect(self.rebuild)
@@ -365,8 +368,12 @@ class PlanCanvas(QGraphicsView):
                 if n > 1:
                     self._text(p, QPointF(x, y), f"×{n}", tok["text"], dx=-22, dy=-6, size=10, bold=True)
 
+        if self.result is not None and self.show_dimensions:
+            self._draw_dimensions(p, tok)
+        self._draw_ruler(p, tok)
+
         # drawing preview
-        if self.tool != "select" and (self.pending or self.cursor_pt):
+        if self.tool not in ("select", "measure") and (self.pending or self.cursor_pt):
             c = QColor(tok["select"])
             p.setPen(QPen(c, 1.6 * px, Qt.PenStyle.DashLine))
             pts = list(self.pending) + ([self.cursor_pt] if self.cursor_pt else [])
@@ -394,6 +401,86 @@ class PlanCanvas(QGraphicsView):
                        "Draw the flight volume: press P (or the Volume tool)\n"
                        "and click the floor outline vertices. Return or click V0 to close.")
             p.restore()
+
+    # ------------------------------------------------------------- dimensions
+    def _dim(self, p: QPainter, a, b, offset_px: float, label: str, colour: QColor):
+        """Architectural dimension: line between a and b shifted offset_px to the
+        left of a->b, extension lines back to the points, ticks, and a label."""
+        px = self.px()
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        d = b - a
+        L = float(np.linalg.norm(d))
+        if L < 1e-6:
+            return
+        u = d / L
+        nrm = np.array([-u[1], u[0]]) * offset_px * px
+        a2, b2 = a + nrm, b + nrm
+        p.setPen(QPen(colour, 1.0 * px))
+        p.drawLine(QPointF(*a2), QPointF(*b2))
+        ext = nrm / max(np.linalg.norm(nrm), 1e-12) * 4 * px
+        for q, q2 in ((a, a2), (b, b2)):
+            p.drawLine(QPointF(*q), QPointF(*(q2 + ext)))
+            t = (u + nrm / max(np.linalg.norm(nrm), 1e-12)) * 4 * px          # 45° tick
+            p.setPen(QPen(colour, 1.6 * px))
+            p.drawLine(QPointF(*(q2 - t)), QPointF(*(q2 + t)))
+            p.setPen(QPen(colour, 1.0 * px))
+        if L / px > 34:                                    # label only where it fits
+            mid = (a2 + b2) / 2 + nrm / max(np.linalg.norm(nrm), 1e-12) * 7 * px
+            v = self.mapFromScene(QPointF(*mid))
+            p.save()
+            p.resetTransform()
+            f = QFont(self.font())
+            f.setPointSizeF(9)
+            p.setFont(f)
+            w = p.fontMetrics().horizontalAdvance(label) + 6
+            r = QRectF(v.x() - w / 2, v.y() - 8, w, 16)
+            bg = QColor(theme.tokens()["surface"])
+            bg.setAlphaF(0.85)
+            p.fillRect(r, bg)
+            p.setPen(colour)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+            p.restore()
+
+    def _draw_dimensions(self, p: QPainter, tok):
+        """Chained install measurements: truss start -> each camera mount, and
+        volume vertex -> each tripod along its nearest edge (+ offset out)."""
+        from idps.plan.measure import chains
+        plan, _ = self.result
+        col = QColor(tok["text2"])
+        for ch in chains(self.doc.data["trusses"], self.doc.data["volume"]["polygon"], plan.cameras):
+            o, u = np.array(ch.origin), np.array(ch.direction)
+            prev = 0.0
+            side = 26 if ch.kind == "truss" else -22        # edges: inside the volume, away from tripods
+            for s, ids, off in ch.stations:
+                self._dim(p, o + u * prev, o + u * s, side, f"{s - prev:.2f}", col)
+                if ch.kind == "edge" and off > 0:
+                    foot = o + u * s
+                    out = np.array([u[1], -u[0]])
+                    cam = next(c for c in plan.cameras if c.id == ids[0])
+                    if np.dot(np.array(cam.position_m[:2]) - foot, out) < 0:
+                        out = -out
+                    if s < 0 or s > ch.length:
+                        p.setPen(QPen(col, 1.0 * self.px(), Qt.PenStyle.DotLine))     # edge line extended
+                        p.drawLine(QPointF(*o), QPointF(*foot))
+                    self._dim(p, foot, foot + out * off, 0, f"{off:.2f}", col)
+                prev = s
+            self._text(p, QPointF(*o), "0", col, dx=-10, dy=-10, size=8)
+
+    def _draw_ruler(self, p: QPainter, tok):
+        pts = list(self.ruler)
+        if self.tool == "measure" and len(pts) == 1 and self.cursor_pt:
+            pts.append(self.cursor_pt)
+        if len(pts) < 2:
+            if pts:
+                self._handle(p, pts[0], QColor(tok["select"]), selected=True)
+            return
+        a, b = np.array(pts[0]), np.array(pts[1])
+        c = QColor(tok["select"])
+        p.setPen(QPen(c, 2 * self.px()))
+        p.drawLine(QPointF(*a), QPointF(*b))
+        for q in (a, b):
+            self._handle(p, q, c, selected=True)
+        self._dim(p, a, b, 0, f"{np.linalg.norm(b - a):.3f} m", c)
 
     # ------------------------------------------------------------- results
     def set_result(self, plan, ev):
@@ -462,7 +549,10 @@ class PlanCanvas(QGraphicsView):
             "truss": "Click the truss start, then its end.",
             "zone": "Click the tripod area corners. Return or double-click to finish.",
             "nogo": "Click the no-go area corners. Return or double-click to finish.",
+            "measure": "Click two points to measure (snaps to vertices, truss ends and cameras). Esc clears.",
         }
+        if tool != "measure":
+            self.ruler = []
         self.message.emit(hints[tool] + "  (Shift: horizontal/vertical, Option: no snapping)")
         self.viewport().update()
 
@@ -513,6 +603,9 @@ class PlanCanvas(QGraphicsView):
             yield from z.get("polygon", [])
         for r in d["no_go_zones"]:
             yield from r
+        if self.result is not None:             # measure from / to planned cameras
+            for c in self.result[0].cameras:
+                yield c.position_m[:2]
 
     def _hit(self, x: float, y: float):
         """What is under the cursor: (kind, index, vertex-or-None)."""
@@ -596,6 +689,15 @@ class PlanCanvas(QGraphicsView):
                 self.set_selection((kind, idx))
             return
         pt = self._snap(x, y, e.modifiers())
+        if self.tool == "measure":
+            # two clicks measure; a third click starts a new measurement
+            self.ruler = [pt] if len(self.ruler) != 1 else self.ruler + [pt]
+            if len(self.ruler) == 2:
+                a, b = np.array(self.ruler[0]), np.array(self.ruler[1])
+                self.message.emit(f"Distance {np.linalg.norm(b - a):.3f} m  (ΔX {b[0] - a[0]:+.3f} m, "
+                                  f"ΔY {b[1] - a[1]:+.3f} m)")
+            self.viewport().update()
+            return
         if self.tool == "truss":
             self.pending.append(pt)
             if len(self.pending) == 2:
@@ -669,7 +771,9 @@ class PlanCanvas(QGraphicsView):
     def keyPressEvent(self, e):
         key = e.key()
         if key == Qt.Key.Key_Escape:
-            if self.pending:
+            if self.ruler:
+                self.ruler = []
+            elif self.pending:
                 self.pending = []
             else:
                 self.set_tool("select")
