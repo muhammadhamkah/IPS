@@ -99,17 +99,16 @@ def layout_figure(site: Site, plan: Plan) -> str:
             for c in cams:
                 ax.annotate(c.id, c.position_m[:2], fontsize=6, color=TEXT2, xytext=(3, 3),
                             textcoords="offset points")
-    ax.plot([0, span * 0.06], [0, 0], color=TEXT, lw=1.5)
-    ax.plot([0, 0], [0, span * 0.06], color=TEXT, lw=1.5)
-    ax.annotate("+X", (span * 0.06, 0), fontsize=7, color=TEXT, xytext=(3, -3),
-                textcoords="offset points")
-    ax.annotate("+Y", (0, span * 0.06), fontsize=7, color=TEXT, xytext=(-3, 3),
-                textcoords="offset points", ha="right")
-    ax.annotate("origin", (0, 0), fontsize=7, color=TEXT, xytext=(-4, 4), textcoords="offset points",
-                ha="right")
+    f = site.frame
+    o = np.array(f.origin_xy)
+    for vec, lab, col, k in ((f.n_hat, "N", "#d03b3b", 0.09), (f.e_hat, "E", TEXT, 0.06)):
+        tip = o + vec * span * k
+        ax.annotate("", tip, o, arrowprops=dict(arrowstyle="-|>", color=col, lw=1.5))
+        ax.annotate(lab, tip, fontsize=8, color=col, fontweight="bold", xytext=(3, 3), textcoords="offset points")
+    ax.annotate("origin", o, fontsize=7, color=TEXT, xytext=(-4, -9), textcoords="offset points", ha="right")
     ax.set_aspect("equal")
-    ax.set_xlabel("X (m)")
-    ax.set_ylabel("Y (m)")
+    ax.set_xlabel("plan (m)")
+    ax.set_ylabel("plan (m)")
     ax.set_title("Camera layout (plan view). Arrows: aim direction; dashed grey: no usable truss"
                  " / tripod strip limits",
                  fontsize=9, loc="left")
@@ -188,8 +187,8 @@ def level_figure(site: Site, ev: Evaluation, k: int) -> str:
             if coll is not mesh and coll.get_array() is not None and coll.get_offsets().size == 0:
                 coll.set_clip_path(outline)
         a.set_aspect("equal")
-        a.set_xlabel("X (m)")
-        a.set_ylabel("Y (m)")
+        a.set_xlabel("plan (m)")
+        a.set_ylabel("plan (m)")
     return _png(fig)
 
 
@@ -257,21 +256,24 @@ def write_report(path: str | Path, site: Site, plan: Plan, ev: Evaluation, title
                              f"<td>{' '.join(ids)}</td><td>{dist:.2f}</td><td>{seg:.2f}</td>"
                              f"<td>{f'{off:.2f}' if ch.kind == 'edge' else ''}</td></tr>")
 
+    plan.frame = plan.frame or site.frame.to_dict()
+    nfs = [plan.ned_fields(c) for c in plan.cameras]
     cam_rows = "".join(
         f"<tr><td>{c.id}</td><td>{c.mount_type}</td><td>{c.mount_id}</td>"
         f"<td>{'' if c.along_truss_m is None else f'{c.along_truss_m:.2f}'}</td>"
-        f"<td>{c.position_m[0]:.2f}</td><td>{c.position_m[1]:.2f}</td><td>{c.position_m[2]:.2f}</td>"
-        f"<td>{c.base_heading_deg:.0f}</td><td>{c.pan_deg:.1f}</td><td>{c.tilt_deg:.1f}</td>"
+        f"<td>{nf['ned_m'][0]:.2f}</td><td>{nf['ned_m'][1]:.2f}</td><td>{nf['ned_m'][2]:.2f}</td>"
+        f"<td>{nf['base_heading_from_north_deg']:.0f}</td><td>{nf['pan_clockwise_deg']:+.1f}</td>"
+        f"<td>{c.tilt_deg:.1f}</td>"
         f"<td>{c.lens_mm:g}</td>"
         f"<td>{'' if c.neighbour_spacing_m is None else f'{c.neighbour_spacing_m:.2f}'}</td>"
         f"<td>{int(ev.critical[i])}</td><td class='note'>{html.escape(c.install_note)}</td></tr>"
-        for i, c in enumerate(plan.cameras))
+        for i, (c, nf) in enumerate(zip(plan.cameras, nfs)))
 
     levels_html = "".join(f'<img alt="Coverage and accuracy at Z = {z:.1f} m" '
                           f'src="data:image/png;base64,{level_figure(site, ev, k)}">'
                           for k, z in enumerate(zs))
     noise = req.noise
-    vertex_list = ", ".join(f"V{k} ({x:g}, {y:g})" for k, (x, y) in enumerate(site.volume.polygon))
+    vertex_list = ", ".join(f"V{k} ({site.frame.fmt_ne((x, y), 2)})" for k, (x, y) in enumerate(site.volume.polygon))
     verdict = ('<p class="ok"><b>Every evaluation point meets the requirements.</b></p>' if ok_all else
                f'<p class="bad"><b>{pct(1 - s["fraction_meeting_all_requirements"])} of evaluation points '
                f'do not meet the requirements</b> (hatched / non-green cells below).</p>')
@@ -285,8 +287,9 @@ def write_report(path: str | Path, site: Site, plan: Plan, ev: Evaluation, title
 <h1>{html.escape(title or 'IDPS camera plan')}: {html.escape(site.name)}</h1>
 <p class="muted">Flight volume: {len(site.volume.polygon)}-vertex floor outline
 ({site.volume.floor_area_m2:,.0f} m&sup2;) extruded from Z {site.volume.z_min:g} to {site.volume.z_max:g} m
-({site.volume.volume_m3:,.0f} m&sup3;); bounding box X {site.volume_min[0]:g}..{site.volume_max[0]:g} m,
-Y {site.volume_min[1]:g}..{site.volume_max[1]:g} m. Vertices: {vertex_list}. Coordinates are in the tracking frame (origin = calibration square).
+({site.volume.volume_m3:,.0f} m&sup3;). Vertices: {vertex_list}. Coordinates are <b>North-East-Down</b> from the origin
+(the calibration square's corner; North along its long arm, East along its short arm, Down positive downwards, so a
+camera 11 m up has D = &minus;11). Headings are degrees from North, clockwise.
 Evaluated on {s['evaluation_points']} points spaced about {site.eval_spacing_m[0]:g} x {site.eval_spacing_m[1]:g} x {site.eval_spacing_m[2]:g} m,
 including the boundary. Predictions assume the <b>error budget</b>: centroid {noise.sigma_px:g} px,
 camera rotation {noise.sigma_rot_rad * 1e3:g} mrad, camera position {noise.sigma_pos_m * 1e3:g} mm,
@@ -303,11 +306,11 @@ occlusion and a lost camera.</p>
 <th>min cameras</th><th>median p95 (mm)</th><th>worst p95 (mm)</th></tr>{level_rows}</table></div>
 {levels_html}
 <h2>Camera install table</h2>
-<p class="muted">Set the gimbal base so its pan-zero points at <i>base heading</i> (world azimuth: 0 = +X, 90 = +Y),
-level it, then the servos go to <i>pan</i>/<i>tilt</i>. <i>Critical</i> = evaluation points that would stop meeting
+<p class="muted">Set the gimbal base so its pan-zero points at <i>base heading</i> (degrees from North, clockwise:
+East = 90), level it, then the servos go to <i>pan</i> (positive = clockwise) / <i>tilt</i> (negative = down). <i>Critical</i> = evaluation points that would stop meeting
 the requirements if this camera were missing.</p>
-<div class="scroll"><table><tr><th>ID</th><th>mount</th><th>truss/zone</th><th>along truss (m)</th><th>X</th><th>Y</th>
-<th>Z</th><th>base heading</th><th>pan</th><th>tilt</th><th>lens (mm)</th><th>spacing to neighbour (m)</th>
+<div class="scroll"><table><tr><th>ID</th><th>mount</th><th>truss/zone</th><th>along truss (m)</th><th>N</th><th>E</th>
+<th>D</th><th>base heading</th><th>pan</th><th>tilt</th><th>lens (mm)</th><th>spacing to neighbour (m)</th>
 <th>critical</th><th>install note</th></tr>{cam_rows}</table></div>
 <h2>Install measurements</h2>
 <p class="muted">Tape-measure positions. Trusses: distance along the truss from its start end. Tripods: distance along

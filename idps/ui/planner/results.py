@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QFrame, QHBoxLay
 from idps.ui import theme
 from idps.ui.flow import flow_row
 
-COLUMNS = ["ID", "Mount", "X (m)", "Y (m)", "Z (m)", "Base heading", "Pan", "Tilt", "Lens", "Spacing",
+COLUMNS = ["ID", "Mount", "N (m)", "E (m)", "D (m)", "Base heading", "Pan", "Tilt", "Lens", "Spacing",
            "Critical", "Install note"]
 
 
@@ -196,9 +196,11 @@ class ResultsPanel(QWidget):
         self._level(self.level.value())
         self.table.setRowCount(len(plan.cameras))
         for r, c in enumerate(plan.cameras):
-            x, y, z = c.position_m
-            vals = [c.id, f"{c.mount_type} {c.mount_id}", f"{x:.2f}", f"{y:.2f}", f"{z:.2f}",
-                    f"{c.base_heading_deg:.0f}°", f"{c.pan_deg:+.1f}°", f"{c.tilt_deg:+.1f}°", f"{c.lens_mm:g} mm",
+            nf = plan.ned_fields(c)
+            n, e, d = nf["ned_m"]
+            vals = [c.id, f"{c.mount_type} {c.mount_id}", f"{n:.2f}", f"{e:.2f}", f"{d:.2f}",
+                    f"{nf['base_heading_from_north_deg']:.0f}°", f"{nf['pan_clockwise_deg']:+.1f}°",
+                    f"{c.tilt_deg:+.1f}°", f"{c.lens_mm:g} mm",
                     "" if c.neighbour_spacing_m is None else f"{c.neighbour_spacing_m:.2f} m",
                     str(int(ev.critical[r])), c.install_note]
             for col, v in enumerate(vals):
@@ -229,7 +231,8 @@ class ResultsPanel(QWidget):
     def _level(self, k):
         self.canvas.overlay_level = k
         if self.canvas.result is not None:
-            self.level_label.setText(f"Z = {self.canvas.result[1].grid.zs[k]:.1f} m")
+            z = self.canvas.result[1].grid.zs[k]
+            self.level_label.setText(f"{z:.1f} m high (D {-z:.1f})")
         self.canvas.update_overlay()
 
     def _legend(self):

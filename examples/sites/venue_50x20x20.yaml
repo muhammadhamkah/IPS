@@ -2,6 +2,7 @@
 # as floor vertices (V0..V3) and extruded to 20 m. Origin (calibration square)
 # at the floor centre, +X along the long side.
 name: Venue 50 x 20 x 20 m
+origin: {xy: [0, 0], north_deg: 0}   # calibration square at the floor centre; North along the long side
 volume:
   polygon: [[-25, -10], [25, -10], [25, 10], [-25, 10]]   # V0, V1, V2, V3 (edge Ek: Vk -> Vk+1)
   z: [0, 20]

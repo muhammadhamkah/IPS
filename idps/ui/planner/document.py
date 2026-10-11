@@ -58,7 +58,19 @@ def normalise(d: dict) -> dict:
             r = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
         nogo.append(r)
     out["no_go_zones"] = nogo
+    # Origin (calibration-square corner) and North. A venue drawn before origins existed keeps
+    # its old frame: origin at drawing (0, 0), North along drawing +X. A new venue has none
+    # until it is placed after drawing the performance area.
+    if "origin" not in out and out["volume"]["polygon"]:
+        out["origin"] = {"xy": [0.0, 0.0], "north_deg": 0.0}
     return out
+
+
+def frame_of(data: dict):
+    """The document's NED frame. Until the origin is placed: drawing origin, North up the plan
+    (what the Origin tool starts with)."""
+    from idps.core.frames import Frame
+    return Frame.from_dict(data.get("origin") or {"xy": [0.0, 0.0], "north_deg": 90.0})
 
 
 class _Snapshot(QUndoCommand):

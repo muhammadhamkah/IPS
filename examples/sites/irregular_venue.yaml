@@ -3,6 +3,7 @@
 # the glass wall (edge E1), where tripods are not allowed. Cameras sit at or
 # above the 15 m ceiling (drones always fly below the cameras) and look down.
 name: Irregular venue (L-shape)
+origin: {xy: [0, 0], north_deg: 0}   # calibration square at the inside corner V0; North along edge E0
 volume:
   polygon: [[0, 0], [40, 0], [40, 15], [20, 15], [20, 30], [0, 30]]
   z: [0, 15]

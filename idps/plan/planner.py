@@ -153,7 +153,8 @@ def _fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_
         for p in P:
             cells.setdefault(tuple(np.floor(p / 2.0).astype(int)), []).append(p)
         spots = sorted(cells.values(), key=len, reverse=True)[:5]
-        out["worst_spots"] = [{"x": float(np.mean(c, 0)[0]), "y": float(np.mean(c, 0)[1]),
+        out["worst_spots"] = [{"n": float(site.frame.ne(np.mean(c, 0)[:2])[0]),
+                               "e": float(site.frame.ne(np.mean(c, 0)[:2])[1]),
                                "z_min": float(np.min(c, 0)[2]), "z_max": float(np.max(c, 0)[2]),
                                "points": len(c)} for c in spots]
     return out, bad_pts
@@ -216,7 +217,7 @@ def fine_check_text(fc: dict) -> str:
                     f"volume down to {res:.0f} cm and finer.")
         return (f"{head} every point meets the requirement, but {fc.get('unproven', 0):,} spots near camera view "
                 f"edges could not be fully zoomed into (too many to check): the coverage tiles count them as covered.")
-    where = "; ".join(f"X {s['x']:.1f}, Y {s['y']:.1f}, {s['z_min']:.1f}–{s['z_max']:.1f} m high"
+    where = "; ".join(f"N {s['n']:.1f}, E {s['e']:.1f}, {s['z_min']:.1f}–{s['z_max']:.1f} m high"
                       for s in fc["worst_spots"][:3])
     n_zoom = fc.get("zoom_failing", 0)
     n_grid = fc["failing"] - n_zoom
@@ -239,19 +240,20 @@ def build_cameras(site: Site, cands: CandidateSet, selected: list[int]) -> list[
     trusses = {t.id: t for t in site.trusses}
     cams = []
     for i in selected:
-        base, pan, tilt = install_angles(float(cands.az[i]), float(cands.el[i]))
+        f = site.frame
+        base, pan, tilt = install_angles(float(cands.az[i]), float(cands.el[i]), north_deg=f.north_deg)
         x, y, z = (float(v) for v in cands.pos[i])
         if cands.mount_type[i] == "truss":
             t = trusses[cands.mount_id[i]]
             s = float(cands.along_m[i])
-            note = (f"Truss {t.id}: {s:.2f} m from its start end ({t.start[0]:.1f}, {t.start[1]:.1f}),"
+            note = (f"Truss {t.id}: {s:.2f} m from its start end ({f.fmt_ne(t.start, 1)}),"
                     f" camera hung {site.candidates.truss_drop_m:.2f} m below the truss")
             along = s
         else:
-            note = (f"Tripod (zone {cands.mount_id[i]}) at X {x:.2f}, Y {y:.2f};"
+            note = (f"Tripod (zone {cands.mount_id[i]}) at {f.fmt_ne((x, y))};"
                     f" {_outside_note(site, x, y)}; camera at {z:.2f} m on the mast")
             along = None
-        note += f"; gimbal pan-zero towards azimuth {base:.0f} deg"
+        note += f"; gimbal pan-zero towards heading {f.heading(base):.0f}° (from North, clockwise)"
         cams.append(PlannedCamera(
             id="", mount_type=str(cands.mount_type[i]), mount_id=str(cands.mount_id[i]),
             position_m=[x, y, z], azimuth_deg=float(cands.az[i]), elevation_deg=float(cands.el[i]),
@@ -341,5 +343,5 @@ def optimise(site: Site, log=print, max_cameras: int | None = None, cancel=None)
     summary["optimiser"] = {"candidates": len(cands), "seconds": round(seconds, 1),
                             "stopped_because": result.stopped_because, "fine_check_rounds": rnd + 1}
     summary["fine_check"] = ev.summary["fine_check"] = fc
-    plan = Plan(site.name, site.source_path, cams, summary)
+    plan = Plan(site.name, site.source_path, cams, summary, site.frame.to_dict())
     return plan, ev

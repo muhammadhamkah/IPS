@@ -2,6 +2,7 @@
 # Coordinates: tracking frame (origin = calibration square at the room centre,
 # +X along its X arm), metres.
 name: Lab prototype
+origin: {xy: [0, 0], north_deg: 0}   # calibration square at the room centre; North along the drawing's +X
 volume: {min: [-3, -3, 0], max: [3, 3, 3]}
 sensor: OV9281
 lenses_mm: [2.8, 3.6]

@@ -173,7 +173,9 @@ measurements.
 * **Servo pan/tilt gimbals (decided)** are workable only with **live re-pose**: every camera
   continuously measures its own rotation from about 9–16 fixed beacons, and a station that
   moves or jitters drops out automatically. Servo hold stability is measured in Phase 6.
-* **Fixed yaw (decided):** drones keep their takeoff yaw (normally facing +X) but still tilt.
+* **Fixed yaw (decided):** drones keep their takeoff yaw (normally facing North) but still tilt.
+* **Coordinates (decided):** North-East-Down from the calibration square's corner (the origin
+  placed in the planner), as flight controllers use.
   A marker offset 5 cm from the drone's reference point causes about 13 mm of error at 15°
   tilt. The marker should sit at the reference point, or 2–3 markers should be fitted.
 * **Ethernet with PoE and PTP** is recommended beyond the first few prototype stations.

@@ -453,7 +453,7 @@ servos.** Compared with the Pi 4B assumed elsewhere:
 
 ### R16: Drone reference point versus marker position (M)
 
-* **Context:** drones take off at a specified yaw (normally 0, i.e. facing +X) and do not
+* **Context:** drones take off at a specified yaw (normally 0, i.e. facing North) and do not
   yaw in flight. They still **roll and pitch** to accelerate, typically 10–25° at 4 m/s
   manoeuvres.
 * **Evidence:**
@@ -493,7 +493,7 @@ servos.** Compared with the Pi 4B assumed elsewhere:
   room, so it matters.
 * **Mitigation:**
   * Keep the 1 m square for the origin.
-  * Add long-baseline floor markers along +X and +Y, measured with a laser distance meter,
+  * Add long-baseline floor markers along North and East, measured with a laser distance meter,
     for axes, floor plane and scale (WORKFLOW step 4, item 3).
   * Verify with the independent total-station check (VALIDATION G4).
 * **Earliest test:** Phase 9. Compare the scale and axes from the square plus wand against
@@ -555,14 +555,15 @@ servos.** Compared with the Pi 4B assumed elsewhere:
 | D4 | Ethernet/PoE for anything beyond 3 Wi-Fi prototype stations | Open. Recommended: yes, and **mandatory for the full-volume requirement** (timing ≤ 0.05 ms) |
 | D5 | Markers per drone | Open. Depends on R16: 1 marker if it can sit at the reference point; otherwise 2–3 to measure roll and pitch |
 | D6 | Gimbal type | **Decided:** servo pan/tilt, with live beacon re-pose and movement detection (R3). Upgrade path: worm-gear or braked servo if Phase 6 stability fails |
-| D7 | Drone yaw convention | **Decided:** fixed yaw set at takeoff (normally 0 = facing +X); no yaw in flight |
+| D7 | Drone yaw convention | **Decided:** fixed yaw set at takeoff (normally 0 = facing North, the square's long arm); no yaw in flight |
 | D8 | Drone reference point and marker offset | Open. See R16 |
-| D9 | Site workflow | **Decided:** planner → install from the plan → one-click aim to plan → wand + calibration square at origin (0,0,0; X arm = +X) → fly. See WORKFLOW.md |
+| D9 | Site workflow | **Decided:** planner → install from the plan → one-click aim to plan → wand + calibration square at origin (0,0,0; long arm = North) → fly. See WORKFLOW.md |
 | D10 | Minimum cameras per point | **Decided:** ≥ 3 everywhere (planner constraint, alongside p95 ≤ 10 mm) |
 | D11 | Mounting options | **Decided:** overhead trusses and tripods (up to 20 m); no wall mounts |
 | D13 | Calibrating the upper volume | **Decided:** wand only the walkable height (OptiTrack practice), then a continuous-calibration drone flight over the whole volume; continuous calibration may stay on during operation |
 | D14 | Bumped tripod recovery | **Decided:** return the tripod to its taped marks → gimbal to the saved angles → reload the saved calibration → automatic 6-DOF beacon re-pose and verification; no re-wand |
 | D16 | Prototype station hardware | **Decided (prototype):** Raspberry Pi 3B + OV9281 on servo pan/tilt. See R4 for limits and the recommended Pi 4B/5 upgrade |
 | D15 | Planner mounting inputs | **Decided:** volume; truss lines with height, usable and missing segments, additional trusses; tripod floor zones with height up to 20 m |
+| D18 | Coordinate frame | **Decided:** North-East-Down (NED) from the origin = the calibration square's corner; North = its long arm = drone yaw 0; E 90° clockwise; D down. The planner asks for the performance area first, then the origin (dragged on the plan, N arrow turned to North). Everything shown, exported and sent to drones is NED; headings are from North, clockwise |
 | D17 | Cameras vs drones height | **Decided:** drones always fly below the cameras. Every camera is at or above the flight ceiling (plus an optional margin) and looks level or down; trusses and tripod masts that can't reach the ceiling are not used. A volume taller than the 20 m tripods (e.g. the 30 m hall) is trusses only |
-| D12 | Calibration tools | **Decided:** OptiTrack-style wand + ground square at origin. Proposed: 1 m × 1 m L-frame with 4 LEDs (origin, X 0.5, X 1.0, Y 1.0). **Proposed for the hall:** long-baseline floor markers + laser distance meter (R18) |
+| D12 | Calibration tools | **Decided:** OptiTrack-style wand + ground square at origin. Proposed: 1 m × 1 m L-frame with 4 LEDs (origin, N 0.5, N 1.0, E 1.0). **Proposed for the hall:** long-baseline floor markers + laser distance meter (R18) |

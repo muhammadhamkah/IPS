@@ -313,3 +313,47 @@ def test_guaranteed_visibility_is_conservative():
         u *= (r * rng.uniform(0, 1, (len(centres), 1)) ** (1 / 3)) / np.linalg.norm(u, axis=1, keepdims=True)
         vis, _ = contributions(pos, R, f, centres + u, site.sensor, site.requirements.noise, site.limits)
         assert not (sure & ~vis).any()
+
+
+def test_ned_frame_and_compass_headings():
+    from idps.core.frames import Frame, pan_display
+    from idps.plan.model import install_angles
+    f = Frame((2.0, 3.0), 90.0)                      # North = up the plan, East = right
+    assert f.ned([2, 13, 0]) == pytest.approx([10, 0, 0])
+    assert f.ned([7, 3, 4]) == pytest.approx([0, 5, -4])              # 4 m up = D -4
+    P = np.random.default_rng(0).uniform(-20, 20, (50, 3))
+    assert f.from_ned(f.ned(P)) == pytest.approx(P)
+    # right-handed: N x E = D
+    n, e = np.array([*f.n_hat, 0]), np.array([*f.e_hat, 0])
+    assert np.cross(n, e) == pytest.approx([0, 0, -1])
+    assert f.heading(90) == pytest.approx(0) and f.heading(0) == pytest.approx(90)   # +X = East
+    g = Frame((0, 0), 30.0)
+    for az in (0, 37, 200, 359):
+        base, pan, _ = install_angles(az, -20, north_deg=g.north_deg)
+        hb = g.heading(base)
+        assert hb % 45 == pytest.approx(0) or hb % 45 == pytest.approx(45)          # compass steps from North
+        assert (g.heading(az) - (hb + pan_display(pan))) % 360 == pytest.approx(0, abs=1e-9)
+
+
+def test_plan_exports_ned(tmp_path):
+    import csv
+    site = load_site(ROOT / "examples" / "sites" / "lab.yaml")
+    d = {**yaml_load(ROOT / "examples" / "sites" / "lab.yaml"), "origin": {"xy": [1.0, -2.0], "north_deg": 90.0}}
+    site = site_from_dict(d)
+    plan, _ = optimise(site, log=lambda *a: None)
+    assert plan.frame == {"xy": [1.0, -2.0], "north_deg": 90.0}
+    c = plan.cameras[0]
+    nf = plan.ned_fields(c)
+    assert nf["ned_m"] == pytest.approx([c.position_m[1] + 2, c.position_m[0] - 1, -c.position_m[2]], abs=1e-3)
+    assert "N " in c.install_note and "heading" in c.install_note and "X " not in c.install_note
+    plan.save(tmp_path / "p.yaml")
+    back = Plan.load(tmp_path / "p.yaml")
+    assert back.frame == plan.frame and back.cameras[0].position_m == pytest.approx(c.position_m)
+    plan.write_csv(tmp_path / "c.csv")
+    row = next(csv.DictReader(open(tmp_path / "c.csv")))
+    assert float(row["north_m"]) == pytest.approx(nf["ned_m"][0], abs=0.01) and "down_m" in row
+
+
+def yaml_load(p):
+    import yaml
+    return yaml.safe_load(open(p))

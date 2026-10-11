@@ -295,7 +295,9 @@ class Advisor:
         b = int(np.lexsort((deficit, fail))[0])
         if fail[b] >= base_fail and deficit[b] >= base_def - 1e-6:
             return None
+        from idps.core.frames import pan_display
         from idps.plan.model import install_angles
+        f = self.site.frame
         new = PlannedCamera(**{**cam.__dict__})
         new.azimuth_deg, new.elevation_deg = float(az[b]), float(el[b])
         new.tilt_deg = new.elevation_deg
@@ -307,14 +309,17 @@ class Advisor:
         title = f"Re-aim {cam.id}"
         if abs(pan_from_base) <= SERVO_PAN_LIMIT_DEG:
             new.base_heading_deg, new.pan_deg = cam.base_heading_deg, pan_from_base
-            detail = (f"No physical move (motorised): pan {cam.pan_deg:+.1f}° → {new.pan_deg:+.1f}°, "
-                      f"tilt {cam.tilt_deg:+.1f}° → {new.tilt_deg:+.1f}°.")
+            detail = (f"No physical move (motorised): pan {pan_display(cam.pan_deg):+.1f}° → "
+                      f"{pan_display(new.pan_deg):+.1f}°, tilt {cam.tilt_deg:+.1f}° → {new.tilt_deg:+.1f}°.")
         else:
-            new.base_heading_deg, new.pan_deg, _ = install_angles(new.azimuth_deg, new.elevation_deg)
-            detail = (f"Turn the gimbal base from {cam.base_heading_deg:.0f}° to {new.base_heading_deg:.0f}°, then pan "
-                      f"{new.pan_deg:+.1f}°, tilt {new.tilt_deg:+.1f}° (beyond the servo's ±{SERVO_PAN_LIMIT_DEG:.0f}° pan).")
+            new.base_heading_deg, new.pan_deg, _ = install_angles(new.azimuth_deg, new.elevation_deg,
+                                                                  north_deg=f.north_deg)
+            detail = (f"Turn the gimbal base from heading {f.heading(cam.base_heading_deg):.0f}° to "
+                      f"{f.heading(new.base_heading_deg):.0f}°, then pan {pan_display(new.pan_deg):+.1f}°, tilt "
+                      f"{new.tilt_deg:+.1f}° (beyond the servo's ±{SERVO_PAN_LIMIT_DEG:.0f}° pan).")
         new.install_note = (cam.install_note.split("; gimbal")[0]
-                            + f"; gimbal pan-zero towards azimuth {new.base_heading_deg:.0f} deg")
+                            + f"; gimbal pan-zero towards heading {f.heading(new.base_heading_deg):.0f}° "
+                              f"(from North, clockwise)")
         return Recommendation("reaim", cam.id, new, base_fail, int(fail[b]), float(base_def - deficit[b]), title, detail)
 
     def _rec(self, kind, cam: PlannedCamera | None, j: int, base_fail, fail, gain) -> Recommendation:
@@ -327,7 +332,11 @@ class Advisor:
             while f"C{k:03d}" in used:
                 k += 1
             new.id = f"C{k:03d}"
+        from idps.core.frames import pan_display
+        f = self.site.frame
         where = _where(self.site, new)
+        aim = (f"pan {pan_display(new.pan_deg):+.1f}°, tilt {new.tilt_deg:+.1f}° (gimbal base heading "
+               f"{f.heading(new.base_heading_deg):.0f}°)")
         if kind == "move":
             title = f"Move {cam.id}"
             if cam.mount_type == "truss" and new.mount_id == cam.mount_id and cam.along_truss_m is not None:
@@ -336,14 +345,14 @@ class Advisor:
                         f"{new.along_truss_m:.2f} m from the start end ({delta:+.2f} m)")
             else:
                 d = np.array(new.position_m) - np.array(cam.position_m)
-                move = f"Move it {np.linalg.norm(d[:2]):.2f} m (ΔX {d[0]:+.2f}, ΔY {d[1]:+.2f} m) to {where}"
+                dn, de = f.ne(new.position_m[:2]) - f.ne(cam.position_m[:2])
+                move = f"Move it {np.linalg.norm(d[:2]):.2f} m (ΔN {dn:+.2f}, ΔE {de:+.2f} m) to {where}"
                 if abs(d[2]) > 0.01:
                     move += f", camera height {cam.position_m[2]:.2f} → {new.position_m[2]:.2f} m"
-            detail = f"{move}; then pan {new.pan_deg:+.1f}°, tilt {new.tilt_deg:+.1f}° (base {new.base_heading_deg:.0f}°)."
+            detail = f"{move}; then {aim}."
         else:
             title = f"Add camera {new.id}"
-            detail = (f"Mount it {where}, height {new.position_m[2]:.2f} m; base {new.base_heading_deg:.0f}°, "
-                      f"pan {new.pan_deg:+.1f}°, tilt {new.tilt_deg:+.1f}°, {new.lens_mm:g} mm lens.")
+            detail = (f"Mount it {where}, height {new.position_m[2]:.2f} m; {aim}, {new.lens_mm:g} mm lens.")
         return Recommendation(kind, cam.id if cam else None, new, base_fail, fail, gain, title, detail)
 
 
@@ -352,7 +361,7 @@ def _where(site: Site, cam: PlannedCamera) -> str:
     from idps.plan.measure import chains_for_site
     chs = chains_for_site(site, [cam])
     if not chs:
-        return f"at X {cam.position_m[0]:.2f}, Y {cam.position_m[1]:.2f}"
+        return f"at {site.frame.fmt_ne(cam.position_m[:2])}"
     ch = chs[0]
     s, _, off = ch.stations[0]
     if ch.kind == "truss":

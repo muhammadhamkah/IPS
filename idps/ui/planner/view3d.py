@@ -81,7 +81,11 @@ class View3D(QWidget):
         return np.stack([sx, sy], 1), z
 
     def set_view(self, name: str):
-        presets = {"top": (-90, 89.9), "front": (-90, 0), "side": (0, 0), "iso": (-60, 30)}
+        from idps.ui.planner.document import frame_of
+        north = frame_of(self.doc.data).north_deg
+        # top: North up the screen; front: looking North from the South side; side: looking West from the East
+        presets = {"top": (north + 180, 89.9), "front": (north + 180, 0), "side": (north - 90, 0),
+                   "iso": (north + 210, 30)}
         yaw, pitch = presets[name]
         self.yaw, self.pitch = math.radians(yaw), math.radians(pitch)
         self.fit()
@@ -164,13 +168,21 @@ class View3D(QWidget):
         cx, cy = self.width() - self.GIZMO_R - 18, self.GIZMO_R + 18
         return QPointF(cx, cy), self.GIZMO_R
 
+    def _ned_axes(self):
+        """North, East, Down as world vectors (from the venue's origin and North)."""
+        from idps.ui.planner.document import frame_of
+        f = frame_of(self.doc.data)
+        return {"N": np.array([*f.n_hat, 0.0]), "E": np.array([*f.e_hat, 0.0]), "D": np.array([0.0, 0.0, -1.0])}
+
     def _axis_points(self):
-        """Screen positions of the six axis tips on the gizmo ball, with depth."""
+        """Screen positions of the six axis tips on the gizmo ball (N, E, D and their
+        opposites S, W, U), with depth."""
         c, r = self._gizmo_geometry()
         _, right, up, fwd = self._basis()
         out = []
-        for name, v in (("+X", (1, 0, 0)), ("-X", (-1, 0, 0)), ("+Y", (0, 1, 0)), ("-Y", (0, -1, 0)),
-                        ("+Z", (0, 0, 1)), ("-Z", (0, 0, -1))):
+        ax = self._ned_axes()
+        for name, v in (("+N", ax["N"]), ("-N", -ax["N"]), ("+E", ax["E"]), ("-E", -ax["E"]),
+                        ("+D", ax["D"]), ("-D", -ax["D"])):
             v = np.array(v, float)
             out.append((name, QPointF(c.x() + v @ right * r * 0.78, c.y() - v @ up * r * 0.78), float(v @ fwd)))
         return out
@@ -196,14 +208,17 @@ class View3D(QWidget):
 
     def _run_gizmo(self, action: str):
         step_px = max(self.height(), 1) * 0.08
-        views = {"+X": (0, 0), "-X": (180, 0), "+Y": (90, 0), "-Y": (-90, 0), "+Z": (None, 89.9), "-Z": (None, -89.9)}
         if action.startswith("view"):
-            yaw, pitch = views[action[4:]]
-            if yaw is not None:
-                self.yaw = math.radians(yaw)
-            else:                                     # top/bottom: keep heading, squared to the axes
-                self.yaw = round(self.yaw / (math.pi / 2)) * (math.pi / 2)
-            self.pitch = math.radians(pitch)
+            name = action[4:]
+            ax = self._ned_axes()
+            v = ax[name[1]] * (1 if name[0] == "+" else -1)
+            if abs(v[2]) > 0.5:                       # Up: top view with North up; Down: from below
+                from idps.ui.planner.document import frame_of
+                self.yaw = math.radians(frame_of(self.doc.data).north_deg + 180.0)
+                self.pitch = math.radians(89.9 if v[2] > 0 else -89.9)
+            else:                                     # eye on that side, looking back at the origin
+                self.yaw = math.atan2(v[1], v[0])
+                self.pitch = 0.0
             self.update()
         elif action == "pan_up":
             self._pan(0, step_px)
@@ -245,7 +260,8 @@ class View3D(QWidget):
         p.setPen(QPen(ring, 1))
         p.setBrush(bg)
         p.drawEllipse(c, r, r)
-        colours = {"X": QColor("#d03b3b"), "Y": QColor("#0ca30c"), "Z": QColor("#3987e5")}
+        colours = {"N": QColor("#d03b3b"), "E": QColor("#0ca30c"), "D": QColor("#3987e5")}
+        opposite = {"N": "S", "E": "W", "D": "U"}
         f = QFont(self.font())
         f.setPointSizeF(8)
         f.setBold(True)
@@ -261,7 +277,7 @@ class View3D(QWidget):
             p.drawEllipse(tip, 9, 9)
             p.setPen(QColor("#ffffff") if positive else col)
             p.drawText(QRectF(tip.x() - 9, tip.y() - 9, 18, 18), Qt.AlignmentFlag.AlignCenter,
-                       name[1] if positive else "-" + name[1])
+                       name[1] if positive else opposite[name[1]])
         self._gizmo_hits.append(((c, r), "orbit"))
 
         # Button pad under the ball: pan arrows around a home button, then rotate/tilt/zoom.
@@ -289,7 +305,7 @@ class View3D(QWidget):
     def gizmo_tooltip(self, pos):
         a = self._gizmo_action(pos)
         if a == "orbit":
-            return "Drag to orbit · click an axis to look along it"
+            return "Drag to orbit · click an axis to look from that side (N/E/D, opposite S/W/U; U = top view, North up)"
         return getattr(self, "_gizmo_tips", {}).get(a)
 
     def event_tooltip(self, e):
@@ -423,12 +439,14 @@ class View3D(QWidget):
         for y in np.arange(math.floor(lo[1] / step) * step, hi[1] + step, step):
             self._line(prims, (lo[0], y, 0), (hi[0], y, 0), pen)
         L = max(2.0, step * 2)
-        for axis, colour, label in ((0, "#d03b3b", "+X"), (1, "#0ca30c", "+Y"), (2, "#3987e5", "+Z")):
-            end = [0.0, 0.0, 0.0]
-            end[axis] = L
-            self._line(prims, (0, 0, 0), end, QPen(QColor(colour), 2.5))
-            self._text(prims, end, label, QColor(colour), True, 10)
-        self._text(prims, (0, 0, 0), "origin", tok["text2"], False, 9)
+        from idps.ui.planner.document import frame_of
+        o = np.array([*frame_of(self.doc.data).origin_xy, 0.0])
+        ax = self._ned_axes()
+        for key, colour in (("N", "#d03b3b"), ("E", "#0ca30c"), ("D", "#3987e5")):
+            end = o + ax[key] * (L if key != "D" else L * 0.6)
+            self._line(prims, o, end, QPen(QColor(colour), 2.5))
+            self._text(prims, end, key, QColor(colour), True, 10)
+        self._text(prims, o, "origin", tok["text2"], False, 9)
 
     def _volume(self, prims, tok):
         d = self.doc.data
@@ -641,7 +659,7 @@ class View3D(QWidget):
             n_bad, vol_bad = self.coverage_stats()
             if self.coverage_mode == "slice":
                 z = self.canvas.result[1].grid.zs[self.canvas.overlay_level]
-                text = f"Coverage: {what} on the layer at Z = {z:.1f} m (move it with the altitude slider)"
+                text = f"Coverage: {what} on the layer {z:.1f} m high, D {-z:.1f} (move it with the altitude slider)"
             elif self.coverage_mode == "volume":
                 text = f"Coverage: {what} at every evaluation point; failing points are large with a red ring"
             else:

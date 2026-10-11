@@ -22,7 +22,7 @@ from idps.ui.planner.results import ResultsPanel
 from idps.ui.planner.worker import start_worker
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "sites"
-TOOL_KEYS = {"select": "V", "volume": "P", "truss": "T", "zone": "A", "nogo": "N", "measure": "M"}
+TOOL_KEYS = {"select": "V", "volume": "P", "origin": "O", "truss": "T", "zone": "A", "nogo": "N", "measure": "M"}
 
 
 def placeholder(text: str) -> QWidget:
@@ -92,7 +92,7 @@ class MainWindow(QMainWindow):
         self.doc.changed.connect(self._changed)
         self.doc.pathChanged.connect(self._title)
         self.doc.undo.cleanChanged.connect(self._clean_changed)
-        self.canvas.cursorMoved.connect(lambda x, y: self.cursor_label.setText(f"X {x:8.2f} m   Y {y:8.2f} m"))
+        self.canvas.cursorMoved.connect(self._cursor_moved)
         self.canvas.message.connect(lambda m: self.statusBar().showMessage(m, 8000))
         self.canvas.selectionChanged.connect(self._selection)
         self.results.runRequested.connect(self.run_plan)
@@ -297,6 +297,11 @@ class MainWindow(QMainWindow):
         if (x, y) != (g.x(), g.y()):
             self.move(x, y)
 
+    def _cursor_moved(self, x: float, y: float):
+        from idps.ui.planner.document import frame_of
+        n, e = frame_of(self.doc.data).ne((x, y))
+        self.cursor_label.setText(f"N {n:8.2f} m   E {e:8.2f} m")
+
     def _tab_changed(self, i: int):
         """The drawing toolbar belongs to the Planner."""
         self.toolbar.setVisible(i == 0)
@@ -444,6 +449,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Draw the volume first",
                                     "Use the Volume tool (P) to click the floor outline of the flight volume.")
             return
+        if not self.doc.data.get("origin"):
+            self.statusBar().showMessage("Place the origin first: click where the calibration square's corner goes, "
+                                         "then drag its red N arrow to point North.", 15000)
+            self.set_tool("origin")
+            return
         if not self.doc.data["trusses"] and not self.doc.data["tripod_zones"]:
             if not self._offer_tripod_strip():
                 return
@@ -477,9 +487,9 @@ class MainWindow(QMainWindow):
         """Validate in the UI thread and explain problems in plain words."""
         z0, z1 = site_dict["volume"]["z"]
         if z1 <= z0:
-            return (f"The flight volume's top (Top Z = {z1:g} m) must be above its floor (Floor Z = {z0:g} m). "
-                    "Set them under Venue & requirements → Flight volume height, or click inside the volume "
-                    "and use the Inspector.")
+            return (f"The performance area's ceiling ({z1:g} m) must be above its lowest flight height "
+                    f"({z0:g} m). Set them under Venue & requirements → Flight volume height, or click inside "
+                    "the performance area and use the Inspector.")
         try:
             from idps.plan.site import site_from_dict
             site = site_from_dict(site_dict)
@@ -493,7 +503,7 @@ class MainWindow(QMainWindow):
         if reach and max(reach) < ceiling - 1e-9:
             return (f"Cameras must be above the drones, but no truss or tripod reaches the flight ceiling "
                     f"({ceiling:g} m; the highest mount gives {max(reach):g} m). Raise the trusses or the tripod "
-                    f"mast heights, or lower the volume's Top Z.")
+                    f"mast heights, or lower the ceiling height.")
         return None
 
     def _offer_tripod_strip(self) -> bool:
@@ -570,7 +580,7 @@ class MainWindow(QMainWindow):
         summary = dict(ev.summary)
         summary["optimiser"] = {**plan.summary.get("optimiser", {}),
                                 "stopped_because": f"edited by the advisor ({len(recs)} change(s))"}
-        new_plan = Plan(plan.site_name, plan.site_file, cams, summary)
+        new_plan = Plan(plan.site_name, plan.site_file, cams, summary, site.frame.to_dict())
         self.last_site = site
         self.canvas.set_result(new_plan, ev)
         self.results.show_result(new_plan, ev)

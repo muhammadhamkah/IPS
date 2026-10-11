@@ -446,7 +446,8 @@ class LiveTab(QWidget):
     def fault_obstruction(self, target=None):
         tgt, blocked = self.show_sim.obstruct(target)
         self.win.statusBar().showMessage(f"Simulated obstructions in front of {', '.join(blocked)} near "
-                                         f"X {tgt[0]:.0f}, Y {tgt[1]:.0f}, Z {tgt[2]:.0f} m. Watch the brain.", 10000)
+                                         f"{self.site.frame.fmt_ne(tgt[:2], 0)}, {tgt[2]:.0f} m high. Watch the brain.",
+                                         10000)
         return tgt, blocked
 
     def fault_offline(self, cid, off=True):

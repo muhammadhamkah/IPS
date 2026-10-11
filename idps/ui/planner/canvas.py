@@ -16,10 +16,14 @@ from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView
 
 from idps.coverage.volume import offset_ring
 from idps.ui import theme
+from idps.ui.planner.document import frame_of
+
+NEEDS_AREA = ("origin", "truss", "zone", "nogo")      # tools that need the performance area first
 
 TOOLS = {
     "select": "Select / move",
-    "volume": "Draw volume outline",
+    "volume": "Draw performance area",
+    "origin": "Place origin",
     "truss": "Draw truss",
     "zone": "Draw tripod area",
     "nogo": "Draw no-go area",
@@ -153,6 +157,8 @@ class PlanCanvas(QGraphicsView):
             pts += [c.position_m[:2] for c in self.result[0].cameras]
         if self.preview is not None:
             pts.append(self.preview.new_camera.position_m[:2])
+        if self.doc.data.get("origin"):
+            pts.append(self.doc.data["origin"]["xy"])
         if not pts:
             pts = [(-10, -10), (10, 10)]
         a = np.array(pts, float)
@@ -217,11 +223,6 @@ class PlanCanvas(QGraphicsView):
             while y <= rect.bottom():
                 p.drawLine(QLineF(rect.left(), y, rect.right(), y))
                 y += step
-        # origin = calibration square
-        L = 40 * self.px()
-        p.setPen(QPen(tok["axis"], 2 * self.px()))
-        p.drawLine(QLineF(0, 0, L, 0))
-        p.drawLine(QLineF(0, 0, 0, L))
 
     def _text(self, p: QPainter, pos: QPointF, text: str, colour: QColor, dx=6, dy=-6, bold=False,
               size=11):
@@ -249,9 +250,6 @@ class PlanCanvas(QGraphicsView):
         d = self.doc.data
         px = self.px()
         sel = self.selection
-        L = 40 * px
-        self._text(p, QPointF(L, 0), "+X", tok["axis"], dx=4, dy=4, size=10)
-        self._text(p, QPointF(0, L), "+Y", tok["axis"], dx=-6, dy=-4, size=10)
 
         # no-go areas
         for i, r in enumerate(d["no_go_zones"]):
@@ -395,7 +393,9 @@ class PlanCanvas(QGraphicsView):
                     a, b = np.array(self.pending[-1]), np.array(self.cursor_pt)
                     self._text(p, QPointF(*b), f"{np.linalg.norm(b - a):.2f} m", c, dx=10, dy=18, size=10)
 
-        if not vol and self.tool == "select" and not d["trusses"]:
+        self._draw_origin(p, tok)
+
+        if not vol and self.tool in ("select", "volume") and not d["trusses"] and not self.pending:
             p.save()
             p.resetTransform()
             f = QFont(self.font())
@@ -403,9 +403,61 @@ class PlanCanvas(QGraphicsView):
             p.setFont(f)
             p.setPen(tok["text2"])
             p.drawText(self.viewport().rect(), Qt.AlignmentFlag.AlignCenter,
-                       "Draw the flight volume: press P (or the Volume tool)\n"
-                       "and click the floor outline vertices. Return or click V0 to close.")
+                       "Step 1: draw the performance area (P).\n"
+                       "Click its floor outline corners; Return or click V0 to close.\n"
+                       "Step 2: place the origin (the calibration square) and point its N arrow North.")
             p.restore()
+
+    # ------------------------------------------------------------- origin
+    ORIGIN_N_PX = 64                     # North arrow length on screen
+    ORIGIN_E_PX = 40
+
+    def _origin_geometry(self, origin=None):
+        """(origin xy, N tip, E tip) in scene coordinates, or None."""
+        o = origin if origin is not None else self.doc.data.get("origin")
+        if o is None:
+            return None
+        from idps.core.frames import Frame
+        f = Frame.from_dict(o)
+        c = np.array(f.origin_xy, float)
+        px = self.px()
+        return c, c + f.n_hat * self.ORIGIN_N_PX * px, c + f.e_hat * self.ORIGIN_E_PX * px
+
+    def _draw_origin(self, p: QPainter, tok):
+        origin = self.doc.data.get("origin")
+        ghost = False
+        if origin is None and self.tool == "origin" and self.cursor_pt is not None:
+            origin, ghost = {"xy": list(self.cursor_pt), "north_deg": 90.0}, True
+        g = self._origin_geometry(origin)
+        if g is None:
+            return
+        c, n_tip, e_tip = g
+        px = self.px()
+        sel = self.selection == ("origin", None)
+        col = QColor(tok["select"] if sel or ghost else tok["text"])
+        ncol = QColor(theme.STATUS[0])                         # North in red, like a compass needle
+        ecol = QColor(tok["volume"])
+        if ghost:
+            for q in (col, ncol, ecol):
+                q.setAlphaF(0.6)
+        for tip, colour, w in ((n_tip, ncol, 2.6), (e_tip, ecol, 2.0)):
+            p.setPen(QPen(colour, w * px))
+            p.drawLine(QPointF(*c), QPointF(*tip))
+            u = (tip - c) / max(np.linalg.norm(tip - c), 1e-12)
+            nrm = np.array([-u[1], u[0]])
+            head = 9 * px
+            p.setBrush(colour)
+            p.drawPolygon(_poly([tip, tip - u * head + nrm * head * 0.45, tip - u * head - nrm * head * 0.45]))
+        self._text(p, QPointF(*n_tip), "N", ncol, dx=4, dy=-4, bold=True, size=12)
+        self._text(p, QPointF(*e_tip), "E", ecol, dx=4, dy=-4, bold=True, size=11)
+        p.setPen(QPen(col, 2 * px))
+        p.setBrush(tok["surface"])
+        p.drawEllipse(QPointF(*c), 6 * px, 6 * px)
+        p.setBrush(col)
+        p.drawEllipse(QPointF(*c), 2.2 * px, 2.2 * px)
+        self._text(p, QPointF(*c), "Origin (D down)", col, dx=-30, dy=22, size=9, bold=sel)
+        if sel:                                               # rotate handle at the N tip
+            self._handle(p, n_tip, ncol, selected=True)
 
     # ------------------------------------------------------------- dimensions
     def _dim(self, p: QPainter, a, b, offset_px: float, label: str, colour: QColor):
@@ -570,13 +622,20 @@ class PlanCanvas(QGraphicsView):
 
     # --------------------------------------------------------------- editing
     def set_tool(self, tool: str):
+        if tool in NEEDS_AREA and len(self.doc.data["volume"]["polygon"]) < 3:
+            self.message.emit("Draw the performance area first: click its floor outline corners, "
+                              "then Return.")
+            tool = "volume"
         self.tool = tool
         self.pending = []
         self.toolChanged.emit(tool)
         self.setCursor(Qt.CursorShape.ArrowCursor if tool == "select" else Qt.CursorShape.CrossCursor)
         hints = {
             "select": "Click to select; drag vertices to move them; double-click an outline edge to add a vertex.",
-            "volume": "Click the floor outline vertices. Return, double-click or click V0 to finish. Esc cancels.",
+            "volume": "Click the performance area's floor corners. Return, double-click or click V0 to finish. "
+                      "Esc cancels.",
+            "origin": "Click where the calibration square's corner (the origin) will be. Then drag the red N "
+                      "arrow to point North.",
             "truss": "Click the truss start, then its end.",
             "zone": "Click the tripod area corners. Return or double-click to finish.",
             "nogo": "Click the no-go area corners. Return or double-click to finish.",
@@ -626,6 +685,8 @@ class PlanCanvas(QGraphicsView):
 
     def _all_points(self):
         d = self.doc.data
+        if d.get("origin"):
+            yield d["origin"]["xy"]
         yield from d["volume"]["polygon"]
         for t in d["trusses"]:
             yield t["start"]
@@ -643,6 +704,13 @@ class PlanCanvas(QGraphicsView):
         d = self.doc.data
         tol = HIT_PX * self.px()
         sel = self.selection
+        g = self._origin_geometry()
+        if g is not None:                                  # origin: N tip turns it, the centre moves it
+            c, n_tip, _ = g
+            if math.hypot(n_tip[0] - x, n_tip[1] - y) < tol * 1.4:
+                return ("origin", None, "rotate")
+            if math.hypot(c[0] - x, c[1] - y) < tol * 1.2:
+                return ("origin", None, "move")
         # handles of the selected item first
         if sel and sel[0] == "truss":
             t = d["trusses"][sel[1]]
@@ -712,6 +780,11 @@ class PlanCanvas(QGraphicsView):
         if self.tool == "select":
             hit = self._hit(x, y)
             kind, idx, vtx = hit
+            if kind == "origin":
+                self.drag = ("origin", None, vtx)
+                self.drag_before = self.doc.snapshot()
+                self.set_selection(("origin", None))
+                return
             if vtx is not None:
                 self.drag = (kind, idx, vtx)
                 self.drag_before = self.doc.snapshot()
@@ -720,13 +793,23 @@ class PlanCanvas(QGraphicsView):
                 self.set_selection((kind, idx))
             return
         pt = self._snap(x, y, e.modifiers())
+        if self.tool == "origin":
+            north = float((self.doc.data.get("origin") or {}).get("north_deg", 90.0))
+            self.doc.edit("Place origin", lambda d: d.__setitem__("origin", {"xy": list(pt), "north_deg": north}))
+            self.cursor_pt = None
+            self.set_tool("select")
+            self.set_selection(("origin", None))
+            self.message.emit("Origin placed. Drag the red N arrow to point North (snaps to 15°; hold Option "
+                              "for any angle). Drag the centre to move it. All coordinates are North-East-Down "
+                              "from here.")
+            return
         if self.tool == "measure":
             # two clicks measure; a third click starts a new measurement
             self.ruler = [pt] if len(self.ruler) != 1 else self.ruler + [pt]
             if len(self.ruler) == 2:
                 a, b = np.array(self.ruler[0]), np.array(self.ruler[1])
-                self.message.emit(f"Distance {np.linalg.norm(b - a):.3f} m  (ΔX {b[0] - a[0]:+.3f} m, "
-                                  f"ΔY {b[1] - a[1]:+.3f} m)")
+                dn, de = frame_of(self.doc.data).ne(b) - frame_of(self.doc.data).ne(a)
+                self.message.emit(f"Distance {np.linalg.norm(b - a):.3f} m  (ΔN {dn:+.3f} m, ΔE {de:+.3f} m)")
             self.viewport().update()
             return
         if self.tool == "truss":
@@ -751,9 +834,20 @@ class PlanCanvas(QGraphicsView):
             return
         if self.drag is not None:
             kind, idx, vtx = self.drag
+            if kind == "origin" and vtx == "rotate":
+                o = self.doc.data["origin"]["xy"]
+                ang = math.degrees(math.atan2(sp.y() - o[1], sp.x() - o[0]))
+                if not e.modifiers() & Qt.KeyboardModifier.AltModifier:
+                    ang = round(ang / 15.0) * 15.0
+                self.doc.set_live(lambda data: data["origin"].__setitem__("north_deg", round(ang % 360.0, 3)))
+                self.message.emit(f"North points {(90 - ang) % 360:.0f}° clockwise from the top of the plan")
+                return
             pt = list(self._snap(sp.x(), sp.y(), e.modifiers()))
 
             def move(data):
+                if kind == "origin":
+                    data["origin"]["xy"] = pt
+                    return
                 if kind == "truss":
                     data["trusses"][idx]["start" if vtx == 0 else "end"] = pt
                 else:
@@ -770,7 +864,9 @@ class PlanCanvas(QGraphicsView):
             self.setCursor(Qt.CursorShape.ArrowCursor if self.tool == "select" else Qt.CursorShape.CrossCursor)
             return
         if self.drag is not None:
-            self.doc.commit("Move vertex", self.drag_before)
+            what = {"move": "Move origin", "rotate": "Turn North"}.get(self.drag[2], "Move vertex") \
+                if self.drag[0] == "origin" else "Move vertex"
+            self.doc.commit(what, self.drag_before)
             self.drag = None
             self.drag_before = None
 
@@ -842,10 +938,14 @@ class PlanCanvas(QGraphicsView):
             self.set_tool("select")
         elif tool in ("volume", "zone", "nogo") and len(pts) >= 3:
             if tool == "volume":
-                self.doc.edit("Draw volume", lambda data: data["volume"].__setitem__("polygon", pts))
-                self.set_selection(("volume", None))
-                self.set_tool("select")
+                self.doc.edit("Draw performance area", lambda data: data["volume"].__setitem__("polygon", pts))
                 self.zoom_to_fit()
+                if "origin" not in self.doc.data:           # step 2: where is the calibration square?
+                    self.set_selection(None)
+                    self.set_tool("origin")
+                else:
+                    self.set_selection(("volume", None))
+                    self.set_tool("select")
             elif tool == "zone":
                 def add(data):
                     n = len(data["tripod_zones"]) + 1
@@ -874,7 +974,9 @@ class PlanCanvas(QGraphicsView):
             return f"No-go area {idx + 1}"
         if kind == "vertex":
             return f"Vertex V{idx}"
-        return "Volume outline"
+        if kind == "origin":
+            return "Origin"
+        return "Performance area"
 
     def contextMenuEvent(self, e):
         """Right-click / two-finger click: delete the item under the pointer."""
@@ -886,7 +988,7 @@ class PlanCanvas(QGraphicsView):
         from PySide6.QtWidgets import QMenu
         sp = self.mapToScene(pos)
         hit = self._hit(sp.x(), sp.y())
-        if hit is None or hit[0] == "camera":
+        if hit is None or hit[0] in ("camera", "origin"):
             return None
         kind, idx, vtx = hit
         if kind == "volume" and vtx is not None:

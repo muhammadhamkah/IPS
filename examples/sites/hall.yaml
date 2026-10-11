@@ -3,6 +3,7 @@
 # above the drones, so with a 30 m ceiling tripods (masts up to 20 m) cannot be
 # used: trusses only.
 name: Show hall (example)
+origin: {xy: [0, 0], north_deg: 0}   # calibration square at the floor centre
 volume: {min: [-50, -50, 0], max: [50, 50, 30]}
 sensor: OV9281
 lenses_mm: [2.8]

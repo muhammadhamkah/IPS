@@ -41,24 +41,33 @@ def click(canvas, x, y, double=False):
         QTest.mouseClick(canvas.viewport(), Qt.MouseButton.LeftButton, pos=p)
 
 
-def draw_rect(win, w=20, h=10):
+def draw_rect(win, w=20, h=10, origin=True):
+    """Step 1: draw the performance area; step 2 (origin=True): click the origin at (0, 0)."""
     c = win.canvas
     win.set_tool("volume")
     c.centerOn(0, 0)
     for x, y in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)):
         click(c, x, y)
     QTest.keyClick(c.viewport(), Qt.Key.Key_Return)
+    if origin and c.tool == "origin":
+        c.centerOn(0, 0)
+        click(c, 0, 0)
 
 
 def test_draw_volume_undo_redo(win):
     c = win.canvas
     c.resetTransform()
     c.scale(20, -20)
-    draw_rect(win)
+    draw_rect(win, origin=False)
     poly = win.doc.data["volume"]["polygon"]
     assert len(poly) == 4
     assert poly[0] == pytest.approx([-10, -5]) and poly[2] == pytest.approx([10, 5])
-    assert win.doc.dirty and c.tool == "select"
+    assert win.doc.dirty and c.tool == "origin"          # step 2: place the origin
+    c.centerOn(0, 0)
+    click(c, 2, 1)
+    assert c.tool == "select" and win.doc.data["origin"] == {"xy": [2.0, 1.0], "north_deg": 90.0}
+    win.a_undo.trigger()
+    assert "origin" not in win.doc.data
     win.a_undo.trigger()
     assert win.doc.data["volume"]["polygon"] == []
     win.a_redo.trigger()
@@ -96,12 +105,14 @@ def test_truss_tool_and_vertex_table(win):
     t = win.doc.data["trusses"][0]
     assert t["id"] == "T1" and t["start"] == pytest.approx([-12, 0]) and t["end"] == pytest.approx([12, 0])
     assert t["height_m"] == pytest.approx(win.doc.data["volume"]["z"][1] + 1.5)
-    # select the volume and type an exact coordinate into the vertex table
+    # select the volume and type an exact coordinate into the vertex table: columns are N, E from
+    # the origin (North = up the plan by default, so East = drawing +X)
     win.canvas.set_selection(("vertex", 1))
     from idps.ui.planner.inspector import VertexTable
     table = win.inspector.findChildren(VertexTable)[-1]
-    table.item(1, 0).setText("11.25")
-    assert win.doc.data["volume"]["polygon"][1][0] == pytest.approx(11.25)
+    assert float(table.item(1, 0).text()) == pytest.approx(-5) and float(table.item(1, 1).text()) == pytest.approx(10)
+    table.item(1, 1).setText("11.25")
+    assert win.doc.data["volume"]["polygon"][1] == pytest.approx([11.25, -5])
 
 
 def test_save_load_roundtrip_and_site_validates(win, tmp_path):
@@ -229,7 +240,7 @@ def test_top_cannot_go_below_floor_and_bad_heights_explained(win, monkeypatch):
     monkeypatch.setattr(win, "_exec_dialog", lambda box: shown.append(box.informativeText()))
     monkeypatch.setattr("idps.ui.main_window.start_worker", lambda *a: (_ for _ in ()).throw(AssertionError("started")))
     win.run_plan()
-    assert shown and "Top Z" in shown[0] and "Floor Z" in shown[0]
+    assert shown and "ceiling" in shown[0] and "lowest flight height" in shown[0]
 
 
 def test_settings_tab_has_volume_height(win):
@@ -355,11 +366,12 @@ def test_3d_projection_presets_fit_and_pick(win, app):
     # the orbit target projects to the centre of the view
     P, z = v.project([v.target])
     assert P[0] == pytest.approx([v.width() / 2, v.height() / 2]) and z[0] > 0
-    # top view looks straight down: +X goes right, +Y goes up the screen
+    # top view looks straight down with North up the screen and East to the right
     v.set_view("top")
-    P, _ = v.project([v.target, v.target + [1, 0, 0], v.target + [0, 1, 0]])
+    ax = v._ned_axes()
+    P, _ = v.project([v.target, v.target + ax["E"], v.target + ax["N"]])
     assert P[1, 0] > P[0, 0] and abs(P[1, 1] - P[0, 1]) < 1e-6 * v.height() + 1e-3
-    assert P[2, 1] < P[0, 1]
+    assert P[2, 1] < P[0, 1] and abs(P[2, 0] - P[0, 0]) < 1e-3
     # fit: every camera is on screen
     v.set_view("iso")
     P, z = v.project([c.position_m for c in got["plan"].cameras])
@@ -390,11 +402,11 @@ def test_3d_gizmo_axis_snap_buttons_and_ball_drag(win, app):
     v = win.view3d
     v.grab()                                            # paint once so the gizmo hit regions exist
     tips = {n: p for n, p, _ in v._axis_points()}
-    QTest.mouseClick(v, Qt.MouseButton.LeftButton, pos=tips["+Z"].toPoint())
+    QTest.mouseClick(v, Qt.MouseButton.LeftButton, pos=tips["-D"].toPoint())     # U: top view
     assert math.degrees(v.pitch) == pytest.approx(89.9)
     v.grab()
     tips = {n: p for n, p, _ in v._axis_points()}
-    QTest.mouseClick(v, Qt.MouseButton.LeftButton, pos=tips["-Y"].toPoint())
+    QTest.mouseClick(v, Qt.MouseButton.LeftButton, pos=tips["-N"].toPoint())     # S: from the South side
     assert math.degrees(v.pitch) == pytest.approx(0) and math.degrees(v.yaw) == pytest.approx(-90)
     v.grab()
     acts = {a: r for r, a in v._gizmo_hits if a != "orbit"}
@@ -614,3 +626,74 @@ def test_window_fits_a_laptop_screen(win, app):
     win.fit_to_screen()
     assert win.frameGeometry().width() <= avail.width() + 1
     assert win.frameGeometry().height() <= avail.height() + 1
+
+
+def test_area_first_then_origin_drag_and_turn_north(win, app):
+    """Mount tools wait for the performance area; the origin is placed, dragged and turned on
+    the plan, and every coordinate shown follows it (North-East-Down)."""
+    c = win.canvas
+    c.resetTransform()
+    c.scale(20, -20)
+    win.set_tool("truss")
+    assert c.tool == "volume"                                  # area first
+    draw_rect(win, origin=False)
+    assert c.tool == "origin"
+    c.centerOn(0, 0)
+    click(c, 0, 0)
+    assert win.doc.data["origin"] == {"xy": [0.0, 0.0], "north_deg": 90.0}
+    assert c.selection == ("origin", None)
+    # drag the origin to (-10, -5) (vertex V0): one undo step
+    vp = c.viewport()
+    a, b = c.mapFromScene(QPointF(0, 0)), c.mapFromScene(QPointF(-10, -5))
+    QTest.mousePress(vp, Qt.MouseButton.LeftButton, pos=a)
+    QTest.mouseMove(vp, b)
+    QTest.mouseRelease(vp, Qt.MouseButton.LeftButton, pos=b)
+    assert win.doc.data["origin"]["xy"] == pytest.approx([-10, -5])
+    # turn North to point along +X of the plan by dragging the N tip
+    _, n_tip, _ = c._origin_geometry()
+    a = c.mapFromScene(QPointF(*n_tip))
+    b = c.mapFromScene(QPointF(-10 + 3, -5 + 0.2))
+    QTest.mousePress(vp, Qt.MouseButton.LeftButton, pos=a)
+    QTest.mouseMove(vp, b)
+    QTest.mouseRelease(vp, Qt.MouseButton.LeftButton, pos=b)
+    assert win.doc.data["origin"]["north_deg"] == pytest.approx(0.0)        # snapped to 15° steps
+    # V2 (10, 5) is now 20 m North and 10 m West of the origin
+    from idps.ui.planner.document import frame_of
+    assert frame_of(win.doc.data).ne([10, 5]) == pytest.approx([20, -10])
+    win.canvas.set_selection(("vertex", 2))
+    from idps.ui.planner.inspector import VertexTable
+    table = win.inspector.findChildren(VertexTable)[-1]
+    assert float(table.item(2, 0).text()) == pytest.approx(20) and float(table.item(2, 1).text()) == pytest.approx(-10)
+    win._cursor_moved(10, 5)
+    assert "N    20.00" in win.cursor_label.text() and "E   -10.00" in win.cursor_label.text()
+    win.a_undo.trigger()
+    assert win.doc.data["origin"]["north_deg"] == pytest.approx(90.0)
+    # the origin panel: North straight up the plan with one click
+    win.canvas.set_selection(("origin", None))
+    from PySide6.QtWidgets import QPushButton
+    btn = next(b for b in win.inspector.findChildren(QPushButton) if b.text() == "North along edge E0" and not b.isHidden())
+    btn.click()
+    assert win.doc.data["origin"]["north_deg"] == pytest.approx(0.0)
+    win.grab()
+
+
+def test_plan_needs_origin_and_origin_from_v0(win, app):
+    c = win.canvas
+    c.resetTransform()
+    c.scale(20, -20)
+    draw_rect(win, origin=False)
+    win.inspector._add_strip()
+    win.run_plan()
+    assert c.tool == "origin" and win.thread is None              # asked to place the origin first
+    c.centerOn(0, 0)
+    click(c, 0, 0)
+    # type the origin's exact offset from V0 (-10, -5): 3 m North, 2 m East of it
+    c.set_selection(("origin", None))
+    from idps.ui.planner.inspector import DSpin
+    spins = [s for s in win.inspector.findChildren(DSpin) if s.prefix() in ("N ", "E ") and not s.isHidden()]
+    n_spin = next(s for s in spins if s.prefix() == "N ")
+    e_spin = next(s for s in spins if s.prefix() == "E ")
+    assert n_spin.value() == pytest.approx(5) and e_spin.value() == pytest.approx(10)
+    n_spin.setValue(3)
+    n_spin.editingFinished.emit()
+    assert win.doc.data["origin"]["xy"] == pytest.approx([0, -2])           # North = up: 3 m up from V0

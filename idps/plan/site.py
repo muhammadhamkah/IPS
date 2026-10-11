@@ -12,6 +12,7 @@ import numpy as np
 import yaml
 
 from idps.core.camera import SENSORS, Sensor
+from idps.core.frames import Frame
 from idps.core.noise import NoiseBudget, noise_from_config
 from idps.coverage.fisher import VisibilityLimits
 from idps.coverage.volume import Volume, distance_to_polygon, points_in_polygon
@@ -99,6 +100,7 @@ class Site:
     max_cameras: int
     notes: str = ""
     source_path: str | None = None
+    frame: Frame = field(default_factory=Frame)    # origin + North: everything shown in NED
 
     @property
     def volume_min(self) -> np.ndarray:
@@ -232,6 +234,7 @@ def site_from_dict(d: dict, source_path: str | None = None) -> Site:
         max_cameras=int(d.get("optimiser", {}).get("max_cameras", 400)),
         notes=str(d.get("notes", "")),
         source_path=source_path,
+        frame=Frame.from_dict(d.get("origin")),
     )
 
 

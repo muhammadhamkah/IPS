@@ -215,7 +215,7 @@ class Brain:
             iss.last_seen = self.now
             return []
         cam = self._cam(cid)
-        where = (f" ({cam.mount_type} {cam.mount_id}, X {cam.position_m[0]:.1f}, Y {cam.position_m[1]:.1f}, "
+        where = (f" ({cam.mount_type} {cam.mount_id}, {self.site.frame.fmt_ne(cam.position_m[:2], 1)}, "
                  f"{cam.position_m[2]:.1f} m high)") if cam else ""
         iss = self._new_issue(kind=CAMERA_OFFLINE, severity="critical", title=f"{cid} stopped sending",
                               evidence=f"No data from {cid}{where} for over {self.s.offline_after_s:g} s. "
@@ -442,7 +442,8 @@ class Brain:
         longest = max(e.t1 - e.t0 for e in evs)
         blocked = self.blocked_cameras(centre, radius)
         what = "lose tracking" if lost >= 0.3 * len(evs) else f"drop below {self.min_cameras} cameras"
-        title = (f"Drones {what} near X {centre[0]:.0f}, Y {centre[1]:.0f} m, "
+        n, e = self.site.frame.ne(centre[:2])
+        title = (f"Drones {what} near N {n:.0f}, E {e:.0f} m, "
                  f"{max(z.min(), 0):.0f}–{z.max():.0f} m high")
         minutes = min(self.now - min(e.t0 for e in evs), self.s.window_s) / 60
         ev_text = (f"{len(evs)} episodes in the last {max(minutes, 0.1):.1f} min from {len(drones)} drone(s) "
@@ -607,7 +608,7 @@ class Brain:
                 if steps[-1].failing_after > 0:
                     text += (f" This only partly fixes it ({steps[0].failing_before} → {steps[-1].failing_after} "
                              f"problem spots): for the rest, clear the obstruction or add a tripod zone or truss "
-                             f"near X {loc[0]:.0f}, Y {loc[1]:.0f} so the advisor has somewhere better to put a camera.")
+                             f"near {site.frame.fmt_ne(loc[:2], 0)} so the advisor has somewhere better to put a camera.")
                 return dict(recs=steps, focus=focus, text=text)
         return dict(recs=[], focus=None, text="")
 
@@ -669,7 +670,7 @@ class Brain:
         iss.fix_text = result["text"]
         if iss.kind == BLIND_SPOT and iss.rounds >= 2:
             iss.fix_text = (f"{iss.rounds} rounds of changes have not cured this, so something physical is "
-                            f"probably in the way near X {iss.location[0]:.0f}, Y {iss.location[1]:.0f}, "
+                            f"probably in the way near {self.site.frame.fmt_ne(iss.location[:2], 0)}, "
                             f"{iss.location[2]:.0f} m high: walk the lines of sight from "
                             f"{', '.join(iss.cameras) or 'the cameras around it'} to that spot first. "
                             f"Otherwise: {iss.fix_text}")

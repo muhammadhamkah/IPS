@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleS
                                QTabWidget, QVBoxLayout, QWidget)
 
 from idps.core.noise import PRESETS
+from idps.ui.planner.document import frame_of
 
 
 class _NoStrayWheel:
@@ -128,12 +129,12 @@ def parse_segments(text: str):
 
 
 class VertexTable(QTableWidget):
-    """Editable X/Y vertex list with edge lengths."""
+    """Editable vertex list in North / East from the origin, with edge lengths."""
 
     def __init__(self, on_edit, parent=None):
         super().__init__(0, 3, parent)
         self.on_edit = on_edit
-        self.setHorizontalHeaderLabels(["X (m)", "Y (m)", "edge to next"])
+        self.setHorizontalHeaderLabels(["N (m)", "E (m)", "edge to next"])
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setAlternatingRowColors(True)
@@ -141,13 +142,14 @@ class VertexTable(QTableWidget):
         self._loading = False
         self.itemChanged.connect(self._changed)
 
-    def load(self, pts, prefix="V"):
+    def load(self, pts, frame, prefix="V"):
         self._loading = True
         self.setRowCount(len(pts))
         self.setVerticalHeaderLabels([f"{prefix}{k}" for k in range(len(pts))])
         for k, (x, y) in enumerate(pts):
-            self.setItem(k, 0, QTableWidgetItem(f"{x:.3f}"))
-            self.setItem(k, 1, QTableWidgetItem(f"{y:.3f}"))
+            n, e = frame.ne((x, y))
+            self.setItem(k, 0, QTableWidgetItem(f"{n:.3f}"))
+            self.setItem(k, 1, QTableWidgetItem(f"{e:.3f}"))
             if len(pts) >= 2:
                 nx, ny = pts[(k + 1) % len(pts)]
                 it = QTableWidgetItem(f"E{k}: {np.hypot(nx - x, ny - y):.2f} m")
@@ -207,7 +209,9 @@ class Inspector(QTabWidget):
         sel = self.canvas.selection
         d = self.doc.data
         kind = sel[0] if sel else None
-        if kind in (None, "volume", "vertex"):
+        if kind == "origin" and d.get("origin"):
+            self.sel_layout.addWidget(self._origin_box())
+        elif kind in (None, "volume", "vertex", "origin"):
             self.sel_layout.addWidget(self._volume_box(sel[1] if kind == "vertex" else None))
             self.sel_layout.addWidget(self._add_box())
         elif kind == "truss" and sel[1] < len(d["trusses"]):
@@ -226,11 +230,11 @@ class Inspector(QTabWidget):
     def _volume_box(self, vertex):
         d = self.doc.data
         vol = d["volume"]
-        box = QGroupBox("Flight volume")
+        box = QGroupBox("Performance area (flight volume)")
         form = QFormLayout(box)
         z0, z1 = volume_z_editors(self.doc)
-        form.addRow("Floor Z (min)", z0)
-        form.addRow("Top Z (max, extrude to)", z1)
+        form.addRow("Lowest flight height", z0)
+        form.addRow("Ceiling (top) height", z1)
         pts = vol["polygon"]
         if len(pts) >= 3:
             from idps.coverage.volume import Volume
@@ -244,7 +248,7 @@ class Inspector(QTabWidget):
                 lab.setWordWrap(True)
                 form.addRow(label, lab)
         table = VertexTable(self._edit_vertex)
-        table.load(pts)
+        table.load(pts, frame_of(d))
         if vertex is not None and vertex < len(pts):
             table.selectRow(vertex)
         table.itemSelectionChanged.connect(
@@ -258,16 +262,22 @@ class Inspector(QTabWidget):
         row.addWidget(add)
         row.addWidget(rem)
         form.addRow(row)
-        hint = QLabel("Draw with the Volume tool (P), drag vertices on the canvas, or type exact "
-                      "coordinates here. Origin (0, 0) is where the calibration square goes; +X is "
-                      "its X arm.")
+        hint = QLabel("Draw with the Performance area tool (P), drag corners on the plan, or type exact "
+                      "coordinates here. Coordinates are North / East from the origin (the calibration "
+                      "square); heights are above the floor (Down = −height).")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: palette(placeholder-text);")
         form.addRow(hint)
         return box
 
     def _edit_vertex(self, row, col, value):
-        self.doc.edit("Edit vertex", lambda d: d["volume"]["polygon"][row].__setitem__(col, value))
+        f = frame_of(self.doc.data)
+
+        def edit(d):
+            ne = f.ne(d["volume"]["polygon"][row])
+            ne[col] = value
+            d["volume"]["polygon"][row] = [round(float(v), 4) for v in f.xy(ne)]
+        self.doc.edit("Edit vertex", edit)
 
     def _add_vertex(self, after):
         pts = self.doc.data["volume"]["polygon"]
@@ -294,7 +304,12 @@ class Inspector(QTabWidget):
         strip.clicked.connect(self._add_strip)
         strip.setEnabled(len(self.doc.data["volume"]["polygon"]) >= 3)
         lay.addWidget(strip)
-        tips = QLabel("Trusses: T tool · Tripod areas: A tool · No-go areas: N tool")
+        if len(self.doc.data["volume"]["polygon"]) >= 3 and not self.doc.data.get("origin"):
+            place = QPushButton("Place the origin (O)…")
+            place.setToolTip("Where the calibration square's corner goes; its N arrow points North")
+            place.clicked.connect(lambda: self.canvas.set_tool("origin"))
+            lay.addWidget(place)
+        tips = QLabel("Trusses: T tool · Tripod areas: A tool · No-go areas: N tool · Origin: O tool")
         tips.setStyleSheet("color: palette(placeholder-text);")
         lay.addWidget(tips)
         return box
@@ -367,13 +382,15 @@ class Inspector(QTabWidget):
         h.setValue(t["height_m"])
         h.editingFinished.connect(lambda: self._set(("trusses", i, "height_m"), h.value()))
         form.addRow("Height", h)
+        f = frame_of(self.doc.data)
         for key, label in (("start", "Start"), ("end", "End")):
             row = QHBoxLayout()
+            ne = f.ne(t[key])
             for c in range(2):
                 s = dspin(-10000, 10000)
-                s.setPrefix("XY"[c] + " ")
-                s.setValue(t[key][c])
-                s.editingFinished.connect(lambda s=s, key=key, c=c: self._set(("trusses", i, key, c), s.value()))
+                s.setPrefix("NE"[c] + " ")
+                s.setValue(float(ne[c]))
+                s.editingFinished.connect(lambda s=s, key=key, c=c: self._set_ne(("trusses", i, key), c, s.value()))
                 row.addWidget(s)
             form.addRow(label, row)
         L = float(np.hypot(*(np.array(t["end"]) - np.array(t["start"]))))
@@ -492,11 +509,13 @@ class Inspector(QTabWidget):
             return box
         plan, ev = self.canvas.result
         c = plan.cameras[k]
-        x, y, z = c.position_m
+        from idps.core.frames import pan_display
+        f = frame_of(self.doc.data)
         rows = [("ID", c.id), ("Mount", f"{c.mount_type} {c.mount_id}"),
-                ("Position", f"X {x:.2f}  Y {y:.2f}  Z {z:.2f} m"),
-                ("Gimbal base heading", f"{c.base_heading_deg:.0f}° (0° = +X, 90° = +Y)"),
-                ("Pan / tilt", f"{c.pan_deg:+.1f}° / {c.tilt_deg:+.1f}°"), ("Lens", f"{c.lens_mm:g} mm"),
+                ("Position", f.fmt_ned(c.position_m) + f" m  ({c.position_m[2]:.2f} m high)"),
+                ("Gimbal base heading", f"{f.heading(c.base_heading_deg):.0f}° (from North, clockwise)"),
+                ("Pan / tilt", f"{pan_display(c.pan_deg):+.1f}° / {c.tilt_deg:+.1f}°  (pan + = clockwise)"),
+                ("Lens", f"{c.lens_mm:g} mm"),
                 ("Nearest neighbour", "" if c.neighbour_spacing_m is None else f"{c.neighbour_spacing_m:.2f} m"),
                 ("Critical points", f"{int(ev.critical[k])} would fail without this camera")]
         for a, b in rows:
@@ -507,7 +526,77 @@ class Inspector(QTabWidget):
         form.addRow("Install", note)
         return box
 
+    # ---------------------------------------------------------------- origin
+    def _origin_box(self):
+        d = self.doc.data
+        f = frame_of(d)
+        box = QGroupBox("Origin (calibration square) and North")
+        form = QFormLayout(box)
+        bearing = dspin(0, 360)
+        bearing.setDecimals(1)
+        bearing.setSuffix("°")
+        bearing.setValue(round((90.0 - f.north_deg) % 360.0, 3))
+        bearing.setToolTip("Direction of North on the plan, clockwise from the top of the plan")
+        bearing.editingFinished.connect(
+            lambda: self._set(("origin", "north_deg"), round((90.0 - bearing.value()) % 360.0, 4)))
+        form.addRow("North, clockwise from plan up", bearing)
+        row = QHBoxLayout()
+        up = QPushButton("North = plan up")
+        up.clicked.connect(lambda: self._set(("origin", "north_deg"), 90.0))
+        row.addWidget(up)
+        pts = d["volume"]["polygon"]
+        if len(pts) >= 2:
+            along = QPushButton("North along edge E0")
+            along.setToolTip("Point North along the performance area's first edge, V0 → V1")
+
+            def align():
+                a, b = np.array(pts[0], float), np.array(pts[1], float)
+                self._set(("origin", "north_deg"), round(float(np.degrees(np.arctan2(*(b - a)[::-1]))) % 360, 4))
+            along.clicked.connect(align)
+            row.addWidget(along)
+        form.addRow(row)
+        if len(pts) >= 1:
+            # exact placement from a tape measurement: the origin's offset from vertex V0
+            v0 = np.array(pts[0], float)
+            off = -f.ne(v0)
+            row2 = QHBoxLayout()
+            spins = []
+            for c, lab in enumerate("NE"):
+                sp = dspin(-10000, 10000)
+                sp.setPrefix(lab + " ")
+                sp.setValue(float(off[c]))
+                spins.append(sp)
+                row2.addWidget(sp)
+
+            def set_from_v0():
+                xy = f.xy(f.ne(v0) + np.array([spins[0].value(), spins[1].value()]))
+                self._set(("origin", "xy"), [round(float(v), 4) for v in xy])
+            for sp in spins:
+                sp.editingFinished.connect(set_from_v0)
+            form.addRow("Origin from V0", row2)
+        hint = QLabel("Drag the origin on the plan to move it, and its red N arrow to turn it. Everything is "
+                      "measured North-East-Down from here, the frame the drones fly in: on site, lay the "
+                      "calibration square's corner on this spot, its long arm pointing North and its short arm "
+                      "East (to the right when facing North). Drone yaw 0 = North.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(placeholder-text);")
+        form.addRow(hint)
+        return box
+
     # ---------------------------------------------------------------- helpers
+    def _set_ne(self, path, col, value):
+        """Set one N/E coordinate of a drawing-frame XY point."""
+        f = frame_of(self.doc.data)
+
+        def edit(d):
+            o = d
+            for p in path:
+                o = o[p]
+            ne = f.ne(o)
+            ne[col] = value
+            o[:] = [round(float(v), 4) for v in f.xy(ne)]
+        self.doc.edit("Edit", edit)
+
     def _set(self, path, value):
         def f(d):
             o = d
@@ -555,8 +644,8 @@ class SettingsPage(QWidget):
         self.vol_box = QGroupBox("Flight volume height")
         vol_form = QFormLayout(self.vol_box)
         self.z0, self.z1 = volume_z_editors(doc)
-        vol_form.addRow("Floor Z (min)", self.z0)
-        vol_form.addRow("Top Z (max)", self.z1)
+        vol_form.addRow("Lowest flight height", self.z0)
+        vol_form.addRow("Ceiling (top) height", self.z1)
         lay.addWidget(self.vol_box)
         self.widgets = {}
         groups = {}
