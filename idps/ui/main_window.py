@@ -316,10 +316,8 @@ class MainWindow(QMainWindow):
                                     "Use the Volume tool (P) to click the floor outline of the flight volume.")
             return
         if not self.doc.data["trusses"] and not self.doc.data["tripod_zones"]:
-            QMessageBox.information(self, "Nowhere to mount cameras",
-                                    "Add at least one truss (T) or tripod zone (A, or “Tripod strip around "
-                                    "the volume” in the inspector).")
-            return
+            if not self._offer_tripod_strip():
+                return
         self.results.running(True)
         self.a_run.setEnabled(False)
         site_dict = self.doc.to_site_dict()
@@ -336,6 +334,28 @@ class MainWindow(QMainWindow):
         if keep in self._running:
             self._running.remove(keep)
         keep[0].deleteLater()
+
+    def _offer_tripod_strip(self) -> bool:
+        """No mounts yet: offer the common default (tripods in a 1-3 m strip
+        around the volume) instead of a dead-end message."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("Where can cameras be mounted?")
+        box.setInformativeText("There are no trusses or tripod zones yet. Add a tripod strip 1–3 m outside "
+                               "the volume (masts 2–20 m) and plan? You can edit it in the inspector "
+                               "afterwards, or draw trusses (T) and tripod areas (A) instead.")
+        add = box.addButton("Add Tripod Strip && Plan", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(add)
+        box.setWindowModality(Qt.WindowModality.WindowModal)
+        self._exec_dialog(box)
+        if box.clickedButton() is not add:
+            return False
+        self.inspector._add_strip()
+        return True
+
+    def _exec_dialog(self, box):          # separate so tests can stub it
+        return box.exec()
 
     def cancel_plan(self):
         if self.worker is not None:

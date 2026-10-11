@@ -151,3 +151,46 @@ def test_worker_cancel(app):
     worker.stop()
     worker.run()
     assert events == ["cancelled"]
+
+
+def test_plan_without_mounts_offers_tripod_strip(win, monkeypatch):
+    c = win.canvas
+    c.resetTransform()
+    c.scale(20, -20)
+    draw_rect(win)
+    started = []
+    monkeypatch.setattr("idps.ui.main_window.start_worker", lambda *a: started.append(a) or (_FakeThread(), _FakeWorker()))
+
+    # Cancel: nothing added, nothing started
+    monkeypatch.setattr(win, "_exec_dialog", lambda box: box.buttons()[-1].click())
+    win.run_plan()
+    assert not win.doc.data["tripod_zones"] and not started
+    # Accept: strip added and planning starts
+    monkeypatch.setattr(win, "_exec_dialog", lambda box: box.buttons()[0].click())
+    win.run_plan()
+    assert win.doc.data["tripod_zones"][0]["offset_m"] == [1.0, 3.0]
+    assert started
+    win.thread = win.worker = None
+    win._running.clear()
+
+
+def test_app_icon_and_name_helpers(app):
+    from idps.ui.app import _macos_app_name, app_icon
+    assert not app_icon().isNull()
+    _macos_app_name("IDPS")        # no-op without pyobjc; must not raise
+
+
+class _Sig:
+    def connect(self, *a):
+        pass
+
+
+class _FakeWorker:
+    progress = finished = failed = cancelled = _Sig()
+
+
+class _FakeThread:
+    finished = _Sig()
+
+    def deleteLater(self):
+        pass

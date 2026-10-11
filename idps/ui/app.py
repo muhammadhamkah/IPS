@@ -26,14 +26,56 @@ class DashboardApp(QApplication):
         return super().event(e)
 
 
+def _macos_app_name(name: str) -> None:
+    """When launched from Terminal the process is 'Python', so the macOS menu
+    bar and Dock show that. Renaming the bundle info before Qt starts fixes it
+    (needs pyobjc, installed with the ui extra on macOS; silently skipped otherwise)."""
+    try:
+        from Foundation import NSBundle
+    except ImportError:
+        return
+    bundle = NSBundle.mainBundle()
+    info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+    if info is not None:
+        info["CFBundleName"] = name
+        info["CFBundleDisplayName"] = name
+
+
+def app_icon():
+    """Simple drawn icon (replaces the Python rocket in the Dock and dialogs)."""
+    from PySide6.QtCore import QPointF, QRectF
+    from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+    pm = QPixmap(512, 512)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(QColor("#184f95"))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawRoundedRect(QRectF(24, 24, 464, 464), 104, 104)
+    p.setPen(QPen(QColor("#9ec5f4"), 14))
+    for a, b in (((110, 380), (256, 150)), ((402, 380), (256, 150)), ((110, 380), (402, 380))):
+        p.drawLine(QPointF(*a), QPointF(*b))                  # three camera rays to a marker
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor("#ffffff"))
+    p.drawEllipse(QPointF(256, 150), 46, 46)
+    p.setBrush(QColor("#eb6834"))
+    for c in ((110, 380), (402, 380)):
+        p.drawEllipse(QPointF(*c), 34, 34)
+    p.end()
+    return QIcon(pm)
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv if argv is None else argv)
+    if sys.platform == "darwin":
+        _macos_app_name("IDPS")
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = DashboardApp(argv)
     app.setApplicationName("IDPS")
     app.setApplicationDisplayName("IDPS")
     app.setOrganizationName("IDPS")
     app.setOrganizationDomain("idps.local")
+    app.setWindowIcon(app_icon())
     if sys.platform == "darwin":
         app.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, True)
 
