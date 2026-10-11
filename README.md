@@ -15,6 +15,41 @@ markers, and a central PC engine with a live 3D dashboard.
 | [docs/WORKFLOW.md](docs/WORKFLOW.md) | Operator workflow: planner → install → one-click aim → wand + calibration square → fly |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phase 0–10 plan with measurable exit criteria |
 
+## Desktop dashboard (macOS-first)
+
+The **Planner** tab is the first part of the IDPS dashboard. With it you can:
+* draw the venue's floor outline (click the vertices) and set the height to extrude to;
+* draw trusses, tripod areas and no-go areas;
+* add a "tripod strip around the volume";
+* press **Plan Cameras (⌘R)**.
+
+The plan shows each camera's mount and aim, coverage maps (cameras per point or predicted
+accuracy at each altitude), the install table, and export to `plan.yaml`, `cameras.csv` and
+`report.html`.
+
+```bash
+# On a Mac (Apple Silicon or Intel), Python 3.11+:
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e '.[ui]'
+idps-dashboard                                   # or: idps-dashboard examples/sites/venue_50x20x20.yaml
+bash packaging/macos/build_app.sh                # optional: build a double-clickable dist/IDPS.app
+```
+
+**macOS behaviour:**
+* native menu bar with standard ⌘ shortcuts: ⌘N new, ⌘O open, ⌘S save, ⌘Z / ⇧⌘Z undo/redo,
+  ⌘R plan, ⌘E export, ⌘0 fit;
+* the edited-dot and document proxy icon in the title bar, and save prompts as sheets;
+* light/dark mode follows the system;
+* Retina rendering.
+
+**On the canvas:**
+* two-finger scroll pans and pinch zooms; ⌘+scroll also zooms.
+* Tool keys: V select, P volume outline, T truss, A tripod area, N no-go.
+* ⇧ constrains to horizontal/vertical; ⌥ places a point without snapping.
+* Return, double-click or clicking V0 closes an outline.
+* ⌫ deletes the selection; double-clicking an edge inserts a vertex.
+* The inspector's vertex table takes exact coordinates.
+
 ## Planner (`idps-plan`)
 
 The first piece of software. It takes a site file and works out:
@@ -25,7 +60,7 @@ The first piece of software. It takes a site file and works out:
 It also predicts which parts of the volume have 3+ cameras and meet the accuracy target.
 
 ```bash
-pip install -e '.[dev]'                       # numpy, pyyaml, matplotlib, pytest
+pip install -e '.[dev]'                       # numpy, pyyaml, matplotlib, PySide6, pytest
 idps-plan optimise examples/sites/lab.yaml  -o out/lab
 idps-plan optimise examples/sites/venue_50x20x20.yaml -o out/venue --verify-spacing 2
 idps-plan optimise examples/sites/hall.yaml -o out/hall --verify-spacing 5

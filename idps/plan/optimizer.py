@@ -46,6 +46,10 @@ class Objective:
         return self.w_coverage * cov + self.w_accuracy * acc
 
 
+class Cancelled(Exception):
+    """Raised when the caller's cancel callback asks the optimiser to stop."""
+
+
 @dataclass
 class OptimiseResult:
     selected: list[int]                 # candidate indices
@@ -72,7 +76,12 @@ class Optimiser:
         new_def = self.obj.voxel_deficit(n[None, :] + vis, info[None, :, :] + inf)
         return (base_def[None, :] - new_def).sum(axis=1)
 
-    def run(self, max_cameras: int | None = None, batch: int = 256) -> OptimiseResult:
+    def run(self, max_cameras: int | None = None, batch: int = 256, cancel=None) -> OptimiseResult:
+        """cancel: optional callable; if it returns True the run raises Cancelled."""
+        def check():
+            if cancel is not None and cancel():
+                raise Cancelled()
+
         t0 = time.time()
         max_cameras = max_cameras or self.site.max_cameras
         V, N = len(self.pts), len(self.c)
@@ -86,6 +95,7 @@ class Optimiser:
         # Initial (upper-bound) gains for every candidate.
         heap = []
         for s in range(0, N, batch):
+            check()
             idx = np.arange(s, min(N, s + batch))
             for i, g in zip(idx, self._gains(idx, n, info, base_def)):
                 if g > 1e-9:
@@ -103,6 +113,7 @@ class Optimiser:
             if len(res.selected) >= max_cameras:
                 res.stopped_because = f"reached max_cameras={max_cameras}"
                 break
+            check()
             _, i = heapq.heappop(heap)
             key = self.c.mount_key[i]
             if mount_use.get(key, 0) >= cap or (key, self.c.az[i], self.c.el[i]) in chosen_aims:

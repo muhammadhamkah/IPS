@@ -115,8 +115,10 @@ def generate_candidates(site: Site) -> CandidateSet:
         for x, y in tripod_positions(site, z):
             if blocked(x, y) or site.volume.contains_xy(np.array([[x, y]]))[0]:
                 continue
+            # One tripod per floor spot; it may carry cameras at several heights
+            # on its mast (the mount capacity is max_cameras_per_mount).
+            key = f"{z.id}@{x:.2f},{y:.2f}"
             for h in heights:
-                key = f"{z.id}@{x:.2f},{y:.2f},{h:.1f}"
                 for az, el in tripod_aims:
                     for lens in site.lenses_mm:
                         rows.append(((x, y, h), az, el, lens, key, "tripod", z.id, np.nan))

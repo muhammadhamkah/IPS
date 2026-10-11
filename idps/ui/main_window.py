@@ -1,0 +1,413 @@
+"""Main dashboard window. macOS conventions: native menu bar with ⌘ shortcuts,
+unified title/toolbar, document proxy icon and edited-dot in the title bar,
+sheet-style save prompts, trackpad gestures on the plan canvas."""
+from __future__ import annotations
+
+import sys
+import tempfile
+from pathlib import Path
+
+from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QLabel, QMainWindow, QMessageBox, QSizePolicy,
+                               QSplitter, QTabWidget, QToolBar, QVBoxLayout, QWidget)
+
+from idps.ui.planner.canvas import TOOLS, PlanCanvas
+from idps.ui.planner.document import SiteDocument
+from idps.ui.planner.inspector import Inspector
+from idps.ui.planner.results import ResultsPanel
+from idps.ui.planner.worker import start_worker
+
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "sites"
+TOOL_KEYS = {"select": "V", "volume": "P", "truss": "T", "zone": "A", "nogo": "N"}
+
+
+def placeholder(text: str) -> QWidget:
+    w = QWidget()
+    lay = QVBoxLayout(w)
+    lab = QLabel(text)
+    lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lab.setStyleSheet("color: palette(placeholder-text); font-size: 15px;")
+    lab.setWordWrap(True)
+    lay.addWidget(lab)
+    return w
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.settings = QSettings()
+        self.doc = SiteDocument(self)
+        self.canvas = PlanCanvas(self.doc)
+        self.inspector = Inspector(self.doc, self.canvas)
+        self.results = ResultsPanel(self.canvas)
+        self.thread = self.worker = None
+        self._running = []          # (thread, worker) kept alive until the thread has finished
+        self.last_site = None
+
+        self.setUnifiedTitleAndToolBarOnMac(True)
+        self.setWindowTitle("IDPS[*]")
+        self.resize(1440, 900)
+
+        # Planner page: canvas | inspector, results underneath
+        top = QSplitter(Qt.Orientation.Horizontal)
+        top.addWidget(self.canvas)
+        top.addWidget(self.inspector)
+        top.setStretchFactor(0, 1)
+        top.setSizes([1060, 380])
+        page = QSplitter(Qt.Orientation.Vertical)
+        page.addWidget(top)
+        page.addWidget(self.results)
+        page.setStretchFactor(0, 1)
+        page.setSizes([620, 280])
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.addTab(page, "Planner")
+        self.tabs.addTab(placeholder("Live tracking\n\nReal-time 3D positions, camera health, latency and "
+                                     "recording arrive with the positioning engine (roadmap phases 3-7)."),
+                         "Live tracking")
+        self.tabs.addTab(placeholder("Calibration\n\nAim cameras to plan, wand + calibration square, "
+                                     "continuous calibration and tripod restore (roadmap phase 6)."),
+                         "Calibration")
+        self.setCentralWidget(self.tabs)
+
+        self._actions()
+        self._toolbar()
+        self._menus()
+        self.cursor_label = QLabel("")
+        self.statusBar().addPermanentWidget(self.cursor_label)
+
+        self.doc.changed.connect(self._changed)
+        self.doc.pathChanged.connect(self._title)
+        self.doc.undo.cleanChanged.connect(lambda clean: self.setWindowModified(not clean))
+        self.canvas.cursorMoved.connect(lambda x, y: self.cursor_label.setText(f"X {x:8.2f} m   Y {y:8.2f} m"))
+        self.canvas.message.connect(lambda m: self.statusBar().showMessage(m, 8000))
+        self.canvas.selectionChanged.connect(self._selection)
+        self.results.runRequested.connect(self.run_plan)
+        self.results.cancelRequested.connect(self.cancel_plan)
+        self.results.exportRequested.connect(self.export_plan)
+        self.results.reportRequested.connect(self.open_report)
+        self.results.cameraSelected.connect(lambda k: self.canvas.set_selection(("camera", k)))
+
+        geo = self.settings.value("window/geometry")
+        if geo is not None:
+            self.restoreGeometry(geo)
+        self._title(self.doc.title())
+        self.canvas.set_tool("select")
+
+    # ------------------------------------------------------------ actions
+    def _act(self, text, slot, shortcut=None, tip=None, checkable=False):
+        a = QAction(text, self)
+        if shortcut is not None:
+            a.setShortcut(QKeySequence(shortcut))
+        if tip:
+            a.setStatusTip(tip)
+            a.setToolTip(tip)
+        a.setCheckable(checkable)
+        a.triggered.connect(slot)
+        return a
+
+    def _actions(self):
+        S = QKeySequence.StandardKey
+        self.a_new = self._act("New Venue", self.new_doc, S.New)
+        self.a_open = self._act("Open…", self.open_doc, S.Open)
+        self.a_save = self._act("Save", self.save_doc, S.Save)
+        self.a_save_as = self._act("Save As…", self.save_doc_as, S.SaveAs)
+        self.a_export = self._act("Export Plan…", self.export_plan, "Ctrl+E")
+        self.a_close = self._act("Close Window", self.close, S.Close)
+        self.a_undo = self.doc.undo.createUndoAction(self, "Undo")
+        self.a_undo.setShortcut(QKeySequence(S.Undo))
+        self.a_redo = self.doc.undo.createRedoAction(self, "Redo")
+        self.a_redo.setShortcut(QKeySequence(S.Redo))
+        self.a_delete = self._act("Delete", self.canvas.delete_selection)
+        self.a_zoom_in = self._act("Zoom In", lambda: self.canvas.zoom(1.25), S.ZoomIn)
+        self.a_zoom_out = self._act("Zoom Out", lambda: self.canvas.zoom(0.8), S.ZoomOut)
+        self.a_fit = self._act("Zoom to Fit", self.canvas.zoom_to_fit, "Ctrl+0")
+        self.a_run = self._act("Plan Cameras", self.run_plan, "Ctrl+R", "Find camera count, positions and pan/tilt")
+        self.a_cancel = self._act("Cancel Planning", self.cancel_plan, "Ctrl+.")
+        self.a_about = self._act("About IDPS", self.about)
+        self.a_about.setMenuRole(QAction.MenuRole.AboutRole)
+        self.a_quit = self._act("Quit IDPS", self.close, S.Quit)
+        self.a_quit.setMenuRole(QAction.MenuRole.QuitRole)
+        self.tool_group = QActionGroup(self)
+        self.tool_actions = {}
+        for key, label in TOOLS.items():
+            a = self._act(label.split(" ")[0] if key == "select" else label.replace("Draw ", "").capitalize(),
+                          lambda _=False, k=key: self.set_tool(k), TOOL_KEYS[key],
+                          f"{label} ({TOOL_KEYS[key]})", checkable=True)
+            self.tool_group.addAction(a)
+            self.tool_actions[key] = a
+        self.tool_actions["select"].setChecked(True)
+        self.a_snap = self._act("Snap to Grid", self._snap_toggled, None, "Snap clicks to the grid "
+                                "(hold Option to place freely)", checkable=True)
+        self.a_snap.setChecked(True)
+
+    def _toolbar(self):
+        tb = QToolBar("Tools")
+        tb.setMovable(False)
+        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.addToolBar(tb)
+        for a in self.tool_actions.values():
+            tb.addAction(a)
+        tb.addSeparator()
+        tb.addAction(self.a_snap)
+        self.snap_combo = QComboBox()
+        for s in ("0.1", "0.25", "0.5", "1", "2", "5"):
+            self.snap_combo.addItem(f"{s} m", float(s))
+        self.snap_combo.setCurrentIndex(2)
+        self.snap_combo.currentIndexChanged.connect(
+            lambda i: setattr(self.canvas, "snap_step", self.snap_combo.itemData(i)))
+        tb.addWidget(self.snap_combo)
+        tb.addSeparator()
+        tb.addAction(self.a_fit)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        tb.addWidget(spacer)
+        tb.addAction(self.a_run)
+
+    def _menus(self):
+        mb = self.menuBar()                      # becomes the macOS global menu bar
+        f = mb.addMenu("File")
+        for a in (self.a_new, self.a_open):
+            f.addAction(a)
+        ex = f.addMenu("Open Example")
+        for p in sorted(EXAMPLES.glob("*.yaml")):
+            ex.addAction(p.stem.replace("_", " "), lambda p=p: self.open_doc(str(p)))
+        self.recent_menu = f.addMenu("Open Recent")
+        self._recent_refresh()
+        f.addSeparator()
+        for a in (self.a_save, self.a_save_as, self.a_export):
+            f.addAction(a)
+        f.addSeparator()
+        f.addAction(self.a_close)
+        f.addAction(self.a_quit)
+        e = mb.addMenu("Edit")
+        e.addAction(self.a_undo)
+        e.addAction(self.a_redo)
+        e.addSeparator()
+        e.addAction(self.a_delete)
+        t = mb.addMenu("Tools")
+        for a in self.tool_actions.values():
+            t.addAction(a)
+        t.addSeparator()
+        t.addAction(self.a_snap)
+        v = mb.addMenu("View")
+        for a in (self.a_zoom_in, self.a_zoom_out, self.a_fit):
+            v.addAction(a)
+        p = mb.addMenu("Plan")
+        p.addAction(self.a_run)
+        p.addAction(self.a_cancel)
+        h = mb.addMenu("Help")
+        h.addAction(self.a_about)
+        h.addAction("Planner Workflow", lambda: QDesktopServices.openUrl(
+            QUrl.fromLocalFile(str(EXAMPLES.parents[1] / "docs" / "WORKFLOW.md"))))
+
+    # ------------------------------------------------------------ state
+    def set_tool(self, key):
+        self.tool_actions[key].setChecked(True)
+        self.canvas.set_tool(key)
+        self.canvas.setFocus()
+
+    def _snap_toggled(self, on):
+        self.canvas.snap_enabled = on
+
+    def _title(self, name):
+        self.setWindowTitle(f"{name}[*] — IDPS Planner")
+        self.setWindowFilePath(str(self.doc.path) if self.doc.path else "")
+        self.setWindowModified(self.doc.dirty)
+
+    def _changed(self):
+        self.setWindowModified(self.doc.dirty)
+        if self.canvas.result is not None:
+            self.results.mark_stale(True)
+
+    def _selection(self, sel):
+        if sel and sel[0] == "camera":
+            self.results.select_camera(sel[1])
+
+    def _recent_refresh(self):
+        self.recent_menu.clear()
+        recent = self.settings.value("recent", []) or []
+        if isinstance(recent, str):
+            recent = [recent]
+        for p in recent:
+            if Path(p).exists():
+                self.recent_menu.addAction(Path(p).name, lambda p=p: self.open_doc(p))
+        self.recent_menu.setEnabled(bool(self.recent_menu.actions()))
+
+    def _remember(self, path):
+        recent = self.settings.value("recent", []) or []
+        if isinstance(recent, str):
+            recent = [recent]
+        recent = [str(path)] + [p for p in recent if p != str(path)]
+        self.settings.setValue("recent", recent[:10])
+        self.settings.setValue("lastDir", str(Path(path).parent))
+        self._recent_refresh()
+
+    # ------------------------------------------------------------ files
+    def _maybe_save(self) -> bool:
+        if not self.doc.dirty:
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(f"Do you want to save the changes to “{self.doc.title()}”?")
+        box.setInformativeText("Your changes will be lost if you don’t save them.")
+        box.setStandardButtons(QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+                               | QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Save)
+        box.setWindowModality(Qt.WindowModality.WindowModal)      # sheet on macOS
+        r = box.exec()
+        if r == QMessageBox.StandardButton.Save:
+            return self.save_doc()
+        return r == QMessageBox.StandardButton.Discard
+
+    def new_doc(self):
+        if self._maybe_save():
+            self.canvas.clear_result()
+            self.doc.new()
+            self.canvas.set_selection(None)
+            self.canvas.zoom_to_fit()
+            self.set_tool("volume")
+
+    def open_doc(self, path: str | None = None):
+        if not self._maybe_save():
+            return
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Open Venue", self.settings.value("lastDir", str(EXAMPLES)),
+                                                  "IDPS site (*.yaml *.yml)")
+            if not path:
+                return
+        try:
+            self.doc.load(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not open venue", str(exc))
+            return
+        self.canvas.clear_result()
+        self.canvas.set_selection(None)
+        self.canvas.zoom_to_fit()
+        if not str(path).startswith(str(EXAMPLES)):
+            self._remember(path)
+
+    def save_doc(self) -> bool:
+        if self.doc.path is None or str(self.doc.path).startswith(str(EXAMPLES)):
+            return self.save_doc_as()
+        self.doc.save()
+        return True
+
+    def save_doc_as(self) -> bool:
+        name = (self.doc.data.get("name") or "venue").replace(" ", "_").lower() + ".yaml"
+        path, _ = QFileDialog.getSaveFileName(self, "Save Venue",
+                                              str(Path(self.settings.value("lastDir", str(Path.home()))) / name),
+                                              "IDPS site (*.yaml)")
+        if not path:
+            return False
+        if not path.endswith((".yaml", ".yml")):
+            path += ".yaml"
+        self.doc.save(path)
+        self._remember(path)
+        return True
+
+    # ------------------------------------------------------------ planning
+    def run_plan(self):
+        if self.thread is not None:
+            return
+        if len(self.doc.data["volume"]["polygon"]) < 3:
+            QMessageBox.information(self, "Draw the volume first",
+                                    "Use the Volume tool (P) to click the floor outline of the flight volume.")
+            return
+        if not self.doc.data["trusses"] and not self.doc.data["tripod_zones"]:
+            QMessageBox.information(self, "Nowhere to mount cameras",
+                                    "Add at least one truss (T) or tripod zone (A, or “Tripod strip around "
+                                    "the volume” in the inspector).")
+            return
+        self.results.running(True)
+        self.a_run.setEnabled(False)
+        site_dict = self.doc.to_site_dict()
+        self.thread, self.worker = start_worker(self, site_dict, str(self.doc.path) if self.doc.path else None)
+        keep = (self.thread, self.worker)
+        self._running.append(keep)
+        self.thread.finished.connect(lambda keep=keep: self._release(keep))
+        self.worker.progress.connect(self.results.log)
+        self.worker.finished.connect(self._plan_done)
+        self.worker.failed.connect(self._plan_failed)
+        self.worker.cancelled.connect(self._plan_cancelled)
+
+    def _release(self, keep):
+        if keep in self._running:
+            self._running.remove(keep)
+        keep[0].deleteLater()
+
+    def cancel_plan(self):
+        if self.worker is not None:
+            self.worker.stop()
+            self.results.log("Cancelling…")
+
+    def _plan_finished(self):
+        self.thread = self.worker = None
+        self.results.running(False)
+        self.a_run.setEnabled(True)
+
+    def _plan_done(self, plan, ev, site):
+        self._plan_finished()
+        self.last_site = site
+        self.canvas.set_result(plan, ev)
+        self.results.show_result(plan, ev)
+
+    def _plan_failed(self, msg):
+        self._plan_finished()
+        self.results.log("Planning failed.")
+        QMessageBox.critical(self, "Planning failed", msg)
+
+    def _plan_cancelled(self):
+        self._plan_finished()
+        self.results.log("Planning cancelled.")
+
+    def _write_outputs(self, folder: Path):
+        from idps.plan.report import write_report
+        plan, ev = self.canvas.result
+        folder.mkdir(parents=True, exist_ok=True)
+        plan.save(folder / "plan.yaml")
+        plan.write_csv(folder / "cameras.csv")
+        write_report(folder / "report.html", self.last_site, plan, ev, "IDPS camera plan")
+        return folder / "report.html"
+
+    def export_plan(self):
+        if self.canvas.result is None:
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Export Plan To Folder",
+                                                  self.settings.value("lastDir", str(Path.home())))
+        if folder:
+            report = self._write_outputs(Path(folder))
+            self.statusBar().showMessage(f"Saved plan.yaml, cameras.csv and report.html to {folder}", 8000)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(report)))
+
+    def open_report(self):
+        if self.canvas.result is None:
+            return
+        folder = Path(tempfile.mkdtemp(prefix="idps-plan-"))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._write_outputs(folder))))
+
+    def about(self):
+        from idps import __version__
+        QMessageBox.about(self, "About IDPS", f"<b>IDPS</b> {__version__}<br>Indoor Drone Positioning System"
+                          "<br><br>Planner: draw the venue, plan cameras, export the install sheet.")
+
+    def closeEvent(self, e):
+        if not self._maybe_save():
+            e.ignore()
+            return
+        for thread, worker in list(self._running):
+            worker.stop()
+            thread.quit()
+            thread.wait(10000)
+        self.settings.setValue("window/geometry", self.saveGeometry())
+        e.accept()
+
+
+def main_window_for_tests() -> MainWindow:     # pragma: no cover - convenience
+    return MainWindow()
+
+
+if __name__ == "__main__":                     # pragma: no cover
+    from idps.ui.app import main
+    sys.exit(main())

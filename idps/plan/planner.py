@@ -67,7 +67,7 @@ def evaluate(site: Site, cameras: list[PlannedCamera]) -> Evaluation:
         "cameras": len(cameras),
         "cameras_on_trusses": sum(c.mount_type == "truss" for c in cameras),
         "cameras_on_tripods": sum(c.mount_type == "tripod" for c in cameras),
-        "tripods": len({tuple(np.round(c.position_m, 2)) for c in cameras if c.mount_type == "tripod"}),
+        "tripods": len({tuple(np.round(c.position_m[:2], 2)) for c in cameras if c.mount_type == "tripod"}),
         "evaluation_points": int(V),
         "volume_m3": vol,
         "fraction_meeting_all_requirements": float(meets.mean()),
@@ -108,7 +108,7 @@ def build_cameras(site: Site, cands: CandidateSet, selected: list[int]) -> list[
             along = s
         else:
             note = (f"Tripod (zone {cands.mount_id[i]}) at X {x:.2f}, Y {y:.2f};"
-                    f" {_outside_note(site, x, y)}; camera height {z:.2f} m")
+                    f" {_outside_note(site, x, y)}; camera at {z:.2f} m on the mast")
             along = None
         note += f"; gimbal pan-zero towards azimuth {base:.0f} deg"
         cams.append(PlannedCamera(
@@ -126,7 +126,22 @@ def build_cameras(site: Site, cands: CandidateSet, selected: list[int]) -> list[
     for k, c in enumerate(cams, 1):
         c.id = f"C{k:03d}"
     _neighbour_spacing(cams)
+    _mast_heights(cams)
     return cams
+
+
+def _mast_heights(cams: list[PlannedCamera]) -> None:
+    """Tell installers how tall each tripod mast must be when it carries
+    several cameras."""
+    masts: dict = {}
+    for c in cams:
+        if c.mount_type == "tripod":
+            masts.setdefault(tuple(np.round(c.position_m[:2], 2)), []).append(c)
+    for group in masts.values():
+        top = max(c.position_m[2] for c in group)
+        ids = ", ".join(c.id for c in group)
+        for c in group:
+            c.install_note += f"; mast height {top:.2f} m" + (f" (shared by {ids})" if len(group) > 1 else "")
 
 
 def _neighbour_spacing(cams: list[PlannedCamera]) -> None:
@@ -145,12 +160,12 @@ def _neighbour_spacing(cams: list[PlannedCamera]) -> None:
                                      if others else None)
 
 
-def optimise(site: Site, log=print, max_cameras: int | None = None):
+def optimise(site: Site, log=print, max_cameras: int | None = None, cancel=None):
     for w in site.warnings():
         log(f"warning: {w}")
     cands = generate_candidates(site)
     pts = site_grid(site).points
-    result = Optimiser(site, cands, pts, log=log).run(max_cameras=max_cameras)
+    result = Optimiser(site, cands, pts, log=log).run(max_cameras=max_cameras, cancel=cancel)
     cams = build_cameras(site, cands, result.selected)
     ev = evaluate(site, cams)
     summary = dict(ev.summary)
