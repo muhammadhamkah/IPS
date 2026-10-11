@@ -120,6 +120,13 @@ class Simulation:
         self.stations = [SimStation(sid, c.position_m, c.R, c.lens_mm, sc.camera_model, sc.timing, sc.markers,
                                     np.random.default_rng([sc.seed, sid]), sc.duration_s)
                          for sid, c in zip(sc.station_ids, sc.cameras)]
+        if sc.timing.clock_profile:
+            from idps.sim.clocksync import simulate_clocks
+            traces = simulate_clocks(len(self.stations), sc.duration_s, sc.timing.clock_profile, seed=sc.seed,
+                                     station_ids=[st.id for st in self.stations],
+                                     start_synced=sc.timing.clock_start != "power_on")
+            for st, tr in zip(self.stations, traces):
+                st.clock = tr
         self.net_rng = np.random.default_rng([sc.seed, 999])
         self.marker_drone = np.arange(len(sc.drones))
 
@@ -262,13 +269,21 @@ class Simulation:
         sink.close()
         return stats
 
+    @staticmethod
+    def _reported_offset_ns(st: SimStation, t: float) -> int:
+        """What the station's sync daemon reports (its last measured offset), not the truth."""
+        if st.clock is not None:
+            m = st.clock.measured_at(t)
+            return int(m * 1e9) if np.isfinite(m) else 0
+        return int(st.clock_offset * 1e9)
+
     def health(self, st: SimStation, ps: dict, t: float) -> dict:
         cam = self.sc.cameras[self.sc.station_ids.index(st.id)]
         return {"fw": "idps-sim", "uptime_s": round(t, 1), "fps_measured": round(1.0 / st.period, 2),
                 "frames_captured": ps["frames"], "frames_dropped": ps["dropped"],
                 "proc_us_p50": 1400, "proc_us_p99": 2900, "cpu_temp_c": 55.0, "throttled": 0,
                 "ptp_state": {"ptp": "SLAVE", "hw_trigger": "TRIGGER", "free_run": "NONE"}[self.sc.timing.sync],
-                "ptp_offset_ns": int(st.clock_offset * 1e9), "exposure_ns": int(st.exposure_s * 1e9),
+                "ptp_offset_ns": self._reported_offset_ns(st, t), "exposure_ns": int(st.exposure_s * 1e9),
                 "threshold": self.sc.camera_model.threshold_dn,
                 "gimbal": {"state": "holding", "pan_deg": cam.pan_deg, "tilt_deg": cam.tilt_deg},
                 "plan_camera_id": cam.id, "calib_version": "sim"}
@@ -315,7 +330,8 @@ def write_calibration(sim: Simulation, path) -> None:
         out["cameras"].append({
             "station_id": st.id, "plan_camera_id": cam.id, **intr,
             "true": {"position_m": st.pos.tolist(), "R_world_to_cam": st.R.tolist(),
-                     "clock_offset_s": st.clock_offset, "clock_drift": st.clock_drift},
+                     "clock_offset_s": float(st.clock.at(0.0)) if st.clock is not None else st.clock_offset,
+                     "clock_drift": float(st.clock.rate[0]) if st.clock is not None else st.clock_drift},
             "estimate": {"position_m": (st.pos + pos_err).tolist(), "R_world_to_cam": R_est.tolist()},
         })
     Path(path).write_text(yaml.safe_dump(out, sort_keys=False, default_flow_style=None, width=120))

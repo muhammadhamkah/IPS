@@ -184,6 +184,10 @@ lenses, or a revised requirement.
     accurate*;
   * acquisition timestamps (never arrival times);
   * the Wi-Fi reorder buffer.
+* **Simulation** (`idps.sim.clocksync`, docs/NETWORK_TIMING.md):
+  * Pi 3B on Wi-Fi with chrony: about 2 ms skew (p95), about 5 mm at 5 m/s.
+  * Wired software PTP: about 60 µs.
+  * Hardware PTP: under 1 µs.
 * **Earliest test:** Phase 3/5. The LED-strobe timing rig measures per-station timestamp
   error under S0, S1 and S2. **Decision:** Wi-Fi remains a development convenience only,
   unless it achieves σ ≤ 100 µs in that test.
@@ -254,7 +258,9 @@ servos.** Compared with the Pi 4B assumed elsewhere:
   OV9281's 2×2 binned **640×400** (a quarter of the pixels, half the angular resolution) or a
   lower frame rate.
 * **Network:** 100 Mbit Ethernet via USB 2.0, adding timestamp jitter. Wi-Fi is 2.4 GHz only.
-  No hardware PTP.
+  No hardware PTP. **Simulated** (docs/NETWORK_TIMING.md, `idps-sim clocks`): wired software
+  PTP keeps stations within about 60 µs of each other (p95), about 0.15 mm at 5 m/s, which is
+  enough. Bandwidth is about 0.2–1 Mbit/s per station, far below the 100 Mbit port.
 * **Simulator:** `examples/scenarios/lab_pi3b_wifi.yaml` models this profile (binned sensor,
   free-running cameras on Wi-Fi). The planner accepts `sensor: OV9281_640x400` to show the
   camera-count cost.

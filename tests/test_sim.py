@@ -132,3 +132,64 @@ def test_files_truth_calibration_and_raw_log(tmp_path):
     Rt, Re = np.array(c0["true"]["R_world_to_cam"]), np.array(c0["estimate"]["R_world_to_cam"])
     ang = math.acos(min(1.0, (np.trace(Re @ Rt.T) - 1) / 2))
     assert 0 < ang < 1e-3                                   # perturbed by ~0.1 mrad
+
+
+def test_clock_sync_profiles():
+    """Disciplined clocks: software PTP on a Pi 3B keeps stations within tens of us of each
+    other; hardware PTP within ~1 us; free running drifts apart by ppm x time."""
+    from idps.sim.clocksync import simulate_clocks, summarise
+    sw = summarise(simulate_clocks(8, 300, "pi3b_ptp_sw", seed=3), 300, "pi3b_ptp_sw")
+    hw = summarise(simulate_clocks(8, 300, "pi5_ptp_hw", seed=3), 300, "pi5_ptp_hw")
+    free = summarise(simulate_clocks(8, 300, "free_run", seed=3), 300, "free_run")
+    wifi = summarise(simulate_clocks(8, 300, "pi3b_wifi_ntp", seed=3), 300, "pi3b_wifi_ntp")
+    assert 10 < sw.skew_p95_us < 200 and sw.converge_s is not None and sw.converge_s < 120
+    assert hw.skew_p95_us < 5
+    assert free.skew_p95_us > 1e4 and wifi.skew_p95_us > 5 * sw.skew_p95_us
+    assert sw.pos_err_mm_at_5mps < 0.5                       # timing costs well under 1 mm at 5 m/s
+    # deterministic for a seed
+    a = simulate_clocks(3, 60, "pi3b_ptp_sw", seed=5)[1]
+    b = simulate_clocks(3, 60, "pi3b_ptp_sw", seed=5)[1]
+    assert np.array_equal(a.offset, b.offset)
+
+
+def test_path_asymmetry_is_invisible_to_ptp():
+    """A fixed send/receive path difference biases the clock by half of it, and the servo cannot
+    see it: the offset it reports averages ~0 while the true clock error does not."""
+    from dataclasses import replace
+
+    from idps.sim.clocksync import PROFILES, TimestampNoise, simulate_clocks
+    pf = replace(PROFILES["pi5_ptp_hw"], asymmetry_us=0.0, slave_ts=TimestampNoise(0.01),
+                 master_ts=TimestampNoise(0.01), network_pdv_us=0.01)
+    biased = replace(pf, asymmetry_us=40.0)
+    for prof, expect_bias in ((pf, False), (biased, True)):
+        tr = simulate_clocks(4, 60, prof, seed=2, start_synced=True)
+        true_err = np.array([np.mean(t.offset[len(t.t) // 2:]) for t in tr]) * 1e6
+        reported = np.array([np.nanmean(t.measured[len(t.t) // 2:]) for t in tr]) * 1e6
+        assert np.all(np.abs(reported) < 1.0)
+        assert (np.abs(true_err).max() > 2.0) == expect_bias
+
+
+def test_simulation_timestamps_follow_simulated_clocks(tmp_path):
+    from idps.sim.clocksync import simulate_clocks  # noqa: F401  (profile wiring)
+    from idps.sim.cli import main
+    sc = load_scenario(ROOT / "examples" / "scenarios" / "lab_pi3b_ethernet.yaml")
+    sc.duration_s = 2.0
+    sim = Simulation(sc)
+    assert all(st.clock is not None for st in sim.stations)
+    sink = MemorySink()
+    sim.run(sink)
+    stations = {s.id: s for s in sim.stations}
+    errs, offsets = [], []
+    for _, pkt in sink.packets:
+        h, body = P.decode(pkt)
+        if h.msg_type == P.MSG_FRAME_OBS and body.part_index == 0:
+            s = stations[body.station_id]
+            t = s.phase + body.frame_id * s.period
+            errs.append((body.t_mid_ns - sim.epoch_ns) * 1e-9 - t - float(s.clock.at(t)))
+        elif h.msg_type == P.MSG_HEALTH:
+            offsets.append(body["ptp_offset_ns"])
+    assert abs(np.mean(errs)) < 3e-6 and np.std(errs) < 30e-6      # only the frame-timestamp jitter remains
+    assert offsets and any(o != 0 for o in offsets)                    # ptp4l-style reported offsets
+    assert main(["clocks", "--stations", "4", "--duration", "60", "--profile", "pi3b_ptp_sw",
+                 "--profile", "pi5_ptp_hw", "-o", str(tmp_path)]) == 0
+    assert (tmp_path / "clocks_summary.csv").read_text().count("\n") == 3

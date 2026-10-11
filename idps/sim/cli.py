@@ -1,4 +1,5 @@
-"""idps-sim run SCENARIO [--dest HOST:PORT] [--realtime] | idps-sim listen [--port P]"""
+"""idps-sim run SCENARIO [--dest HOST:PORT] [--realtime] | idps-sim listen [--port P]
+| idps-sim clocks [--stations N] [--profile P ...]"""
 from __future__ import annotations
 
 import argparse
@@ -43,7 +44,95 @@ def cmd_run(a) -> int:
     print(f"done in {time.time() - t0:.1f} s: {stats.frames} frames ({stats.frames_dropped} dropped), "
           f"{stats.packets} packets sent ({stats.packets_lost} lost), {seen:.2f} true markers per frame, "
           f"{stats.spurious} spurious blobs")
-    print(f"wrote {out}/packets.idpsraw, truth.csv, calibration.yaml")
+    files = "packets.idpsraw, truth.csv, calibration.yaml"
+    if any(st.clock is not None for st in sim.stations):
+        _write_clock_csv(out / "clocks.csv", [st.clock for st in sim.stations], sc.duration_s)
+        files += ", clocks.csv"
+    print(f"wrote {out}/{files}")
+    return 0
+
+
+def _write_clock_csv(path, traces, duration_s, rate_hz=10.0):
+    """True clock error and the offset the sync daemon reports, per station, at rate_hz."""
+    import csv
+
+    import numpy as np
+    t = np.arange(0, duration_s, 1.0 / rate_hz)
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["t_s", "station_id", "clock_error_us", "reported_offset_us"])
+        for tr in traces:
+            err = tr.at(t)
+            for tt, e in zip(t, err):
+                m = tr.measured_at(tt)
+                w.writerow([f"{tt:.2f}", tr.station_id, f"{e * 1e6:.2f}", "" if not np.isfinite(m) else f"{m * 1e6:.2f}"])
+
+
+def cmd_clocks(a) -> int:
+    """Simulate clock synchronisation for N stations under each profile and compare."""
+    import numpy as np
+
+    from idps.core.noise import PRESETS
+    from idps.sim.clocksync import PROFILES, simulate_clocks, skew_series, summarise
+    names = a.profile or [p for p in PROFILES if p != "free_run"]
+    for n in names:
+        if n not in PROFILES:
+            print(f"unknown profile {n!r}; known: {', '.join(PROFILES)}", file=sys.stderr)
+            return 2
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    print(f"{a.stations} stations, {a.duration:g} s from power-on, drone speed {a.speed:g} m/s\n")
+    hdr = (f"{'profile':22s} {'settled':>8s} {'skew p50':>9s} {'p95':>8s} {'p99':>8s} {'max':>9s} {'sigma':>8s} "
+           f"{'error @':>8s}")
+    print(hdr)
+    print(f"{'':22s} {'(s)':>8s} {'(us)':>9s} {'(us)':>8s} {'(us)':>8s} {'(us)':>9s} {'(us)':>8s} "
+          f"{f'{a.speed:g} m/s':>8s}")
+    rows, all_traces = [], {}
+    for n in names:
+        tr = simulate_clocks(a.stations, a.duration, n, seed=a.seed)
+        all_traces[n] = tr
+        st = summarise(tr, a.duration, n, speed_mps=a.speed)
+        rows.append(st)
+        settled = "never" if st.converge_s is None else f"{st.converge_s:.0f}"
+        print(f"{n:22s} {settled:>8s} {st.skew_p50_us:9.1f} {st.skew_p95_us:8.1f} {st.skew_p99_us:8.1f} "
+              f"{st.skew_max_us:9.1f} {st.sigma_us:8.1f} {st.pos_err_mm_at_5mps * a.speed / 5:6.2f} mm")
+    print("\nskew = difference between two stations' clocks (what triangulation sees); error = the timing "
+          "part of the position error (p95) for a drone at that speed.")
+    print("Planner error budget presets assume timing sigma: " + ", ".join(
+        f"{k} {v.sigma_t_s * 1e6:g} us" for k, v in PRESETS.items()))
+    for n, p in ((n, PROFILES[n]) for n in names):
+        print(f"  {n}: {p.description}")
+    import csv
+    with open(out / "clocks_summary.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["profile", "settled_s", "skew_p50_us", "skew_p95_us", "skew_p99_us", "skew_max_us", "sigma_us",
+                    f"pos_err_mm_at_{a.speed:g}mps"])
+        for r in rows:
+            w.writerow([r.profile, "" if r.converge_s is None else f"{r.converge_s:.1f}", f"{r.skew_p50_us:.2f}",
+                        f"{r.skew_p95_us:.2f}", f"{r.skew_p99_us:.2f}", f"{r.skew_max_us:.2f}", f"{r.sigma_us:.2f}",
+                        f"{r.pos_err_mm_at_5mps * a.speed / 5:.3f}"])
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        fig, axs = plt.subplots(len(names), 1, figsize=(9, 2.4 * len(names)), squeeze=False)
+        t = np.linspace(0, a.duration, 4000)
+        for ax, n, r in zip(axs[:, 0], names, rows):
+            S = skew_series(all_traces[n], t) * 1e6
+            for srow in S[:12]:
+                ax.plot(t, srow, lw=0.6)
+            lim = max(3 * r.skew_p99_us, 1.0)
+            ax.set_ylim(-lim, lim)
+            ax.set_title(f"{n}: station clock minus the mean of all stations", fontsize=9, loc="left")
+            ax.set_ylabel("us")
+        axs[-1, 0].set_xlabel("time since power-on (s)")
+        fig.tight_layout()
+        fig.savefig(out / "clocks.png", dpi=90)
+        plt.close(fig)
+        extra = ", clocks.png"
+    except ImportError:
+        extra = ""
+    print(f"\nwrote {out}/clocks_summary.csv{extra}")
     return 0
 
 
@@ -120,8 +209,15 @@ def main(argv=None) -> int:
     li.add_argument("--host", default="127.0.0.1")
     li.add_argument("--port", type=int, default=47600)
     li.add_argument("--seconds", type=float)
+    c = sub.add_parser("clocks", help="simulate clock synchronisation between stations and compare options")
+    c.add_argument("--stations", type=int, default=16)
+    c.add_argument("--duration", type=float, default=900.0, help="seconds from power-on")
+    c.add_argument("--profile", action="append", help="clock profile (repeat to compare; default: all)")
+    c.add_argument("--speed", type=float, default=5.0, help="drone speed for the error estimate (m/s)")
+    c.add_argument("--seed", type=int, default=1)
+    c.add_argument("-o", "--out", default="out/clocks")
     a = ap.parse_args(argv)
-    return cmd_run(a) if a.cmd == "run" else cmd_listen(a)
+    return {"run": cmd_run, "listen": cmd_listen, "clocks": cmd_clocks}[a.cmd](a)
 
 
 if __name__ == "__main__":

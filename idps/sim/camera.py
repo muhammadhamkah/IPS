@@ -75,6 +75,7 @@ class SimStation:
         self.reflections = [(rng.uniform(5, self.W - 5), rng.uniform(5, self.H - 5), rng.uniform(80, 400))
                             for _ in range(model.static_reflections)]
         self.dropped = 0
+        self.clock = None                 # idps.sim.clocksync.ClockTrace, when clocks are simulated
         self.occluders: list = []         # scenery boxes (lo, hi) blocking lines of sight
 
     # ------------------------------------------------------------------
@@ -85,7 +86,9 @@ class SimStation:
         return t
 
     def timestamp_ns(self, t_true: float, epoch_ns: int) -> int:
-        t = t_true + self.clock_offset + self.clock_drift * t_true + self.rng.normal(0, self.timing.jitter_sigma_us * 1e-6)
+        err = float(self.clock.at(t_true)) if self.clock is not None else \
+            self.clock_offset + self.clock_drift * t_true
+        t = t_true + err + self.rng.normal(0, self.timing.jitter_sigma_us * 1e-6)
         return epoch_ns + int(round(t * 1e9))
 
     def project(self, X: np.ndarray):
