@@ -89,6 +89,7 @@ class PlanCanvas(QGraphicsView):
     selectionChanged = Signal(object)        # (kind, index) or None
     cursorMoved = Signal(float, float)
     message = Signal(str)
+    toolChanged = Signal(str)
 
     def __init__(self, doc, parent=None):
         super().__init__(parent)
@@ -144,6 +145,8 @@ class PlanCanvas(QGraphicsView):
             if "offset_m" in z and len(self.doc.data["volume"]["polygon"]) >= 3:
                 pts += offset_ring(np.array(self.doc.data["volume"]["polygon"], float),
                                    float(z["offset_m"][1]), 1e9).tolist()
+        if self.result is not None:
+            pts += [c.position_m[:2] for c in self.result[0].cameras]
         if not pts:
             pts = [(-10, -10), (10, 10)]
         a = np.array(pts, float)
@@ -446,6 +449,7 @@ class PlanCanvas(QGraphicsView):
     def set_tool(self, tool: str):
         self.tool = tool
         self.pending = []
+        self.toolChanged.emit(tool)
         self.setCursor(Qt.CursorShape.ArrowCursor if tool == "select" else Qt.CursorShape.CrossCursor)
         hints = {
             "select": "Click to select; drag vertices to move them; double-click an outline edge to add a vertex.",
@@ -695,6 +699,7 @@ class PlanCanvas(QGraphicsView):
                                         "height_m": float(d["volume"]["z"][1]) + 1.5})
             self.doc.edit("Add truss", add)
             self.set_selection(("truss", len(self.doc.data["trusses"]) - 1))
+            self.set_tool("select")
         elif tool in ("volume", "zone", "nogo") and len(pts) >= 3:
             if tool == "volume":
                 self.doc.edit("Draw volume", lambda data: data["volume"].__setitem__("polygon", pts))
@@ -707,9 +712,11 @@ class PlanCanvas(QGraphicsView):
                     data["tripod_zones"].append({"id": f"area{n}", "polygon": pts, "height_m": [2.0, 20.0]})
                 self.doc.edit("Add tripod area", add)
                 self.set_selection(("zone", len(self.doc.data["tripod_zones"]) - 1))
+                self.set_tool("select")
             else:
                 self.doc.edit("Add no-go area", lambda data: data["no_go_zones"].append(pts))
                 self.set_selection(("nogo", len(self.doc.data["no_go_zones"]) - 1))
+                self.set_tool("select")
         self.viewport().update()
 
     def delete_selection(self):

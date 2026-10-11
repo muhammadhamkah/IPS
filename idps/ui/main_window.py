@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
         if geo is not None:
             self.restoreGeometry(geo)
         self._title(self.doc.title())
+        self.canvas.toolChanged.connect(self._tool_changed)
         self.canvas.set_tool("select")
 
     # ------------------------------------------------------------ actions
@@ -255,6 +256,13 @@ class MainWindow(QMainWindow):
         lay.addLayout(bar)
         lay.addWidget(self.view3d, 1)
         return page
+
+    def _tool_changed(self, tool: str):
+        """Keep the toolbar's highlighted tool in step with the canvas (e.g. after
+        finishing a shape the canvas returns to Select)."""
+        a = self.tool_actions.get(tool)
+        if a is not None and not a.isChecked():
+            a.setChecked(True)
 
     def show_view(self, which: str):
         three = which == "3d"
@@ -470,6 +478,8 @@ class MainWindow(QMainWindow):
         self.last_site = site
         self.canvas.set_result(plan, ev)
         self.results.show_result(plan, ev)
+        self.canvas.zoom_to_fit()                # include every planned camera
+        self.view3d.fit()
 
     def _plan_failed(self, msg):
         self._plan_finished()

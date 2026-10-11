@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
@@ -35,6 +35,10 @@ class View3D(QWidget):
         self.show_coverage = True
         self._drag = None
         self._fitted = False
+        self._gizmo_hits: list = []          # (QRectF or (centre, radius), action) built while painting
+        self._repeat = QTimer(self)          # hold a gizmo button to keep panning/rotating
+        self._repeat.timeout.connect(self._repeat_tick)
+        self._repeat_action = None
         doc.changed.connect(self.update)
         canvas.selectionChanged.connect(lambda _: self.update())
 
@@ -100,24 +104,185 @@ class View3D(QWidget):
 
     # ------------------------------------------------------------- input
     def mousePressEvent(self, e):
+        action = self._gizmo_action(e.position())
+        if action == "orbit":                 # drag on the axis ball orbits; a click on an axis snaps
+            self._drag = (e.position(), False, False, "ball")
+            return
+        if action is not None:
+            self._run_gizmo(action)
+            self._repeat_action = action
+            if action.startswith(("pan", "rot", "zoom", "tilt")):
+                self._repeat.start(350)       # first repeat after a pause, then fast
+            return
         self._drag = (e.position(), e.modifiers() & Qt.KeyboardModifier.ShiftModifier
-                      or e.button() == Qt.MouseButton.RightButton, False)
+                      or e.button() == Qt.MouseButton.RightButton, False, "scene")
 
     def mouseMoveEvent(self, e):
         if self._drag is None:
             return
-        start, pan, _ = self._drag
+        start, pan, _, where = self._drag
         d = e.position() - start
-        self._drag = (e.position(), pan, True)
+        self._drag = (e.position(), pan, True, where)
         if pan:
             self._pan(d.x(), d.y())
         else:
             self._orbit(d.x(), d.y())
 
     def mouseReleaseEvent(self, e):
+        self._repeat.stop()
+        self._repeat_action = None
         if self._drag is not None and not self._drag[2]:
-            self._pick(e.position())
+            if self._drag[3] == "ball":
+                axis = self._axis_at(e.position())
+                if axis:
+                    self._run_gizmo("view" + axis)
+            else:
+                self._pick(e.position())
         self._drag = None
+
+    # ------------------------------------------------------------- gizmo
+    GIZMO_R = 44
+
+    def _gizmo_geometry(self):
+        cx, cy = self.width() - self.GIZMO_R - 18, self.GIZMO_R + 18
+        return QPointF(cx, cy), self.GIZMO_R
+
+    def _axis_points(self):
+        """Screen positions of the six axis tips on the gizmo ball, with depth."""
+        c, r = self._gizmo_geometry()
+        _, right, up, fwd = self._basis()
+        out = []
+        for name, v in (("+X", (1, 0, 0)), ("-X", (-1, 0, 0)), ("+Y", (0, 1, 0)), ("-Y", (0, -1, 0)),
+                        ("+Z", (0, 0, 1)), ("-Z", (0, 0, -1))):
+            v = np.array(v, float)
+            out.append((name, QPointF(c.x() + v @ right * r * 0.78, c.y() - v @ up * r * 0.78), float(v @ fwd)))
+        return out
+
+    def _axis_at(self, pos):
+        best = None
+        for name, p, depth in self._axis_points():
+            dist = math.hypot(p.x() - pos.x(), p.y() - pos.y())
+            if dist < 11 and (best is None or depth < best[1]):     # nearest-to-viewer tip wins
+                best = (name, depth)
+        return best[0] if best else None
+
+    def _gizmo_action(self, pos):
+        for region, action in self._gizmo_hits:
+            if isinstance(region, QRectF):
+                if region.contains(pos):
+                    return action
+            else:
+                c, r = region
+                if math.hypot(pos.x() - c.x(), pos.y() - c.y()) <= r:
+                    return action
+        return None
+
+    def _run_gizmo(self, action: str):
+        step_px = max(self.height(), 1) * 0.08
+        views = {"+X": (0, 0), "-X": (180, 0), "+Y": (90, 0), "-Y": (-90, 0), "+Z": (None, 89.9), "-Z": (None, -89.9)}
+        if action.startswith("view"):
+            yaw, pitch = views[action[4:]]
+            if yaw is not None:
+                self.yaw = math.radians(yaw)
+            else:                                     # top/bottom: keep heading, squared to the axes
+                self.yaw = round(self.yaw / (math.pi / 2)) * (math.pi / 2)
+            self.pitch = math.radians(pitch)
+            self.update()
+        elif action == "pan_up":
+            self._pan(0, step_px)
+        elif action == "pan_down":
+            self._pan(0, -step_px)
+        elif action == "pan_left":
+            self._pan(step_px, 0)
+        elif action == "pan_right":
+            self._pan(-step_px, 0)
+        elif action == "rot_left":
+            self._orbit(-math.radians(15) / 0.008, 0)
+        elif action == "rot_right":
+            self._orbit(math.radians(15) / 0.008, 0)
+        elif action == "tilt_up":
+            self._orbit(0, math.radians(10) / 0.008)
+        elif action == "tilt_down":
+            self._orbit(0, -math.radians(10) / 0.008)
+        elif action == "zoom_in":
+            self._zoom(1.2)
+        elif action == "zoom_out":
+            self._zoom(1 / 1.2)
+        elif action == "home":
+            self.set_view("iso")
+
+    def _repeat_tick(self):
+        if self._repeat_action:
+            self._run_gizmo(self._repeat_action)
+            self._repeat.start(70)
+
+    def _draw_gizmo(self, p: QPainter, tok):
+        """Axis ball (click an axis to look along it, drag to orbit) plus pan,
+        rotate, tilt and zoom buttons, top right of the view."""
+        self._gizmo_hits = []
+        c, r = self._gizmo_geometry()
+        bg = QColor(tok["surface"])
+        bg.setAlphaF(0.85)
+        ring = QColor(tok["text2"])
+        ring.setAlphaF(0.35)
+        p.setPen(QPen(ring, 1))
+        p.setBrush(bg)
+        p.drawEllipse(c, r, r)
+        colours = {"X": QColor("#d03b3b"), "Y": QColor("#0ca30c"), "Z": QColor("#3987e5")}
+        f = QFont(self.font())
+        f.setPointSizeF(8)
+        f.setBold(True)
+        p.setFont(f)
+        for name, tip, depth in sorted(self._axis_points(), key=lambda q: -q[2]):
+            col = QColor(colours[name[1]])
+            positive = name[0] == "+"
+            if positive:
+                p.setPen(QPen(col, 2.2))
+                p.drawLine(c, tip)
+            p.setPen(QPen(col, 1.5))
+            p.setBrush(col if positive else bg)
+            p.drawEllipse(tip, 9, 9)
+            p.setPen(QColor("#ffffff") if positive else col)
+            p.drawText(QRectF(tip.x() - 9, tip.y() - 9, 18, 18), Qt.AlignmentFlag.AlignCenter,
+                       name[1] if positive else "-" + name[1])
+        self._gizmo_hits.append(((c, r), "orbit"))
+
+        # Button pad under the ball: pan arrows around a home button, then rotate/tilt/zoom.
+        size, gap = 24, 3
+        x0 = c.x() - (3 * size + 2 * gap) / 2
+        y0 = c.y() + r + 10
+        pad = [("pan_up", "↑", 1, 0, "Pan up"), ("pan_left", "←", 0, 1, "Pan left"), ("home", "⌂", 1, 1, "Home view"),
+               ("pan_right", "→", 2, 1, "Pan right"), ("pan_down", "↓", 1, 2, "Pan down"),
+               ("rot_left", "⟲", 0, 3, "Rotate left"), ("tilt_up", "⤒", 1, 3, "Tilt up"),
+               ("rot_right", "⟳", 2, 3, "Rotate right"), ("zoom_out", "−", 0, 4, "Zoom out"),
+               ("tilt_down", "⤓", 1, 4, "Tilt down"), ("zoom_in", "+", 2, 4, "Zoom in")]
+        f.setPointSizeF(11)
+        f.setBold(False)
+        p.setFont(f)
+        for action, glyph, col_i, row_i, _tip in pad:
+            rect = QRectF(x0 + col_i * (size + gap), y0 + row_i * (size + gap) + (6 if row_i >= 3 else 0), size, size)
+            p.setPen(QPen(ring, 1))
+            p.setBrush(bg)
+            p.drawRoundedRect(rect, 5, 5)
+            p.setPen(tok["text"])
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, glyph)
+            self._gizmo_hits.append((rect, action))
+        self._gizmo_tips = {a: t for a, *_, t in pad}
+
+    def gizmo_tooltip(self, pos):
+        a = self._gizmo_action(pos)
+        if a == "orbit":
+            return "Drag to orbit · click an axis to look along it"
+        return getattr(self, "_gizmo_tips", {}).get(a)
+
+    def event_tooltip(self, e):
+        from PySide6.QtWidgets import QToolTip
+        tip = self.gizmo_tooltip(e.position() if hasattr(e, "position") else QPointF(e.pos()))
+        if tip:
+            QToolTip.showText(e.globalPos(), tip, self)
+        else:
+            QToolTip.hideText()
+        return True
 
     def _orbit(self, dx, dy):
         self.yaw -= dx * 0.008
@@ -150,6 +315,8 @@ class View3D(QWidget):
         if e.type() == QEvent.Type.NativeGesture and e.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
             self._zoom(1.0 + e.value())
             return True
+        if e.type() == QEvent.Type.ToolTip:
+            return self.event_tooltip(e)
         return super().event(e)
 
     def _pick(self, pos):
@@ -203,6 +370,7 @@ class View3D(QWidget):
                 p.setPen(colour)
                 p.drawText(QPointF(pos[0] + 6, pos[1] - 6), text)
         self._overlay_text(p, tok)
+        self._draw_gizmo(p, tok)
         p.end()
 
     def _line(self, prims, a, b, pen):

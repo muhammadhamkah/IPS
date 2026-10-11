@@ -378,3 +378,52 @@ def test_3d_projection_presets_fit_and_pick(win, app):
     win.set_tool("truss")
     assert win.views.currentIndex() == 0
     assert math.isfinite(v.dist)
+
+
+def test_3d_gizmo_axis_snap_buttons_and_ball_drag(win, app):
+    import math
+
+    import numpy as np
+    draw_rect(win)
+    win.show_view("3d")
+    app.processEvents()
+    v = win.view3d
+    v.grab()                                            # paint once so the gizmo hit regions exist
+    tips = {n: p for n, p, _ in v._axis_points()}
+    QTest.mouseClick(v, Qt.MouseButton.LeftButton, pos=tips["+Z"].toPoint())
+    assert math.degrees(v.pitch) == pytest.approx(89.9)
+    v.grab()
+    tips = {n: p for n, p, _ in v._axis_points()}
+    QTest.mouseClick(v, Qt.MouseButton.LeftButton, pos=tips["-Y"].toPoint())
+    assert math.degrees(v.pitch) == pytest.approx(0) and math.degrees(v.yaw) == pytest.approx(-90)
+    v.grab()
+    acts = {a: r for r, a in v._gizmo_hits if a != "orbit"}
+    target, dist, yaw = v.target.copy(), v.dist, v.yaw
+    QTest.mouseClick(v, Qt.MouseButton.LeftButton, pos=acts["pan_right"].center().toPoint())
+    assert not np.allclose(v.target, target)
+    QTest.mouseClick(v, Qt.MouseButton.LeftButton, pos=acts["zoom_in"].center().toPoint())
+    assert v.dist < dist
+    QTest.mouseClick(v, Qt.MouseButton.LeftButton, pos=acts["rot_left"].center().toPoint())
+    assert v.yaw != pytest.approx(yaw)
+    QTest.mouseClick(v, Qt.MouseButton.LeftButton, pos=acts["home"].center().toPoint())
+    assert math.degrees(v.pitch) == pytest.approx(30)
+    # dragging on the ball orbits instead of selecting
+    c, r = v._gizmo_geometry()
+    yaw = v.yaw
+    QTest.mousePress(v, Qt.MouseButton.LeftButton, pos=c.toPoint())
+    QTest.mouseMove(v, (c + QPointF(30, 0)).toPoint())
+    QTest.mouseRelease(v, Qt.MouseButton.LeftButton, pos=(c + QPointF(30, 0)).toPoint())
+    assert v.yaw != pytest.approx(yaw)
+    assert v.gizmo_tooltip(acts["zoom_in"].center()) == "Zoom in"
+
+
+def test_finishing_a_shape_returns_to_select(win):
+    c = win.canvas
+    c.resetTransform()
+    c.scale(20, -20)
+    draw_rect(win)
+    win.set_tool("truss")
+    c.centerOn(0, 0)
+    click(c, -9, 7)
+    click(c, 9, 7)
+    assert c.tool == "select" and win.tool_actions["select"].isChecked()
