@@ -52,7 +52,9 @@ class TripodZone:
 class CandidateSettings:
     truss_step_m: float = 5.0
     truss_drop_m: float = 0.3
-    truss_elevations_deg: list[float] = field(default_factory=lambda: [-90.0, -60.0, -35.0])
+    # shallow tilts matter: cameras hang just above the drones (D17), and only a camera
+    # looking nearly level sees the top of the volume across the hall
+    truss_elevations_deg: list[float] = field(default_factory=lambda: [-90.0, -60.0, -35.0, -15.0, 0.0])
     tripod_step_m: float = 5.0
     tripod_heights_m: list[float] = field(default_factory=lambda: [4.0, 12.0, 20.0])
     tripod_elevations_deg: list[float] = field(default_factory=lambda: [0.0, -15.0, -30.0, -50.0])

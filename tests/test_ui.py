@@ -449,6 +449,7 @@ def test_3d_coverage_modes_render_and_count_problems(win, app):
         d["volume"]["z"] = [0.0, 10.0]
         d["trusses"] = [{"id": "T1", "start": [-9.5, 7.5], "end": [17.5, 7.5], "height_m": 11.5},
                         {"id": "T2", "start": [-11, -5.5], "end": [18, -5.5], "height_m": 11.5}]
+        d["candidates"]["truss_elevations_deg"] = [-90, -60, -35]   # steep only: leaves the top layer short
         d["candidates"]["max_cameras_per_mount"] = 1
     win.doc.edit("setup", setup)
     got = {}
@@ -497,6 +498,7 @@ def test_advisor_panel_find_apply_and_auto_fix(win, app):
         d["volume"]["z"] = [0.0, 10.0]
         d["trusses"] = [{"id": "T1", "start": [-9.5, 7.5], "end": [17.5, 7.5], "height_m": 11.5},
                         {"id": "T2", "start": [-11, -5.5], "end": [18, -5.5], "height_m": 11.5}]
+        d["candidates"]["truss_elevations_deg"] = [-90, -60, -35]   # steep only: leaves the top layer short
     win.doc.edit("setup", setup)
     got = {}
     w = PlanWorker(win.doc.to_site_dict(), None)

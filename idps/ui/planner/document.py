@@ -22,7 +22,7 @@ DEFAULT_SITE = {
     "tripod_zones": [],
     "no_go_zones": [],
     "candidates": {
-        "truss_step_m": 3.0, "truss_drop_m": 0.3, "truss_elevations_deg": [-90, -60, -35],
+        "truss_step_m": 3.0, "truss_drop_m": 0.3, "truss_elevations_deg": [-90, -60, -35, -15, 0],
         "tripod_step_m": 3.0, "tripod_heights_m": [3, 10, 18], "tripod_elevations_deg": [0, -15, -30, -50],
         "azimuth_step_deg": 30, "max_cameras_per_mount": 1, "min_camera_spacing_m": 1.5,
     },

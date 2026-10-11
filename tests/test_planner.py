@@ -198,6 +198,7 @@ def _short_venue():
         "trusses": [{"id": "T1", "start": [-9.5, 7.5], "end": [17.5, 7.5], "height_m": 11.5},
                     {"id": "T2", "start": [-11, -5.5], "end": [18, -5.5], "height_m": 11.5}],
         "candidates": {"truss_step_m": 3, "tripod_step_m": 3, "tripod_heights_m": [3, 10, 18],
+                       "truss_elevations_deg": [-90, -60, -35],          # steep only: top layer comes up short
                        "tripod_elevations_deg": [0, -15, -30, -50], "azimuth_step_deg": 30,
                        "max_cameras_per_mount": 1, "min_camera_spacing_m": 1.5},
         "optimiser": {"max_cameras": 200},
@@ -251,3 +252,13 @@ def test_reaim_prefers_servo_move_from_existing_base():
             assert abs(r.new_camera.pan_deg) <= SERVO_PAN_LIMIT_DEG and "No physical move" in r.detail
         else:
             assert "Turn the gimbal base" in r.detail
+
+
+def test_shallow_truss_tilts_cover_the_top_layer():
+    """Cameras hang just above the drones (D17); without near-level tilts the top of the volume
+    falls above every view cone. The default tilts include them."""
+    d = _short_venue()
+    d["candidates"].pop("truss_elevations_deg", None)
+    d["candidates"]["tripod_elevations_deg"] = [0, -15, -30, -50]
+    plan, ev = optimise(site_from_dict(d), log=lambda *a: None)
+    assert ev.summary["fraction_meeting_all_requirements"] == pytest.approx(1.0)
