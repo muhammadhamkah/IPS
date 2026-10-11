@@ -22,16 +22,32 @@ measurements.
 * **±1 cm is plausible in a lab-scale volume** (about 5×5×3 m with 3–4 cameras), *if* camera
   timestamps are accurate to about 0.1 ms. Wi-Fi-class timing (ms) alone pushes the p95 error
   to about 2 cm at 4 m/s.
-* **±1 cm at p95 over 100×100×30 m is not reached** by any simulated layout under realistic
-  noise assumptions, even with about 90–130 stations. It also needs per-camera orientation held
-  to about 0.05 mrad and sub-0.1 ms timing. Calibration stability, not resolution, dominates
-  at range.
-* **Motorised gimbals are coarse aiming tools only.** Every move must be followed by locking
-  and beacon-based re-calibration.
+* **Requirement (decided): within 1 cm throughout the entire 100×100×30 m volume.** In the
+  model, the interior meets this with about 120 stations, but only under a *tight* error
+  budget:
+
+  | Error source | Required |
+  |---|---|
+  | Centroid noise | ≤ 0.05 px |
+  | Camera orientation | ≤ 0.03–0.05 mrad |
+  | Camera position | ≤ 2 mm |
+  | Timestamp | ≤ 0.05 ms |
+
+  The wall bands and upper corners still fail in every simple layout. They need dedicated
+  close-range cameras, found by the Phase 0 optimiser. Expect about 150–260 stations. Full-
+  volume feasibility is *not yet shown*; it is checked at gates in Phases 0, 6 and 9.
+* **Servo pan/tilt gimbals (decided)** are workable only with **live re-pose**: every camera
+  continuously measures its own rotation from about 9–16 fixed beacons, and a station that
+  moves or jitters drops out automatically. Servo hold stability is measured in Phase 6.
+* **Fixed yaw (decided):** drones keep their takeoff yaw (normally facing +X) but still tilt.
+  A marker offset 5 cm from the drone's reference point causes about 13 mm of error at 15°
+  tilt. The marker should sit at the reference point, or 2–3 markers should be fitted.
 * **Ethernet with PoE and PTP** is recommended beyond the first few prototype stations.
 
 Run the error budget:
 
 ```bash
-python3 tools/feasibility/error_budget.py    # requires numpy
+python3 tools/feasibility/error_budget.py           # layout scenarios (requires numpy)
+python3 tools/feasibility/error_budget.py --sweep   # full-volume requirement sweep
+python3 tools/feasibility/error_budget.py --beacons # camera pose precision from beacons
 ```

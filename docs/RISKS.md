@@ -37,16 +37,64 @@ occlusion, no marker-geometry error, and independent errors across cameras. "3D 
 
 1. **±1 cm is plausible in a lab-scale volume** with 3–4 cameras, *provided timing is wired-
    class (≤ 0.1 ms)*. Wi-Fi-class timing alone breaks the budget.
-2. **±1 cm at p95 over 100×100×30 m is not met by any simulated layout under "realistic"
-   assumptions.** It needs about 90–130 stations *and* calibration held to about 0.05 mrad
-   (≈ 10 arcsec) per camera *and* ≤ 0.05 ms timing. Corners and the band near the ceiling
-   remain the worst regions.
-3. **Calibration stability, not pixel count, is the dominant term at long range.** A
+2. **Calibration stability, not pixel count, is the dominant term at long range.** A
    0.1 mrad rotation error equals 7 mm at 70 m. Adding cameras dilutes it only if the
    cameras' errors are independent, and that remains unproven.
-4. **Recommendation:** treat ±1 cm as the lab-scale acceptance target first (Phase 8). For
-   the hall, define a *graded* requirement (e.g. ±1 cm in a core zone, ±3 cm elsewhere),
-   pending Phase 9 data. **The owners must confirm this (decision D1).**
+
+### 0.1 Full-volume requirement (decision D1: ±1 cm everywhere)
+
+The owners have decided that accuracy must be **within 1 cm throughout the entire flight
+volume**, with no zone grading. "Within 1 cm" is read as **p95 3D error ≤ 10 mm at every
+location** (VALIDATION.md §1). For a roughly isotropic Gaussian error, that means
+**3D RMS ≤ 6.2 mm at every point**, including corners, wall bands, near the floor and near
+the ceiling.
+
+`python3 tools/feasibility/error_budget.py --sweep` evaluates a 9×9×7 grid. The grid is inset
+1 m from the walls and ceiling, runs from 0.2 m to 29 m altitude, and includes the corners.
+The table shows the share of grid points that meet 6.2 mm:
+
+| Layout | Cameras | Realistic (0.1 px, 0.1 mrad, 3 mm, 0.1 ms) | Tight (0.05 px, 0.05 mrad, 2 mm, 0.05 ms) | Very tight (0.05 px, 0.03 mrad, 1 mm, 0.02 ms) |
+|---|---|---|---|---|
+| Ceiling grid 20 m + perimeter 12.5 m × 3 rings | 121 | 63 % (worst 38 mm) | 77 % (19 mm) | 86 % (14.5 mm) |
+| Ceiling grid 12.5 m + perimeter 12.5 m × 3 rings | 160 | 72 % | 82 % | 89 % |
+| Ceiling grid 10 m + perimeter 10 m × 4 rings | 260 | 84 % (22 mm) | 94 % (11 mm) | 98 % (8.3 mm) |
+| 121-camera layout + 40 ceiling cameras aimed at the walls | 161 | 81 % | 91 % | 95 % |
+
+**What this means:**
+
+* **The interior is achievable on paper.** It meets the spec everywhere with about 120 cameras
+  under the *tight* budget. Here "interior" means more than 10 m from the walls and below 26 m.
+* **Every failing point lies in the wall band, mostly in the upper corners.** Cameras there
+  either cannot see those points at all, or see them only from about 140 m away across the
+  hall. Fixing this needs **dedicated close-range cameras for the corners and wall bands**,
+  not more cameras in general. That is a placement-optimisation problem for the Phase 0
+  coverage optimiser (ARCHITECTURE §7). None of the simple hand-made layouts above solves it.
+* **The per-camera error budget must be "tight" or better:**
+
+  | Error source | Required |
+  |---|---|
+  | Centroid noise | ≤ 0.05 px |
+  | Camera orientation known and held to | ≤ 0.03–0.05 mrad (6–10 arcsec) |
+  | Camera position known to | ≤ 1–2 mm |
+  | Mid-exposure timestamp | ≤ 0.02–0.05 ms |
+
+  Each of these is at or beyond what low-cost systems normally achieve. Each one needs its own
+  measured proof (Phases 1, 5, 6). Wi-Fi timing is ruled out for the final system.
+* **Expected scale:** roughly **150–260 camera stations**, plus beacons, a survey and wired
+  networking.
+* **This model is optimistic.** It assumes no occlusion between drones, independent errors
+  across cameras, and no marker-geometry error. Real margins will be smaller.
+
+**Status: ±1 cm across the full 100×100×30 m volume is not yet shown to be feasible.** It is
+not ruled out by geometry either. The plan keeps it as the requirement, and checks it at
+explicit gates:
+
+* **Phase 0:** the optimiser must find a layout that meets the spec under the tight budget.
+* **Phases 1/5/6:** each budget term must be measured at or below its allocation.
+* **Phase 9:** hall-scale tests must confirm the model.
+
+If any gate fails, the owners get a quantified decision: more stations, a better sensor or
+lenses, or a revised requirement.
 
 ---
 
@@ -92,25 +140,62 @@ occlusion, no marker-geometry error, and independent errors across cameras. "3D 
   error under S0, S1 and S2. **Decision:** Wi-Fi remains a development convenience only,
   unless it achieves σ ≤ 100 µs in that test.
 
-### R3: Motorised gimbal repeatability and stability (H for accuracy, L for coverage)
+### R3: Servo pan/tilt gimbals: holding the camera still (H)
+
+**Decision D6:** the owners have chosen hobby-class **servo motors for pan and tilt**. The
+architecture supports this, with the constraints below.
 
 * **Evidence:**
-  * Hobby servos have about 0.2–1° deadband and jitter, i.e. 3–17 mrad. That is **50–300×**
-    the 0.05 mrad stability budget.
-  * Even good stepper and worm-gear stages hold to ~0.01–0.05° (0.2–0.9 mrad) without
-    re-calibration.
-* **Consequence:** the gimbal can only be a **coarse aiming tool**:
-  * Every move must be followed by mechanical locking and beacon-based re-posing.
-  * Commanded angles can seed PnP but never replace it.
-  * Servos must be de-energised or braked during tracking, because servo hunting at
-    0.1–1 Hz makes the camera pose time-varying.
-* **Mitigation:**
-  * self-locking worm-gear or braked stepper gimbals;
-  * per-station beacon visibility as a placement constraint;
-  * UNCALIBRATED gating in the engine.
-* **Earliest test:** Phase 6. Move, return and re-pose 50 times. Report re-pose accuracy
-  against a full bundle-adjustment reference and image-space jitter of a fixed beacon with
-  the gimbal powered versus locked.
+  * Typical hobby servos have about 0.2–1° deadband and backlash (3–17 mrad).
+  * They have no position read-back.
+  * They can hunt (small oscillations) under load or vibration.
+  * The full-volume budget requires the camera orientation known to ≤ 0.03–0.05 mrad. That
+    is **100–500× finer** than the servo's own positioning.
+* **Consequences:**
+  1. **The commanded servo angle is never used as the camera pose.** It only seeds the
+     beacon-based pose solve.
+  2. **Every camera continuously measures its own orientation from fixed reference beacons
+     (live re-pose).**
+     * The camera position comes from the gimbal kinematic model plus the bundle adjustment.
+     * The 3 rotation angles are re-estimated continuously.
+     * The engine uses time-varying extrinsics (ARCHITECTURE §6.4).
+  3. **Beacon requirements**, from `error_budget.py --beacons` plus a rotation-only study:
+
+     | Beacons in view | Beacon range | Averaging | Rotation 1σ |
+     |---|---|---|---|
+     | 4 | 20–60 m | 1 frame | 0.17 mrad |
+     | 9 | 40–100 m | 0.1 s | 0.05 mrad |
+     | 16 | 40–100 m | 0.1 s | 0.04 mrad |
+     | 16 | 40–100 m | 1 s | 0.03 mrad |
+
+     (Survey error 2 mm per beacon; camera position known.)
+
+     To meet the budget, each camera needs **≥ 9–16 beacons spread across its view, mostly
+     ≥ 40 m away**, surveyed to ≤ 2 mm and refined jointly in the bundle adjustment. It must
+     also average over ≥ 0.1–1 s. **Live re-pose therefore works only while the servo is
+     actually still.** Servo motion faster than the averaging window cannot be corrected.
+  4. **Detect movement and stop trusting the camera:**
+     * Beacon residuals are monitored every frame.
+     * A rotation change above 0.03 mrad that is not explained by a commanded move marks the
+       station `UNCALIBRATED` until re-pose converges again.
+     * A camera that jitters therefore drops out rather than corrupting positions.
+* **Servo-specific mitigations:**
+  * Choose metal-gear digital servos with a small deadband, and drive them from a hardware
+    PWM source (e.g. a PCA9685), never software PWM.
+  * Mount the camera close to both rotation axes and balance it, to minimise holding torque.
+  * Use a stiff bracket.
+  * Measure the camera position offset against pan/tilt (the optical centre is not on the
+    axes), so the kinematic model can predict the camera centre after each move.
+  * **Measure whether holding torque or switching off PWM gives the stiller camera**
+    (Phase 6). A friction clamp or brake remains the fallback.
+* **Earliest test (Phase 6):**
+  * (a) 30-minute beacon log with the servo powered and holding: image-space jitter
+    spectrum, and fraction of time within 0.03 mrad.
+  * (b) 50 move-return cycles: settle time, and re-pose accuracy against a full bundle
+    adjustment.
+  * **Pass:** stable within 0.03 mrad for ≥ 99 % of tracking time.
+  * **If it fails:** upgrade the same gimbal design to worm-gear servos or add a brake. The
+    software does not change.
 
 ### R4: Raspberry Pi 4B sustained 120 FPS (M)
 
@@ -133,11 +218,12 @@ occlusion, no marker-geometry error, and independent errors across cameras. "3D 
   exceeds 6 ms, or drops exceed 0.01 % over 30 minutes, choose among a cropped mode, a Pi 5,
   or 90 FPS.
 
-### R5: Network scale with 90–130 stations (M)
+### R5: Network scale with 150–260 stations (M)
 
 * **Evidence:**
-  * Aggregate data is small (~0.35 Mbit/s per station at 20 markers, ~45 Mbit/s total).
-  * However, 130 stations × 120 packets/s = 15,600 small packets/s.
+  * Aggregate data is small (~0.35 Mbit/s per station at 20 markers, ~90 Mbit/s total for
+    260 stations).
+  * However, 260 stations × 120 packets/s = 31,200 small packets/s.
   * On shared Wi-Fi airtime, contention causes retries and latency spikes. Range across a
     100 m hall needs several APs.
 * **Mitigation:**
@@ -249,8 +335,8 @@ occlusion, no marker-geometry error, and independent errors across cameras. "3D 
   * S$200 covers roughly **one** camera station plus markers. Exact local prices to be
     confirmed.
   * Phase 4 requires ≥ 3 stations; ≥ 4 is recommended.
-  * The hall-scale simulation suggests about 90–130 stations, plus PoE switching, mounts,
-    beacons and a survey.
+  * The full-volume ±1 cm requirement (§0.1) points to roughly 150–260 stations, plus PoE
+    switching, mounts, servo gimbals, beacons and a survey.
 * **Mitigation:**
   * Phases 1–3 need only one station.
   * Use the coverage simulator to cost layouts before buying.
@@ -290,15 +376,39 @@ occlusion, no marker-geometry error, and independent errors across cameras. "3D 
   * engine stages can be sharded by spatial zone if needed.
 * **Earliest test:** Phase 4 / 10 simulator load test.
 
+### R16: Drone reference point versus marker position (M)
+
+* **Context:** drones take off at a specified yaw (normally 0, i.e. facing +X) and do not
+  yaw in flight. They still **roll and pitch** to accelerate, typically 10–25° at 4 m/s
+  manoeuvres.
+* **Evidence:**
+  * IDPS measures the *marker*, not the drone's centre.
+  * A marker mounted a distance `d` from the drone reference point moves sideways by about
+    `d·sin(tilt)` when the drone tilts.
+  * With d = 5 cm at 15° tilt, that is **13 mm**, which by itself exceeds the 1 cm budget.
+* **Mitigation:**
+  * Mount the marker as close as possible to the reference point used by flight control, or
+    declare the marker centre to *be* the reference point.
+  * If the offset is unavoidable, measure roll and pitch optically with 2–3 markers.
+    * Fixed yaw makes this easier: the pose has only roll, pitch and XYZ unknowns, and the
+      marker constellation's orientation in the image is predictable.
+    * Alternatively, flight control applies the lever arm using its own IMU attitude.
+  * Either way, the reference point and offset are part of the drone configuration
+    (ARCHITECTURE §3).
+* **Earliest test:** Phase 4. Rotate a marker rig about a known pivot and verify that the
+  reported reference point stays fixed.
+
 ---
 
-## 2. Decisions needed from the project owners
+## 2. Decisions
 
-| ID | Decision | Recommended default |
+| ID | Decision | Status |
 |---|---|---|
-| D1 | Exact accuracy metric and whether hall-scale accuracy may be graded by zone | p95 3D error ≤ 10 mm (lab); hall target graded, revisit after Phase 9 |
-| D2 | Ground-truth equipment (total station rental, rotating-arm rig, linear rail) | Rotating arm + rail (cheap) now; total station for Phase 8/9 |
-| D3 | Prototype station count and budget beyond S$200 | 4 stations for Phase 4 |
-| D4 | Ethernet/PoE for anything beyond 3 Wi-Fi prototype stations | Yes |
-| D5 | Number of markers per drone | 1 for Phases 1–9; 2–3 for rigid-body pose in Phase 10 |
-| D6 | Gimbal type | Self-locking worm-gear or braked stepper; servos only for bench experiments |
+| D1 | Accuracy metric and scope | **Decided:** within 1 cm throughout the entire flight volume, read as p95 3D error ≤ 10 mm at every location (see §0.1 for consequences) |
+| D2 | Ground-truth equipment (total station rental, rotating-arm rig, linear rail) | Open. Recommended: rotating arm + rail now; total station for Phase 8/9 |
+| D3 | Prototype station count and budget beyond S$200 | Open. Recommended: 4 stations for Phase 4 |
+| D4 | Ethernet/PoE for anything beyond 3 Wi-Fi prototype stations | Open. Recommended: yes, and **mandatory for the full-volume requirement** (timing ≤ 0.05 ms) |
+| D5 | Markers per drone | Open. Depends on R16: 1 marker if it can sit at the reference point; otherwise 2–3 to measure roll and pitch |
+| D6 | Gimbal type | **Decided:** servo pan/tilt, with live beacon re-pose and movement detection (R3). Upgrade path: worm-gear or braked servo if Phase 6 stability fails |
+| D7 | Drone yaw convention | **Decided:** fixed yaw set at takeoff (normally 0 = facing +X); no yaw in flight |
+| D8 | Drone reference point and marker offset | Open. See R16 |

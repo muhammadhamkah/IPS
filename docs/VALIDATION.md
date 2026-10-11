@@ -7,10 +7,21 @@ the tests in this document pass against independent ground truth.
 
 * **Primary metric:** the 3D Euclidean error `e = ‖p_IDPS − p_truth‖` of the **marker centre**.
   It is evaluated over a stated test volume, speed range and camera configuration.
-* **Acceptance (proposed):**
-  * p95(e) ≤ 10 mm **and** max(e) ≤ 25 mm, excluding samples the system itself flags as
-    invalid.
-  * The invalid-sample rate must also be reported, and must be ≤ 1 %.
+* **Acceptance (decision D1: within 1 cm throughout the entire flight volume):**
+  * p95(e) ≤ 10 mm **in every test zone**. The volume is divided into zones, and *each* zone
+    must pass on its own; an average over the whole volume does not count.
+  * max(e) ≤ 25 mm, excluding samples the system itself flags as invalid.
+  * The invalid-sample rate must also be reported, and must be ≤ 1 % per zone.
+* **Test zones:** the flight volume is divided into cells (e.g. 10 × 10 × 5 m in the hall,
+  1 × 1 × 1 m in the lab). Test points must cover every cell type, deliberately including the
+  worst-case regions the simulator predicts:
+  * upper corners;
+  * wall bands;
+  * near the ceiling;
+  * the takeoff/landing layer near the floor.
+* **Measured point:** the drone **reference point** (ARCHITECTURE §3). When the marker is
+  offset from it, tests include tilted drones or rigs (up to the maximum flight tilt) to
+  verify the lever-arm handling (RISKS R16).
 * **Static and dynamic results are reported separately.** Dynamic results are binned by speed:
   < 1, 1–2, 2–4 m/s.
 * **Every result also states:**
@@ -50,11 +61,12 @@ sign-off.
 | T3 Station throughput | 2 | 30-minute soak at 120 FPS with 1, 10 and 50 synthetic blobs | ARCHITECTURE P1–P3 |
 | T4 Network | 3 | 1-hour stream, wired and Wi-Fi | Loss and latency per P4/P5/P8 |
 | T5 Timing | 3, 5 | Sync-master GPIO strobes a marker LED at known times; every station observes it | Per-station timestamp offset known to σ ≤ 100 µs (P6) |
-| T6 Static accuracy | 4, 8 | G4 grid of ≥ 20 points across the volume, 10 s each | §1 acceptance (static) |
+| T6 Static accuracy | 4, 8, 9 | G4 survey points in **every zone**, including corners, wall bands, near the ceiling and the floor layer; 10 s each | §1 acceptance (static), every zone |
 | T7 Dynamic accuracy | 5, 8 | G2 at 1, 2 and 4 m/s; G3 traverses | §1 acceptance (dynamic) |
 | T8 Scale consistency | 4, 6, 8 | G1 wand waved through the volume | Length error p95 ≤ 2 mm (lab) |
 | T9 Calibration stability | 6 | 24 h beacon drift log with temperature | ≤ 0.05 mrad drift (hall), ≤ 0.2 mrad (lab) |
-| T10 Re-pose after a gimbal move | 6 | 50 move-return cycles | Re-pose rotation error ≤ 0.1 mrad versus the bundle-adjustment reference |
+| T10 Servo gimbal stability and live re-pose | 6 | (a) 30-minute beacon log with the servo holding: jitter spectrum; (b) 50 move-return cycles: settle time and re-pose error versus the bundle-adjustment reference; (c) knock test: movement detection latency | Within 0.03 mrad for ≥ 99 % of tracking time; re-pose ≤ 0.05 mrad; movement flagged within 1 frame of exceeding 0.03 mrad |
+| T14 Reference point under tilt | 4 | Marker rig rotated ±25° in roll/pitch about a known pivot at fixed yaw | Reported reference point moves ≤ 2 mm |
 | T11 ID decoding | 1, 4, 10 | Multiple markers, crossings, occlusions | Wrong-ID rate < 1e-4; acquisition time per P13 |
 | T12 Long range | 9 | T1, T2, T6 and T7 repeated at 25–30 m and beyond | Report the curves; compare with the simulator's prediction |
 | T13 Covariance consistency | 4–9 | NEES over T6/T7 | Mean NEES within the χ²₃ 95 % band for the sample size |

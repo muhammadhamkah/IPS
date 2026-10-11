@@ -83,6 +83,9 @@ The **sync master** handles time synchronisation, and ROADMAP Phase 5 decides it
 | Intrinsics | OpenCV pinhole plus a distortion model (Brown-Conrady k1..k3, p1, p2; fisheye model for lenses beyond ~90° HFOV). |
 | Pixel coordinates | Stations transmit **distorted** (raw) subpixel coordinates. Undistortion happens on the PC, so recorded data can be reprocessed after re-calibrating intrinsics. |
 | Time base | One system time: PTP/TAI nanoseconds disciplined to the sync master. Every observation timestamp is the **mid-exposure instant** in this time base. |
+| Drone body frame `B` | Origin at the drone **reference point** (the point flight control steers). +X forward, +Y left, +Z up. |
+| Drone yaw | **Fixed for the whole flight** and set at takeoff: `yaw_ref` per drone, normally 0, i.e. body +X along world +X. Drones roll and pitch, but do not yaw. |
+| Marker offset | Each marker's position in `B` is stored in the drone configuration (`markers: [{id, offset_m: [x, y, z]}]`). Reported drone position = reference point, not marker (§5.1, *Drone model*). |
 
 ---
 
@@ -151,13 +154,25 @@ The harness establishes the Pi 4B capability *before* any design depends on it:
 * Thermal behaviour over a 30-minute soak: CPU frequency, throttling flags, frame drops.
 * Timestamp jitter, measured against a GPIO-driven LED with known timing.
 
-### 4.4 Gimbal
+### 4.4 Gimbal (servo pan/tilt, decision D6)
 
-* The `idps-agent` drives the gimbal over an abstract `GimbalDriver` interface, with
-  backends for servo, stepper and simulated hardware.
-* After any gimbal motion, the station is marked **UNCALIBRATED**. The engine ignores
-  its observations until re-posing (§6.4) succeeds.
-* Station health reports gimbal state as one of `moving`, `settled` or `locked`.
+* **Drive:** two servos (pan, tilt), driven from a hardware PWM generator (PCA9685 over I²C,
+  or the Pi's hardware PWM pins), never software PWM. The `idps-agent` exposes them through
+  an abstract `GimbalDriver` interface, with backends for servo, worm-gear/stepper (upgrade
+  path) and simulated hardware.
+* **Kinematic model:** the pan and tilt axes, and the camera's optical-centre offset from
+  them, are calibrated once per station. The model predicts the camera *position* after a
+  move, and gives the initial guess for its *rotation*.
+* **Servo angles are never trusted as the camera pose.** Hobby servos have no position
+  read-back and roughly 0.2–1° deadband. The pose always comes from beacons (§6.4).
+* **Move sequence:**
+  1. The station flags itself `UNCALIBRATED` and the engine ignores its observations.
+  2. The servo moves and waits a configurable settle time.
+  3. The station optionally switches to hold mode: PWM held, or PWM off, whichever Phase 6
+     shows is stiller.
+  4. Live re-pose (§6.4) must converge before the station's data is used again.
+* **Health reports:** gimbal state (`moving`, `settling`, `holding`), commanded angles, and
+  the estimated rotation drift since the last re-pose.
 
 ---
 
@@ -186,7 +201,7 @@ UDP sockets ──> Ingest ──> TimeAlign ──> Frame Grouping ──> Asso
 | **Tracker** | One filter per marker track, with track management (tentative → confirmed → coasting → deleted). Starts as a constant-velocity Kalman filter; later moves to constant acceleration or IMM. Handles out-of-order measurements by timestamp | `MarkerTrack` (state, covariance, quality) |
 | **Asynchronous update** *(Phase 5+)* | An EKF that ingests **each camera's 2D observation individually at its own timestamp**, as a bearing update. This removes the need for simultaneous capture and degrades gracefully with imperfect sync | Same as Tracker |
 | **Marker ID decoder** | Normalises each track's fused per-camera intensity series by its running mean, recovers the symbol clock, decodes the frame, checks CRC, and votes the ID onto the track | `marker_id`, confidence |
-| **Rigid body** *(later)* | Groups 2+ marker tracks with known geometry into a drone pose using Kabsch/Umeyama with a pose filter | `DroneState` (position, attitude) |
+| **Drone model** | Converts marker tracks into the drone **reference point**. Yaw is fixed at `yaw_ref` (§3). With 1 marker at the reference point, the output is the marker position. With 2–3 markers, it solves roll, pitch and XYZ (yaw constrained; Kabsch/Umeyama with the yaw prior) and applies the lever arm. It also raises a **yaw-hold alarm** if the measured yaw departs from `yaw_ref`. The known yaw constrains each drone's marker layout in the world, which helps association and ID consistency | `DroneState` (reference point, roll/pitch if observable, covariance) |
 | **QA** | Per camera: reprojection residuals and their drift, beacon residuals, FPS, loss, latency. Per track: covariance and number of cameras | `HealthReport` |
 
 ### 5.2 Concurrency
@@ -219,8 +234,8 @@ That is about 450k 2D observations/s into association and 18k triangulations/s.
 | **6.1 Intrinsics** (per camera, once, in the lab) | ChArUco board viewed through the IR filter: backlit IR board, or filter removed with a fixed focus. Lens focus and aperture are locked with thread-locker before calibrating | `K`, distortion, RMS reprojection error (target < 0.1 px), coverage of the image corners |
 | **6.2 Extrinsics: wand** (initial, after installation) | A rigid wand with 3 collinear coded LEDs at known spacing is moved through the volume. Pairwise essential matrices give the initial guess; sparse bundle adjustment (`scipy.optimize.least_squares` with Jacobian sparsity, later Ceres) jointly refines all poses, optionally intrinsics, and wand points. Scale comes from the wand length | `T_CW` for all cameras with covariance, residual statistics, wand-length error distribution |
 | **6.3 World frame** | Fixed reference beacons at **surveyed** positions (total station) or an L-frame on the floor. A similarity transform aligns the bundle solution to the survey | Alignment residuals per beacon |
-| **6.4 Re-pose after a gimbal move** | The station must see ≥ 4 well-spread fixed beacons. PnP (EPnP + LM refinement) gives the new pose; it is cross-checked against the gimbal's commanded angles and refined with live marker co-observations | Pose covariance; the station returns to service only if the beacon residual < threshold |
-| **6.5 Continuous monitoring** | Beacons are always visible and re-measured every second. Drift in their reprojection residual raises a per-camera alarm. Online refinement of extrinsics from tracked markers runs in the background and is *never applied automatically* without passing validation | Drift plot per camera in the UI |
+| **6.4 Live re-pose** (servo gimbals, always on) | Each station sees **≥ 9–16 fixed beacons spread across its image, mostly ≥ 40 m away** (RISKS R3). The camera position comes from the gimbal kinematic model (§4.4) plus the bundle adjustment. The camera **rotation is re-estimated continuously** by a rotation-only PnP filter over the beacon observations, averaged over 0.1–1 s. The engine uses these time-varying extrinsics. A beacon is identified by predicting where it should appear in the image; beacons shine at constant brightness. After a move, the commanded servo angles seed the solve | Rotation covariance per station (target ≤ 0.03–0.05 mrad); the station is used only while its covariance is below the threshold |
+| **6.5 Movement detection and drift monitoring** | Beacon residuals are checked every frame. An unexplained rotation change > 0.03 mrad (servo hunting, a knock, thermal creep) marks the station `UNCALIBRATED` until re-pose converges, so a jittering camera drops out instead of corrupting positions. Beacon positions are refined jointly with all cameras in the periodic bundle adjustment. Online refinement of extrinsics from tracked markers runs in the background and is *never applied automatically* without passing validation | Per-camera stability plot in the UI; percentage of time each station is in service |
 
 At hall scale (100 m), waving a wand by hand through the whole volume is impractical. The plan
 is to fly a **drone-carried wand**, together with a dense set of surveyed beacons (see RISKS R9).
@@ -239,7 +254,8 @@ The simulator shares the camera model and noise model with the engine.
   * Volume geometry, obstacles and occluders (simple meshes or boxes).
   * Station positions, lens and sensor parameters, gimbal limits.
   * Noise assumptions: centroid σ, calibration σ, timing σ, marker speed.
-* **Per voxel outputs:**
+* **Per voxel outputs** (the grid includes the volume boundary: corners, walls, floor and
+  ceiling):
   * Number of cameras seeing the voxel, within range and not occluded.
   * Best and median ray-intersection angles.
   * **Predicted 3D covariance**, from the Fisher information of the visible cameras (the same
@@ -247,8 +263,13 @@ The simulator shares the camera model and noise model with the engine.
   * Minimum marker image size in pixels, and expected SNR from a radiometric model.
 * **Optimisation:**
   * Greedy or CMA-ES search over candidate mounting points and aim angles.
-  * Objective: maximise the fraction of volume with p95 error ≤ target and ≥ k cameras,
-    subject to station count and cost.
+  * Objective (decision D1): **every** voxel of the flight volume must reach p95 error
+    ≤ 10 mm (3D RMS ≤ 6.2 mm) with ≥ k cameras, at minimum station count and cost. This is a
+    hard worst-case constraint, not an average.
+  * Candidate mounts include close-range cameras for the corners and wall bands, which are
+    the regions the simple layouts fail (RISKS §0.1).
+  * Each station must also have enough beacons in view for live re-pose (§6.4). Beacon
+    placement is optimised together with camera placement.
 * **Outputs:** heatmaps (UI and HTML report), plus a CSV of per-station contributions that
   answers "what does adding or moving this station buy us?".
 
@@ -359,13 +380,14 @@ Values marked † are targets to be *verified* by benchmark, not assumed capabil
 | P3 | Exposure-to-packet-sent latency | p99 ≤ 6 ms † | Phase 2 |
 | P4 | Packet loss, wired | < 0.01 % | Phase 3 |
 | P5 | Packet loss, Wi-Fi, 3 stations | < 1 %, measured and reported | Phase 3 |
-| P6 | Timestamp accuracy (mid-exposure, system time base) | σ ≤ 100 µs (≤ 0.4 mm at 4 m/s); stretch ≤ 20 µs | Phase 5 |
+| P6 | Timestamp accuracy (mid-exposure, system time base) | σ ≤ 100 µs (lab); **≤ 20–50 µs (hall, full-volume requirement)** | Phase 5 |
 | P7 | Engine update rate | 120 Hz with no backlog at the design load (sim) † | Phase 4 / 10 |
 | P8 | Exposure-to-position latency (engine output) | p99 ≤ 20 ms wired, ≤ 50 ms Wi-Fi | Phase 7 |
 | P9 | UI render rate | 30–60 FPS while the engine meets P7 | Phase 7 |
 | P10 | Centroid precision, static marker, high SNR | ≤ 0.05 px RMS † | Phase 1 |
 | P11 | Intrinsic calibration RMS reprojection | ≤ 0.1 px | Phase 4 |
-| P12 | Extrinsic rotation uncertainty after calibration | ≤ 0.05 mrad (hall scale) / ≤ 0.2 mrad (lab) | Phase 6 / 8 |
+| P12 | Camera rotation known and held (live re-pose) | ≤ 0.03–0.05 mrad for ≥ 99 % of tracking time (hall) / ≤ 0.2 mrad (lab) | Phase 6 / 9 |
+| P12b | Camera position known | ≤ 1–2 mm (hall) | Phase 6 / 9 |
 | P13 | Marker ID acquisition time | ≤ 1.5 s free-running LEDs; ≤ 0.3 s synchronised LEDs | Phase 4 / 10 |
 | P14 | Marker ID error rate (wrong ID asserted) | < 1e-4 per track-acquisition | Phase 10 |
-| P15 | Positioning accuracy | p95 3D error ≤ 10 mm, *as defined in VALIDATION.md* | Phase 8 |
+| P15 | Positioning accuracy | p95 3D error ≤ 10 mm **at every location in the flight volume**, *as defined in VALIDATION.md* | Phase 8 (lab) / 9 (hall) |

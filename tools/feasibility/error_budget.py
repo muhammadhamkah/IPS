@@ -16,7 +16,7 @@ Calibration and timing errors are *systematic* per camera, so they are not
 averaged away over time; treating them as independent per camera is the
 optimistic assumption made here.
 
-Usage: python3 tools/feasibility/error_budget.py
+Usage: python3 tools/feasibility/error_budget.py [--sweep] [--beacons] [--all]
 """
 from __future__ import annotations
 
@@ -194,5 +194,120 @@ def main():
             evaluate(label, cams, g, nz, max_range=150)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Full-volume requirement sweep and beacon-based camera pose precision.
+# ---------------------------------------------------------------------------
+
+# For an isotropic 3D Gaussian, the 95 % error radius is ~2.80 sigma per axis
+# = 1.62 x 3D RMS.  "Within 1 cm" read as p95 <= 10 mm therefore needs
+# 3D RMS <= 6.2 mm at *every* location in the volume.
+RMS_LIMIT_MM = 10.0 / 1.62
+
+
+def worst_case(cams, g, noise, max_range=150.0):
+    """Per-point 3D RMS error (mm); NaN where < 2 cameras see the point."""
+    masks = np.array([visible(c, g, max_range) for c in cams])
+    err = np.full(len(g), np.nan)
+    for i, X in enumerate(g):
+        seen = [c for c, m in zip(cams, masks[:, i]) if m]
+        if len(seen) >= 2:
+            err[i] = np.sqrt(np.trace(point_cov(seen, X, noise))) * 1000
+    return err
+
+
+def hybrid_rig(ceiling_spacing, perim_spacing, perim_heights, f_ceiling=2.8, f_perim=4.0):
+    cams = ceiling_rig(ceiling_spacing, f_mm=f_ceiling)[0]
+    cams += hall_rig(perim_spacing, perim_heights, f_perim)[0]
+    return cams
+
+
+def full_volume_sweep():
+    """Which layout / noise combinations meet p95 <= 10 mm everywhere?"""
+    # Flight volume inset 1 m from walls and ceiling; from 0.2 m above floor.
+    g = grid(np.linspace(-49, 49, 9), np.linspace(-49, 49, 9), [0.2, 5, 10, 15, 20, 25, 29])
+    print(f"\n== Full-volume requirement: 3D RMS <= {RMS_LIMIT_MM:.1f} mm at every point ==")
+    print("   (grid inset 1 m from walls/ceiling, 0.2-29 m altitude, includes corners)")
+    layouts = [
+        ("ceil 20 m + perim 12.5 m x (5,15,28)", hybrid_rig(20, 12.5, (5, 15, 28))),
+        ("ceil 12.5 m + perim 12.5 m x (5,15,28)", hybrid_rig(12.5, 12.5, (5, 15, 28))),
+        ("ceil 10 m + perim 10 m x (2,10,20,29)", hybrid_rig(10, 10, (2, 10, 20, 29))),
+    ]
+    noises = [
+        ("0.10px 0.10mrad 3mm 0.10ms", Noise(0.1, 1e-4, 3e-3, 1e-4)),
+        ("0.05px 0.05mrad 2mm 0.05ms", Noise(0.05, 5e-5, 2e-3, 5e-5)),
+        ("0.05px 0.03mrad 1mm 0.02ms", Noise(0.05, 3e-5, 1e-3, 2e-5)),
+    ]
+    for lname, cams in layouts:
+        print(f" {lname}: {len(cams)} cameras")
+        for nname, nz in noises:
+            e = worst_case(cams, g, nz)
+            ok = ~np.isnan(e)
+            meets = np.mean(e[ok] <= RMS_LIMIT_MM) * 100 if ok.any() else 0
+            print(f"   {nname:<30s} cover {ok.mean()*100:5.1f}%  RMS median {np.nanmedian(e):5.1f}"
+                  f"  max {np.nanmax(e):5.1f} mm  points meeting spec {meets:5.1f}%")
+
+
+def pose_precision(n_beacons, ranges, f_px, sigma_px, sigma_beacon_m, n_frames=1, seed=0,
+                   rotation_only=False):
+    """1-sigma camera rotation / position error from PnP on fixed beacons.
+
+    Beacons are spread over the central 80 % of the image at the given ranges.
+    Survey error of each beacon is folded in as extra image noise.
+    rotation_only=True assumes the camera position is known (servo gimbal with
+    a calibrated kinematic model) and estimates only the 3 rotation angles.
+    """
+    rng = np.random.default_rng(seed)
+    w, h = SENSOR_PX
+    info = np.zeros((6, 6))
+    for k in range(n_beacons):
+        u = rng.uniform(-0.4, 0.4) * w
+        v = rng.uniform(-0.4, 0.4) * h
+        z = ranges[k % len(ranges)]
+        Xc = np.array([u / f_px * z, v / f_px * z, z])
+        # d(normalised image)/d(pose): small rotation dtheta and translation dt
+        # in the camera frame, Xc' = Xc + dtheta x Xc + dt.
+        J_c = np.array([[1 / z, 0, -Xc[0] / z ** 2], [0, 1 / z, -Xc[1] / z ** 2]])
+        skew = np.array([[0, Xc[2], -Xc[1]], [-Xc[2], 0, Xc[0]], [Xc[1], -Xc[0], 0]])
+        J = np.hstack([J_c @ skew, J_c])
+        # Survey error is systematic (not reduced by averaging frames).
+        s2_meas = (sigma_px / f_px) ** 2 / n_frames
+        s2_survey = (sigma_beacon_m / z) ** 2
+        info += J.T @ J / (s2_meas + s2_survey)
+    if rotation_only:
+        return np.sqrt(np.trace(np.linalg.inv(info[:3, :3]))), 0.0
+    C = np.linalg.inv(info)
+    rot = np.sqrt(np.trace(C[:3, :3]))
+    pos = np.sqrt(np.trace(C[3:, 3:]))
+    return rot, pos
+
+
+def beacon_study():
+    print("\n== Camera pose from fixed beacons (live re-pose for servo gimbals) ==")
+    print("   rotation / position 1-sigma; beacons spread over 80 % of the image")
+    f_px = 4.0e-3 / PIXEL_PITCH_M
+    for n in (4, 6, 9, 16):
+        for ranges in ((20, 40, 60), (40, 70, 100)):
+            for frames, label in ((1, "1 frame"), (12, "12 frames (0.1 s)")):
+                rot, pos = pose_precision(n, ranges, f_px, 0.1, 2e-3, frames)
+                print(f"   {n:2d} beacons @ {str(ranges):<13s} {label:<18s}"
+                      f" rot {rot*1e3:6.3f} mrad   pos {pos*1e3:6.1f} mm")
+    print("   -- rotation only (camera position known from gimbal kinematics) --")
+    for n in (4, 9, 16):
+        for ranges in ((20, 40, 60), (40, 70, 100)):
+            rots = [pose_precision(n, ranges, f_px, 0.1, 2e-3, fr, rotation_only=True)[0]
+                    for fr in (1, 12, 120)]
+            print(f"   {n:2d} beacons @ {str(ranges):<13s} rot 1 frame {rots[0]*1e3:5.3f}"
+                  f"  0.1 s {rots[1]*1e3:5.3f}  1 s {rots[2]*1e3:5.3f} mrad")
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    flags = set(sys.argv[1:])
+    if not flags or "--all" in flags:
+        main()
+    if flags & {"--sweep", "--all"}:
+        full_volume_sweep()
+    if flags & {"--beacons", "--all"}:
+        beacon_study()
