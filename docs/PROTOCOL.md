@@ -133,7 +133,7 @@ base to σ ≤ 100 µs (target), equivalent to ≤ 0.4 mm of motion at 4 m/s.
 | Mode | Mechanism | Expected accuracy | Notes |
 |---|---|---|---|
 | **S0 Free-run + NTP** | chrony over Wi-Fi | ~0.5–5 ms | Development only. The simulator shows this alone costs ~1–2 cm at 4 m/s (RISKS R2) |
-| **S1 Free-run + PTP** | `ptp4l` on Ethernet, software timestamps (Pi 4B NIC hardware timestamping to be verified; CM4 and Pi 5 support it) | ~10–100 µs | Baseline for the wired system. Cameras are not phase-aligned; the engine uses per-camera timestamps (async EKF or interpolation) |
+| **S1 Free-run + PTP** | `ptp4l -H` on Ethernet with the Pi 5's hardware timestamps (fallback: software timestamps) | ~1 µs (software: ~10–20 µs); simulated in `idps.sim.clocksync` | **Chosen** (decision D16). Cameras are not phase-aligned; the engine uses per-camera timestamps (async EKF or interpolation) |
 | **S2 Hardware trigger** | Sync master emits a 120 Hz pulse to each sensor's FSIN/trigger input over a wired line | < 10 µs, phase-aligned | Simplest maths. Needs sensor/driver trigger support (verify for OV9281 on Pi) and cabling |
 | **S3 Radio sync** | Sync master broadcasts a timing beacon (e.g. a 2.4 GHz proprietary radio); a microcontroller per station regenerates the trigger | ~1–20 µs | Wireless and phase-aligned; **can also clock the drone LEDs** (§6, mode B) |
 

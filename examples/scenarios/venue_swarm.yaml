@@ -7,7 +7,7 @@ seed: 7
 
 # Brighter LEDs for long range: markers closer than ~15 m saturate (flagged), as they would on real hardware.
 camera_model: {sensor: OV9281, fps: 120, exposure_us: 400, peak_at_10m: 4000, threshold_dn: 20}
-timing: {sync: ptp, offset_sigma_us: 20, jitter_sigma_us: 10}
+timing: {sync: ptp, jitter_sigma_us: 5, clock_profile: pi5_ptp_hw}   # Pi 5 stations, hardware PTP
 network: {loss: 0.001, latency_ms: 2, jitter_ms: 1}
 calibration_error: {rot_mrad: 0.05, pos_mm: 2}
 

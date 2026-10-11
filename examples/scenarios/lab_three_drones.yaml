@@ -1,19 +1,19 @@
 # Lab: three drones in the 6 x 6 x 3 m prototype volume, seen by the planned
-# camera layout. Wired PTP timing, full-resolution OV9281 at 120 fps.
+# camera layout. Raspberry Pi 5 stations: wired, hardware PTP, full-resolution OV9281 at 120 fps.
 name: Lab - three drones
 plan: ../plans/lab.yaml           # camera layout from idps-plan (paths relative to this file)
 duration_s: 20
 seed: 1
 
 camera_model:
-  sensor: OV9281                  # OV9281 = 1280x800; OV9281_640x400 = binned (e.g. Raspberry Pi 3B)
+  sensor: OV9281                  # OV9281 = 1280x800; OV9281_640x400 = 2x2 binned
   fps: 120
   exposure_us: 500
   peak_at_10m: 60                 # LED brightness: peak DN of a HIGH marker seen on-axis from 10 m
                                   # (tuned so markers 1-9 m away neither saturate nor drop below threshold)
   threshold_dn: 20
 
-timing: {sync: ptp, offset_sigma_us: 20, jitter_sigma_us: 10}
+timing: {sync: ptp, jitter_sigma_us: 5, clock_profile: pi5_ptp_hw}   # simulated clock sync (docs/NETWORK_TIMING.md)
 network: {loss: 0.001, latency_ms: 2, jitter_ms: 1}
 calibration_error: {rot_mrad: 0.1, pos_mm: 2}
 markers: {chip_rate_hz: 30, high: 1.0, low: 0.4}

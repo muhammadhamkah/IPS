@@ -185,9 +185,9 @@ lenses, or a revised requirement.
   * acquisition timestamps (never arrival times);
   * the Wi-Fi reorder buffer.
 * **Simulation** (`idps.sim.clocksync`, docs/NETWORK_TIMING.md):
-  * Pi 3B on Wi-Fi with chrony: about 2 ms skew (p95), about 5 mm at 5 m/s.
-  * Wired software PTP: about 60 µs.
-  * Hardware PTP: under 1 µs.
+  * Wi-Fi with chrony: about 2 ms skew (p95), about 5 mm at 5 m/s.
+  * Wired software PTP: about 12 µs (Pi 5), 60 µs (Pi 3B).
+  * Wired hardware PTP on the Pi 5 (the chosen setup): under 1 µs.
 * **Earliest test:** Phase 3/5. The LED-strobe timing rig measures per-station timestamp
   error under S0, S1 and S2. **Decision:** Wi-Fi remains a development convenience only,
   unless it achieves σ ≤ 100 µs in that test.
@@ -249,46 +249,50 @@ architecture supports this, with the constraints below.
   * **If it fails:** upgrade the same gimbal design to worm-gear servos or add a brake. The
     software does not change.
 
-### R4: Raspberry Pi sustained 120 FPS (M; H for the Pi 3B)
+### R4: Raspberry Pi 5 sustained 120 FPS (M)
 
-**Prototype hardware (decision D16): Raspberry Pi 3B + OV9281, both mounted on the pan/tilt
-servos.** Compared with the Pi 4B assumed elsewhere:
-* **CPU:** a Cortex-A53 at 1.2 GHz, roughly 2–3× slower than the 4B's A72. Full-resolution
-  (1280×800) detection at 120 FPS is unlikely to fit in 8.33 ms. The likely mode is the
-  OV9281's 2×2 binned **640×400** (a quarter of the pixels, half the angular resolution) or a
-  lower frame rate.
-* **Network:** 100 Mbit Ethernet port, connected inside the board through a USB 2.0 chip (LAN9514), which adds timestamp jitter. Wi-Fi is 2.4 GHz only.
-  No hardware PTP. **Simulated** (docs/NETWORK_TIMING.md, `idps-sim clocks`): wired software
-  PTP keeps stations within about 60 µs of each other (p95), about 0.15 mm at 5 m/s, which is
-  enough. Bandwidth is about 0.2–1 Mbit/s per station, far below the 100 Mbit port.
-* **Simulator:** `examples/scenarios/lab_pi3b_wifi.yaml` models this profile (binned sensor,
-  free-running cameras on Wi-Fi). The planner accepts `sensor: OV9281_640x400` to show the
-  camera-count cost.
-* **Recommendation:** use the 3B for Phase 1–3 bring-up. Benchmark it in Phase 2 before buying
-  more stations; a Pi 4B or Pi 5 costs little more and removes this risk.
-* **Mounting the Pi on the gimbal** adds moving mass and cable stiffness to the servos (R3).
-  Where possible, put only the camera on the gimbal, with a 30–50 cm CSI ribbon to a fixed Pi.
+**Station hardware (decision D16): Raspberry Pi 5 (2 GB) + OV9281 per camera**, chosen over the
+Pi 3B before any hardware was bought. The reasons:
 
-### R4a: Raspberry Pi 4B sustained 120 FPS (M)
+* **CPU.** The Pi 5's Cortex-A76 cores are roughly 2–3× a Pi 4B and far beyond a Pi 3B, so
+  full-resolution detection is expected to fit.
+* **Fewer cameras.** A Pi 3B would have needed the OV9281's binned 640×400 mode, which halves the
+  angular resolution. Planned layouts with full resolution need about 4 fewer cameras:
+  * a 30 × 16 × 9 m venue: 14 instead of 18;
+  * the 50 × 20 × 20 m example: 17 instead of 21.
+* **Network.** Native gigabit Ethernet with **hardware PTP timestamps**: simulated skew between
+  stations is about 0.8 µs p95, against 60 µs for a Pi 3B (docs/NETWORK_TIMING.md).
+* **Power.** A PoE+ HAT gives one cable per station (docs/HARDWARE.md). The Pi 3B has no PoE
+  header.
 
-* **Evidence:**
-  * The OV9281 sensor supports 1280×800 at up to 120 FPS; whether the Pi 4B libcamera
-    raw path sustains it with our processing on top must be **benchmarked**.
-  * A 1 MP frame at 120 FPS is 123 Mpix/s. One full-frame read at ~4 GB/s effective memory
-    bandwidth is about 0.3 ms, so a sparse NEON detector should fit in 2–4 ms of the
-    8.33 ms budget.
-  * Risks: unpacking RAW10, buffer-copy overhead, thermal throttling in an enclosure, and
-    interrupt latency affecting timestamps.
-* **Mitigation:**
-  * 8-bit raw mode if the driver offers it;
-  * zero-copy dmabuf access;
-  * core pinning;
-  * a heatsink and fan;
-  * cropped or binned modes at long focal lengths;
-  * Pi 5 or CM4 as a drop-in upgrade, since the edge code is portable.
-* **Earliest test:** Phase 2 benchmark (ARCHITECTURE §4.3). **Decision:** if p99 processing
-  exceeds 6 ms, or drops exceed 0.01 % over 30 minutes, choose among a cropped mode, a Pi 5,
-  or 90 FPS.
+**The 120 FPS evidence:**
+
+* **Sensor and pixel rate.** The OV9281 supports 1280×800 at up to 120 FPS. A 1 MP frame at
+  120 FPS is 123 Mpix/s.
+* **Detector time.** One full-frame read at the Pi 5's memory bandwidth takes a fraction of a
+  millisecond, so a sparse NEON detector should fit in 1–3 ms of the 8.33 ms budget.
+* **Remaining risks:**
+  * unpacking RAW10;
+  * buffer-copy overhead;
+  * **thermal throttling**: the Pi 5 needs its active cooler, especially in an enclosure;
+  * interrupt latency affecting timestamps.
+
+**Mitigation:**
+* 8-bit raw mode if the driver offers it;
+* zero-copy dmabuf access;
+* core pinning;
+* the active cooler;
+* cropped or binned modes at long focal lengths.
+
+**Mounting the Pi on the gimbal** adds moving mass, heat and cable stiffness to the servos (R3).
+Put only the camera on the gimbal, with a 30–50 cm camera cable to a fixed Pi (the Pi 5 uses
+the smaller 22-pin camera connector: docs/HARDWARE.md).
+
+**Earliest test:** Phase 2 benchmark on the first Pi 5 + OV9281, *before ordering the rest*
+(ARCHITECTURE §4.3). **Decision:** if p99 processing exceeds 6 ms, or drops exceed 0.01 % over
+30 minutes, choose a cropped mode or 90 FPS. Also confirm `ethtool -T eth0` lists hardware
+timestamping. If it does not, the stations run software PTP, which simulates to about 12 µs
+and is still fine.
 
 ### R5: Network scale with 150–260 stations (M)
 
@@ -428,7 +432,10 @@ servos.** Compared with the Pi 4B assumed elsewhere:
 ### R13: OV9281 / Raspberry Pi driver capabilities (M)
 
 * **To verify on real hardware:**
-  * a raw 8-bit or 10-bit mode at 120 FPS through libcamera on the Pi 4B;
+  * a raw 8-bit or 10-bit mode at 120 FPS through libcamera on the Pi 5;
+  * the camera cable: the Pi 5 has 22-pin camera connectors, and most OV9281 modules ship with a
+    15-pin cable, so a 22-to-15-pin cable is needed;
+  * hardware PTP timestamps on the Pi 5's Ethernet (`ethtool -T eth0`);
   * **external trigger (FSIN) support** in the kernel driver and module (some vendor modules
     expose a trigger pin, others do not);
   * accuracy and latency of `SensorTimestamp`;
@@ -568,7 +575,7 @@ servos.** Compared with the Pi 4B assumed elsewhere:
 | D11 | Mounting options | **Decided:** overhead trusses and tripods (up to 20 m); no wall mounts |
 | D13 | Calibrating the upper volume | **Decided:** wand only the walkable height (OptiTrack practice), then a continuous-calibration drone flight over the whole volume; continuous calibration may stay on during operation |
 | D14 | Bumped tripod recovery | **Decided:** return the tripod to its taped marks → gimbal to the saved angles → reload the saved calibration → automatic 6-DOF beacon re-pose and verification; no re-wand |
-| D16 | Prototype station hardware | **Decided (prototype):** Raspberry Pi 3B + OV9281 on servo pan/tilt. See R4 for limits and the recommended Pi 4B/5 upgrade |
+| D16 | Station hardware | **Decided:** Raspberry Pi 5 (2 GB, active cooler) + OV9281 per camera, the camera on the servo pan/tilt and the Pi fixed beside it; powered and networked by one PoE+ cable to a gigabit PoE+ switch; PTP with hardware timestamps, camera 1's Pi as grandmaster. Chosen over the Pi 3B (no hardware bought yet): full-resolution sensor (about 4 fewer cameras), hardware PTP, PoE. See R4, docs/HARDWARE.md, docs/NETWORK_TIMING.md |
 | D15 | Planner mounting inputs | **Decided:** volume; truss lines with height, usable and missing segments, additional trusses; tripod floor zones with height up to 20 m |
 | D18 | Coordinate frame | **Decided:** North-East-Down (NED) from the origin = the calibration square's corner; North = its long arm = drone yaw 0; E 90° clockwise; D down. The planner asks for the performance area first, then the origin (dragged on the plan, N arrow turned to North). Everything shown, exported and sent to drones is NED; headings are from North, clockwise |
 | D17 | Cameras vs drones height | **Decided:** drones always fly below the cameras. Every camera is at or above the flight ceiling (plus an optional margin) and looks level or down; trusses and tripod masts that can't reach the ceiling are not used. A volume taller than the 20 m tripods (e.g. the 30 m hall) is trusses only |

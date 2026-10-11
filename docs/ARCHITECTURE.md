@@ -37,10 +37,10 @@ Companion documents: [PROTOCOL.md](PROTOCOL.md), [RISKS.md](RISKS.md),
             \                                   /
              v                                 v
   +------------------------------------------------------------+
-  |  Camera Station  x N        (Raspberry Pi 4B + OV9281)      |
+  |  Camera Station  x N        (Raspberry Pi 5 + OV9281, PoE+) |
   |  idps-edge (C++)  : capture -> detect -> timestamp -> UDP   |
   |  idps-agent       : control, gimbal, snapshots, health      |
-  |  ptp4l / chrony   : clock discipline                        |
+  |  ptp4l -H + phc2sys : clock discipline (hardware PTP)       |
   +------------------------------------------------------------+
         | UDP observations (data plane)     ^ TCP/ZeroMQ control
         v                                   |
@@ -50,7 +50,7 @@ Companion documents: [PROTOCOL.md](PROTOCOL.md), [RISKS.md](RISKS.md),
   |                triangulate -> track -> identify -> QA       |
   |  idps-record : raw packet + state logging (MCAP)            |
   |  idps-calib  : intrinsics, wand bundle adjustment, re-pose  |
-  |  PTP grandmaster (or dedicated sync master)                 |
+  |  (PTP grandmaster: camera 1's Pi 5, not the PC)             |
   +------------------------------------------------------------+
         | ZeroMQ PUB (state @120 Hz)        ^ ZeroMQ REQ (commands)
         v                                   |
@@ -65,7 +65,8 @@ Companion documents: [PROTOCOL.md](PROTOCOL.md), [RISKS.md](RISKS.md),
 
 The **sync master** handles time synchronisation, and ROADMAP Phase 5 decides its final form:
 
-* Option A: Ethernet PTP. Software timestamping on the Pi 4B; this NIC capability still needs verifying.
+* Option A (**chosen**, decision D16): Ethernet PTP with the Pi 5's hardware timestamps.
+  Simulated skew between stations is about 0.8 µs p95 (docs/NETWORK_TIMING.md).
 * Option B: a wired hardware trigger line to each camera's FSIN input.
 * Option C: a radio broadcast sync pulse that drives each camera's trigger. The same pulse can
   also drive the drone LEDs (see PROTOCOL.md §6).
@@ -144,7 +145,8 @@ parameter block or a Unix socket.
 
 ### 4.3 Benchmark harness (`edge/bench`)
 
-The harness establishes the Pi 4B capability *before* any design depends on it:
+The harness establishes the Pi 5 capability *before* any design depends on it, on the first
+station and before the rest are ordered (docs/HARDWARE.md):
 
 * Raw capture rate at each sensor mode: 1280×800, 640×400, and cropped modes.
 * Detection time distribution (p50/p99/max) versus marker count (0, 1, 10, 50, 200).

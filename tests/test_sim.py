@@ -105,8 +105,8 @@ def test_hw_trigger_aligns_capture_times():
     assert np.ptp(t) < 50e-6
 
 
-def test_binned_sensor_mode_pi3b():
-    sc = short(ROOT / "examples" / "scenarios" / "lab_pi3b_wifi.yaml")
+def test_binned_sensor_mode_and_wifi_clocks():
+    sc = short(ROOT / "examples" / "scenarios" / "lab_wifi.yaml")
     sim = Simulation(sc)
     st = sim.stations[0]
     assert (st.W, st.H) == (640, 400) and st.f == pytest.approx(sc.cameras[0].lens_mm * 1e-3 / 6e-6)
@@ -135,15 +135,17 @@ def test_files_truth_calibration_and_raw_log(tmp_path):
 
 
 def test_clock_sync_profiles():
-    """Disciplined clocks: software PTP on a Pi 3B keeps stations within tens of us of each
-    other; hardware PTP within ~1 us; free running drifts apart by ppm x time."""
+    """Disciplined clocks: hardware PTP on the Pi 5 keeps stations within ~1 us of each other;
+    software timestamps (the fallback, or the Pi 3B) within tens of us; free running drifts
+    apart by ppm x time; Wi-Fi is milliseconds."""
     from idps.sim.clocksync import simulate_clocks, summarise
     sw = summarise(simulate_clocks(8, 300, "pi3b_ptp_sw", seed=3), 300, "pi3b_ptp_sw")
+    sw5 = summarise(simulate_clocks(8, 300, "pi5_ptp_sw", seed=3), 300, "pi5_ptp_sw")
     hw = summarise(simulate_clocks(8, 300, "pi5_ptp_hw", seed=3), 300, "pi5_ptp_hw")
     free = summarise(simulate_clocks(8, 300, "free_run", seed=3), 300, "free_run")
-    wifi = summarise(simulate_clocks(8, 300, "pi3b_wifi_ntp", seed=3), 300, "pi3b_wifi_ntp")
+    wifi = summarise(simulate_clocks(8, 300, "pi5_wifi_ntp", seed=3), 300, "pi5_wifi_ntp")
     assert 10 < sw.skew_p95_us < 200 and sw.converge_s is not None and sw.converge_s < 120
-    assert hw.skew_p95_us < 5
+    assert hw.skew_p95_us < 5 and hw.skew_p95_us < sw5.skew_p95_us < sw.skew_p95_us
     assert free.skew_p95_us > 1e4 and wifi.skew_p95_us > 5 * sw.skew_p95_us
     assert sw.pos_err_mm_at_5mps < 0.5                       # timing costs well under 1 mm at 5 m/s
     # deterministic for a seed
@@ -172,7 +174,7 @@ def test_path_asymmetry_is_invisible_to_ptp():
 def test_simulation_timestamps_follow_simulated_clocks(tmp_path):
     from idps.sim.clocksync import simulate_clocks  # noqa: F401  (profile wiring)
     from idps.sim.cli import main
-    sc = load_scenario(ROOT / "examples" / "scenarios" / "lab_pi3b_ethernet.yaml")
+    sc = load_scenario(ROOT / "examples" / "scenarios" / "lab_pi5_ethernet.yaml")
     sc.duration_s = 2.0
     sim = Simulation(sc)
     assert all(st.clock is not None for st in sim.stations)
@@ -188,7 +190,7 @@ def test_simulation_timestamps_follow_simulated_clocks(tmp_path):
             errs.append((body.t_mid_ns - sim.epoch_ns) * 1e-9 - t - float(s.clock.at(t)))
         elif h.msg_type == P.MSG_HEALTH:
             offsets.append(body["ptp_offset_ns"])
-    assert abs(np.mean(errs)) < 3e-6 and np.std(errs) < 30e-6      # only the frame-timestamp jitter remains
+    assert abs(np.mean(errs)) < 2e-6 and np.std(errs) < 10e-6      # only the frame-timestamp jitter remains
     assert offsets and any(o != 0 for o in offsets)                    # ptp4l-style reported offsets
     assert main(["clocks", "--stations", "4", "--duration", "60", "--profile", "pi3b_ptp_sw",
                  "--profile", "pi5_ptp_hw", "-o", str(tmp_path)]) == 0

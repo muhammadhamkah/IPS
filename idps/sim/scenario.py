@@ -44,7 +44,7 @@ class TimingModel:
     trigger_jitter_us: float = 2.0    # hw_trigger: capture-time spread across stations
     # Simulated clock synchronisation (idps.sim.clocksync). When set, each station's
     # timestamps follow a simulated disciplined clock instead of the fixed offset/drift above:
-    # pi3b_ptp_sw | pi3b_ptp_sw_hwmaster | pi3b_ntp | pi5_ptp_hw | pi3b_wifi_ntp | free_run
+    # pi5_ptp_hw (chosen) | pi5_ptp_sw | pi5_ntp | pi5_wifi_ntp | pi3b_ptp_sw (comparison) | free_run
     clock_profile: str | None = None
     clock_start: str = "synced"       # "synced": a running system | "power_on": include start-up
 

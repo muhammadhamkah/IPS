@@ -12,20 +12,20 @@ Model, per station:
   ppm x time: 20 ppm is 1.2 ms per minute.
 * **Two-way exchange** (PTP Sync / Delay_Req, or NTP), every `sync_interval_s`:
   t1 master send, t2 slave receive, t3 slave send, t4 master receive. Each timestamp has
-  noise from where it is taken: *software* timestamps on a Pi 3B: its Ethernet port is wired
-  inside the board to the CPU through a USB 2.0 chip (LAN9514, 100 Mbit), so they carry USB polling
-  quantisation (125 us microframes), interrupt latency and spikes when the CPU is busy
-  with image processing; *hardware* timestamps (PHY/NIC, e.g. Pi 5, CM4, Intel i210)
-  are good to tens of ns. The switch adds queueing delay variation. A fixed, unknown
-  **path asymmetry** (send and receive paths through that chip differ) biases
-  the measured offset by half of it, and no protocol can see that.
+  noise from where it is taken: *hardware* timestamps in the Ethernet MAC/PHY (the
+  chosen Raspberry Pi 5, CM4, Intel i210) are good to tens of ns; *software* timestamps
+  carry kernel and interrupt latency and spikes when the CPU is busy with image
+  processing (on a Pi 3B also 125 us USB polling steps, as its Ethernet port reaches the
+  CPU through an on-board USB 2.0 chip). The switch adds queueing delay variation. A
+  fixed, unknown **path asymmetry** (send and receive paths differ) biases the measured
+  offset by half of it, and no protocol can see that.
 * **Servo** like linuxptp's PI servo: the first measurement steps the clock, then each
   measurement nudges phase (kp) and frequency (ki). The path delay goes through a
   moving median, like `delay_filter`.
 
-The grandmaster is whatever the stations follow: the PC, one Pi, or a dedicated box.
-Only the stations' agreement with each other matters for tracking, so a free-running
-master is fine (macOS cannot run ptp4l; make a Pi or a small Linux box the master).
+The grandmaster is whatever the stations follow: one of the camera Pis, a spare Pi 5, or
+a Linux box. Only the stations' agreement with each other matters for tracking, so a
+free-running master is fine (macOS cannot run ptp4l, so the Mac is not the master).
 """
 from __future__ import annotations
 
@@ -77,41 +77,44 @@ class ClockProfile:
 
 
 PROFILES: dict[str, ClockProfile] = {
-    # The planned prototype: Pi 3B, wired, PTP with software timestamps (ptp4l -S), 4 Hz sync.
+    # The chosen station (decision D16): Raspberry Pi 5, wired gigabit, PTP with hardware
+    # timestamps in the Ethernet MAC (ptp4l -H), 8 Hz sync, a Pi 5 as grandmaster.
+    "pi5_ptp_hw": ClockProfile(
+        "pi5_ptp_hw", "ptp", sync_interval_s=0.125,
+        slave_ts=TimestampNoise(sigma_us=0.02), master_ts=TimestampNoise(sigma_us=0.02),
+        network_pdv_us=0.5, asymmetry_us=0.05, kp=0.7, ki=0.3, wander_ppb_per_sqrt_s=2,
+        description="Raspberry Pi 5 stations, gigabit Ethernet, ptp4l with hardware timestamps, "
+                    "a Pi 5 as grandmaster (the chosen setup)"),
+    # Fallback if hardware timestamping is unavailable (driver/kernel): software timestamps on the
+    # Pi 5's native Ethernet: no USB polling, but kernel and interrupt latency remain.
+    "pi5_ptp_sw": ClockProfile(
+        "pi5_ptp_sw", "ptp", sync_interval_s=0.25,
+        slave_ts=TimestampNoise(sigma_us=4, spike_prob=0.02, spike_mean_us=60),
+        master_ts=TimestampNoise(sigma_us=4, spike_prob=0.01, spike_mean_us=40),
+        network_pdv_us=1, asymmetry_us=4, kp=0.1, ki=0.001, wander_ppb_per_sqrt_s=2,
+        description="Pi 5 stations with software timestamps (fallback if hardware PTP is unavailable)"),
+    # chrony / NTP on the same wired network: slower polling, best-of-N filtering.
+    "pi5_ntp": ClockProfile(
+        "pi5_ntp", "ntp", sync_interval_s=2.0,
+        slave_ts=TimestampNoise(sigma_us=4, spike_prob=0.02, spike_mean_us=60),
+        master_ts=TimestampNoise(sigma_us=4, spike_prob=0.01, spike_mean_us=40),
+        network_pdv_us=1, asymmetry_us=4, kp=0.05, ki=0.0005, offset_filter=8, wander_ppb_per_sqrt_s=2,
+        description="Pi 5, chrony (NTP) on the wired network, 2 s polling"),
+    # Wi-Fi: software timestamps through the radio, retries and power save.
+    "pi5_wifi_ntp": ClockProfile(
+        "pi5_wifi_ntp", "ntp", sync_interval_s=2.0,
+        slave_ts=TimestampNoise(sigma_us=120, spike_prob=0.06, spike_mean_us=2500),
+        master_ts=TimestampNoise(sigma_us=4, spike_prob=0.01, spike_mean_us=40),
+        network_pdv_us=300, asymmetry_us=150, kp=0.05, ki=0.0005, offset_filter=8, wander_ppb_per_sqrt_s=2,
+        description="Pi 5 on Wi-Fi with chrony (not recommended)"),
+    # For comparison only: the Pi 3B considered earlier. Its Ethernet port reaches the CPU through
+    # an on-board USB 2.0 chip (LAN9514, 100 Mbit): 125 us polling steps, no hardware timestamps.
     "pi3b_ptp_sw": ClockProfile(
         "pi3b_ptp_sw", "ptp", sync_interval_s=0.25,
         slave_ts=TimestampNoise(sigma_us=6, quantum_us=125, spike_prob=0.03, spike_mean_us=250),
         master_ts=TimestampNoise(sigma_us=6, quantum_us=125, spike_prob=0.01, spike_mean_us=150),
         network_pdv_us=3, asymmetry_us=15, kp=0.1, ki=0.001, wander_ppb_per_sqrt_s=2,
-        description="Raspberry Pi 3B, Ethernet (100 Mbit port) into a gigabit switch, ptp4l with software "
-                    "timestamps, a Pi as grandmaster"),
-    # Same Pis, but the master has hardware timestamping (a Linux PC with an Intel i210, a CM4 / Pi 5).
-    "pi3b_ptp_sw_hwmaster": ClockProfile(
-        "pi3b_ptp_sw_hwmaster", "ptp", sync_interval_s=0.25,
-        slave_ts=TimestampNoise(sigma_us=6, quantum_us=125, spike_prob=0.03, spike_mean_us=250),
-        master_ts=TimestampNoise(sigma_us=0.05),
-        network_pdv_us=3, asymmetry_us=15, kp=0.1, ki=0.001, wander_ppb_per_sqrt_s=2,
-        description="Pi 3B stations with software timestamps; grandmaster with hardware timestamps"),
-    # chrony / NTP over the same wiring: slower polling, best-of-N filtering.
-    "pi3b_ntp": ClockProfile(
-        "pi3b_ntp", "ntp", sync_interval_s=2.0,
-        slave_ts=TimestampNoise(sigma_us=6, quantum_us=125, spike_prob=0.03, spike_mean_us=250),
-        master_ts=TimestampNoise(sigma_us=6, quantum_us=125, spike_prob=0.01, spike_mean_us=150),
-        network_pdv_us=3, asymmetry_us=15, kp=0.05, ki=0.0005, offset_filter=8, wander_ppb_per_sqrt_s=2,
-        description="Pi 3B, chrony (NTP) on the wired network, 2 s polling"),
-    # Hardware PTP end to end (Pi 5 / CM4 with PHY timestamping): the reference for an upgrade.
-    "pi5_ptp_hw": ClockProfile(
-        "pi5_ptp_hw", "ptp", sync_interval_s=0.125,
-        slave_ts=TimestampNoise(sigma_us=0.02), master_ts=TimestampNoise(sigma_us=0.02),
-        network_pdv_us=0.5, asymmetry_us=0.05, kp=0.7, ki=0.3, wander_ppb_per_sqrt_s=2,
-        description="Pi 5 / CM4 stations with hardware PTP timestamps"),
-    # Wi-Fi (2.4 GHz, Pi 3B): software timestamps through the radio, retries and power save.
-    "pi3b_wifi_ntp": ClockProfile(
-        "pi3b_wifi_ntp", "ntp", sync_interval_s=2.0,
-        slave_ts=TimestampNoise(sigma_us=150, quantum_us=0, spike_prob=0.08, spike_mean_us=3000),
-        master_ts=TimestampNoise(sigma_us=6, quantum_us=125, spike_prob=0.01, spike_mean_us=150),
-        network_pdv_us=400, asymmetry_us=200, kp=0.05, ki=0.0005, offset_filter=8, wander_ppb_per_sqrt_s=2,
-        description="Pi 3B on 2.4 GHz Wi-Fi with chrony"),
+        description="Raspberry Pi 3B, software timestamps (comparison: the earlier hardware choice)"),
     "free_run": ClockProfile("free_run", "none", description="no synchronisation at all"),
 }
 

@@ -33,7 +33,7 @@ class Sensor:
 
 SENSORS = {
     "OV9281": Sensor("OV9281", 1280, 800, 3.0e-6),
-    # 2x2 binned mode: a quarter of the pixels to process (e.g. Raspberry Pi 3B),
+    # 2x2 binned mode: a quarter of the pixels to process (a fallback for a slower station CPU),
     # same field of view, half the angular resolution.
     "OV9281_640x400": Sensor("OV9281_640x400", 640, 400, 6.0e-6),
 }

@@ -1,14 +1,14 @@
-# Same lab and drones, but a Raspberry Pi 3B-style station: binned 640x400
-# sensor mode and Wi-Fi with NTP-class timing (free-running cameras). Compare
-# the engine's accuracy against lab_three_drones.yaml.
-name: Lab - Pi 3B profile over Wi-Fi
+# What not to do: the same lab and drones with the Pi 5 stations on Wi-Fi, clocks kept by
+# chrony over the radio (millisecond timing errors), and the binned 640x400 sensor mode
+# to show its cost too. Compare the engine's accuracy against lab_pi5_ethernet.yaml.
+name: Lab - Pi 5 on Wi-Fi (comparison)
 plan: ../plans/lab.yaml
 duration_s: 20
 seed: 1
 
 camera_model: {sensor: OV9281_640x400, fps: 120, exposure_us: 500, peak_at_10m: 60, threshold_dn: 20,
-               proc_latency_ms: 8}
-timing: {sync: free_run}
+               proc_latency_ms: 5}
+timing: {sync: ptp, jitter_sigma_us: 5, clock_profile: pi5_wifi_ntp, clock_start: synced}
 network: {loss: 0.01, latency_ms: 6, jitter_ms: 4}
 calibration_error: {rot_mrad: 0.1, pos_mm: 2}
 

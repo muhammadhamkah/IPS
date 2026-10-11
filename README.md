@@ -1,7 +1,7 @@
 # IDPS: Indoor Drone Positioning System
 
 A low-cost, modular optical positioning system for indoor drones. It is built from
-Raspberry Pi 4B camera stations with OV9281 global-shutter sensors, coded active 850 nm IR
+Raspberry Pi 5 camera stations (one per OV9281 global-shutter camera, powered over Ethernet), coded active 850 nm IR
 markers, and a central PC engine with a live 3D dashboard.
 
 **Status:** Phase 0 (no hardware needed). Done: protocol, planner + desktop dashboard, simulator. Next: positioning engine.
@@ -13,6 +13,7 @@ markers, and a central PC engine with a live 3D dashboard.
 | [docs/RISKS.md](docs/RISKS.md) | Error-budget findings, critical risk register, decisions needed from the owners |
 | [docs/VALIDATION.md](docs/VALIDATION.md) | Accuracy metric definition, ground-truth methods, test catalogue, flight gate |
 | [docs/WORKFLOW.md](docs/WORKFLOW.md) | Operator workflow: planner → install → one-click aim → wand + calibration square → fly |
+| [docs/HARDWARE.md](docs/HARDWARE.md) | Station parts list (Pi 5 + OV9281), PoE+ power budget, what to verify on the first station |
 | [docs/NETWORK_TIMING.md](docs/NETWORK_TIMING.md) | Pi-per-camera network, clock synchronisation options (simulated), ptp4l setup |
 | [docs/ADVISOR.md](docs/ADVISOR.md) | Health monitoring and guided fixes (re-aim / move / add camera) from planning to show |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phase 0–10 plan with measurable exit criteria |
@@ -135,8 +136,10 @@ idps-sim run examples/scenarios/venue_swarm.yaml --dest 127.0.0.1:47600 --realti
 * `calibration.yaml`: the true camera poses, and the *estimated* poses the engine is given
   (perturbed by the scenario's calibration error).
 
-`examples/scenarios/lab_pi3b_wifi.yaml` models a Raspberry Pi 3B station (binned 640×400,
-Wi-Fi, free-running cameras).
+`examples/scenarios/lab_pi5_ethernet.yaml` models the chosen network: Pi 5 stations on a
+gigabit switch with hardware PTP, the clocks simulated message by message (`clocks.csv`).
+`lab_wifi.yaml` is the same lab on Wi-Fi with the binned sensor mode, for comparison.
+`idps-sim clocks` compares clock-sync options (docs/NETWORK_TIMING.md).
 
 The wire format is in `protocol/idps_protocol.h`; the Python mirror is `idps/protocol/`;
 golden vectors are in `protocol/vectors/`.
