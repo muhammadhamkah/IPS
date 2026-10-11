@@ -2,7 +2,7 @@
 
 Status: **proposal v0.1**, open for review. No production code has been written yet.
 Companion documents: [PROTOCOL.md](PROTOCOL.md), [RISKS.md](RISKS.md),
-[VALIDATION.md](VALIDATION.md), [ROADMAP.md](ROADMAP.md).
+[VALIDATION.md](VALIDATION.md), [WORKFLOW.md](WORKFLOW.md), [ROADMAP.md](ROADMAP.md).
 
 ---
 
@@ -171,6 +171,9 @@ The harness establishes the Pi 4B capability *before* any design depends on it:
   3. The station optionally switches to hold mode: PWM held, or PWM off, whichever Phase 6
      shows is stiller.
   4. Live re-pose (§6.4) must converge before the station's data is used again.
+* **Base orientation at install:** the gimbal base is levelled, and its pan-zero is pointed
+  in the direction the install plan specifies. Coarse aiming to the plan's angles depends on
+  this (WORKFLOW.md step 2).
 * **Health reports:** gimbal state (`moving`, `settling`, `holding`), commanded angles, and
   the estimated rotation drift since the last re-pose.
 
@@ -233,7 +236,9 @@ That is about 450k 2D observations/s into association and 18k triangulations/s.
 |---|---|---|
 | **6.1 Intrinsics** (per camera, once, in the lab) | ChArUco board viewed through the IR filter: backlit IR board, or filter removed with a fixed focus. Lens focus and aperture are locked with thread-locker before calibrating | `K`, distortion, RMS reprojection error (target < 0.1 px), coverage of the image corners |
 | **6.2 Extrinsics: wand** (initial, after installation) | A rigid wand with 3 collinear coded LEDs at known spacing is moved through the volume. Pairwise essential matrices give the initial guess; sparse bundle adjustment (`scipy.optimize.least_squares` with Jacobian sparsity, later Ceres) jointly refines all poses, optionally intrinsics, and wand points. Scale comes from the wand length | `T_CW` for all cameras with covariance, residual statistics, wand-length error distribution |
-| **6.3 World frame** | Fixed reference beacons at **surveyed** positions (total station) or an L-frame on the floor. A similarity transform aligns the bundle solution to the survey | Alignment residuals per beacon |
+| **6.3 World frame: calibration square** | A rigid square/L-frame with 3–4 IR LEDs at precisely known positions is placed on the floor at the planned origin. Its marked corner = (0, 0, 0), its X arm = +X (the drone yaw-0 direction), the floor = Z 0, +Z up. A similarity transform aligns the bundle solution to it, and its arm lengths give an independent scale check | Alignment residuals; scale agreement between wand and square |
+| **6.3b Beacon self-survey** | After 6.2/6.3, every fixed beacon is triangulated by all calibrated cameras that see it, averaged over tens of seconds, and refined in the bundle adjustment. No total station is needed for beacon positions. A total station remains the *independent* check in VALIDATION.md | Beacon position covariance (target ≤ 1–2 mm) |
+| **6.3c Aim to plan** | *Coarse:* before calibration, servos go to the planned pan/tilt, so aim error equals base-orientation error plus servo error (about 1–3°). *Fine:* after calibration, each camera's true pose gives the exact servo correction to reach its planned view direction; live re-pose updates the rotation | Planned-versus-actual view direction per camera |
 | **6.4 Live re-pose** (servo gimbals, always on) | Each station sees **≥ 9–16 fixed beacons spread across its image, mostly ≥ 40 m away** (RISKS R3). The camera position comes from the gimbal kinematic model (§4.4) plus the bundle adjustment. The camera **rotation is re-estimated continuously** by a rotation-only PnP filter over the beacon observations, averaged over 0.1–1 s. The engine uses these time-varying extrinsics. A beacon is identified by predicting where it should appear in the image; beacons shine at constant brightness. After a move, the commanded servo angles seed the solve | Rotation covariance per station (target ≤ 0.03–0.05 mrad); the station is used only while its covariance is below the threshold |
 | **6.5 Movement detection and drift monitoring** | Beacon residuals are checked every frame. An unexplained rotation change > 0.03 mrad (servo hunting, a knock, thermal creep) marks the station `UNCALIBRATED` until re-pose converges, so a jittering camera drops out instead of corrupting positions. Beacon positions are refined jointly with all cameras in the periodic bundle adjustment. Online refinement of extrinsics from tracked markers runs in the background and is *never applied automatically* without passing validation | Per-camera stability plot in the UI; percentage of time each station is in service |
 
@@ -246,13 +251,24 @@ version. Recordings reference the calibration version they were captured with.
 
 ---
 
-## 7. Coverage and accuracy simulator (`idps.coverage`)
+## 7. Planner, coverage and accuracy simulator (`idps.coverage`, `idps-plan`)
+
+The planner is the tool used during the planning stage. Given a flight volume and the
+allowed mounting surfaces, it outputs **how many cameras are needed, where each one is
+mounted, and the pan/tilt angle each should point at**. The output comes as tape-measure
+installation instructions, coverage maps (≥ 3 cameras / fewer than 3) and predicted-accuracy
+maps. The operator workflow is described in [WORKFLOW.md](WORKFLOW.md).
 
 The simulator shares the camera model and noise model with the engine.
 
 * **Inputs:**
-  * Volume geometry, obstacles and occluders (simple meshes or boxes).
-  * Station positions, lens and sensor parameters, gimbal limits.
+  * Flight volume (box, union of boxes, or mesh), obstacles and occluders.
+  * **Allowed mounting surfaces** (walls with height ranges, trusses, columns, poles) and
+    no-go zones. The optimiser only proposes physically mountable positions.
+  * Origin and axes of the calibration square, so all plan coordinates are in the tracking
+    frame.
+  * Hardware catalogue: lens options, sensor, servo pan/tilt ranges, gimbal geometry.
+  * Optionally, fixed station positions (for what-if analysis or an existing install).
   * Noise assumptions: centroid σ, calibration σ, timing σ, marker speed.
 * **Per voxel outputs** (the grid includes the volume boundary: corners, walls, floor and
   ceiling):
@@ -270,8 +286,24 @@ The simulator shares the camera model and noise model with the engine.
     the regions the simple layouts fail (RISKS §0.1).
   * Each station must also have enough beacons in view for live re-pose (§6.4). Beacon
     placement is optimised together with camera placement.
-* **Outputs:** heatmaps (UI and HTML report), plus a CSV of per-station contributions that
-  answers "what does adding or moving this station buy us?".
+  * Robust objective: the layout must stay compliant under the stated install tolerance
+    (position error, base-rotation error). Per-camera sensitivity is reported.
+  * A minimum camera count per voxel (default **≥ 3**) is a hard constraint alongside the
+    accuracy constraint.
+* **Outputs (install plan, `plan.yaml` + printable report):**
+  * Camera count, plus per-camera position, lens and **planned pan/tilt**.
+  * Tape-measure instructions relative to physical features.
+  * Spacing to neighbouring cameras.
+  * Base-orientation instructions.
+  * Install tolerance per camera.
+  * Beacon positions.
+  * Coverage maps (0/1/2/≥ 3 cameras) and predicted p95 accuracy maps, as slices and 3D,
+    with sub-3-camera regions listed by volume.
+  * Bill of materials.
+  * A wand / drone-wand calibration flight pattern.
+  * What-if editing: add, remove or move a camera and re-evaluate.
+* **As-built comparison:** after calibration, the same tool re-runs with the *measured* poses
+  and reports the planned-versus-actual differences and the real coverage and accuracy.
 
 ---
 

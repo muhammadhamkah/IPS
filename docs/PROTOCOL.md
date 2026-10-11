@@ -205,7 +205,9 @@ Acquisition takes ~1–2 s. It is not needed every frame, because identity is ca
 Other PUB topics: `health` (1 Hz), `events`, `calib`.
 
 **REQ/REP:** `list_stations`, `station_cmd` (relayed to agents), `record_start/stop`,
-`calib_run`, `calib_activate <version>`, `get_coverage`.
+`calib_run`, `calib_activate <version>`, `get_coverage`, `plan_load <plan.yaml>`,
+`assign_station <station_id> <plan_camera_id>`, `aim_to_plan [coarse|fine]`,
+`beacon_survey`, `as_built_report`.
 
 Consumers such as flight control and Blender read `state`. They never talk to stations
 directly.
