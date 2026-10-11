@@ -13,6 +13,7 @@ markers, and a central PC engine with a live 3D dashboard.
 | [docs/RISKS.md](docs/RISKS.md) | Error-budget findings, critical risk register, decisions needed from the owners |
 | [docs/VALIDATION.md](docs/VALIDATION.md) | Accuracy metric definition, ground-truth methods, test catalogue, flight gate |
 | [docs/WORKFLOW.md](docs/WORKFLOW.md) | Operator workflow: planner → install → one-click aim → wand + calibration square → fly |
+| [docs/SHOW.md](docs/SHOW.md) | Show design in Blender (Skybrush Studio) → `idps-show` check and per-drone export → PX4 offboard player |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | Station parts list (Pi 5 + OV9281), PoE+ power budget, what to verify on the first station |
 | [docs/NETWORK_TIMING.md](docs/NETWORK_TIMING.md) | Pi-per-camera network, clock synchronisation options (simulated), ptp4l setup |
 | [docs/ADVISOR.md](docs/ADVISOR.md) | Health monitoring and guided fixes (re-aim / move / add camera) from planning to show |

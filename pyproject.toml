@@ -18,6 +18,7 @@ dev = ["pytest>=8", "matplotlib>=3.8", "PySide6-Essentials>=6.6", "pyobjc-framew
 [project.scripts]
 idps-plan = "idps.plan.cli:main"
 idps-sim = "idps.sim.cli:main"
+idps-show = "idps.show.cli:main"
 
 [project.gui-scripts]
 idps-dashboard = "idps.ui.app:main"
