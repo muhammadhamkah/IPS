@@ -1,5 +1,5 @@
 """idps-sim run SCENARIO [--dest HOST:PORT] [--realtime] | idps-sim listen [--port P]
-| idps-sim clocks [--stations N] [--profile P ...]"""
+| idps-sim clocks [--stations N] [--profile P ...] | idps-sim px4 SCENARIO --manifest M --dest HOST:PORT"""
 from __future__ import annotations
 
 import argparse
@@ -216,7 +216,18 @@ def main(argv=None) -> int:
     c.add_argument("--speed", type=float, default=5.0, help="drone speed for the error estimate (m/s)")
     c.add_argument("--seed", type=int, default=1)
     c.add_argument("-o", "--out", default="out/clocks")
+    x = sub.add_parser("px4", help="closed loop: film the PX4 SITL drones (px4/sitl/run_sitl.sh) in real time "
+                                   "and stream to the engine")
+    x.add_argument("scenario", help="scenario for the cameras and models (its own drones are replaced by the show's)")
+    x.add_argument("--manifest", required=True, help="show manifest.json (drone IDs, home spots, venue frame)")
+    x.add_argument("--drones", type=int, help="film only the first N drones (one SITL instance each)")
+    x.add_argument("--dest", default="127.0.0.1:5600", help="engine address (idps-engine live --port)")
+    x.add_argument("--duration", type=float, default=120.0, help="seconds to run")
+    x.add_argument("-o", "--out", default="out/loop", help="folder for calibration.yaml and truth.csv")
     a = ap.parse_args(argv)
+    if a.cmd == "px4":
+        from idps.sim.live import run_px4_loop
+        return run_px4_loop(a)
     return {"run": cmd_run, "listen": cmd_listen, "clocks": cmd_clocks}[a.cmd](a)
 
 

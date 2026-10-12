@@ -111,8 +111,14 @@ def _connect(a) -> dict:
     mavs = {}
     for did, dev in links.items():
         m = mavutil.mavlink_connection(dev, source_system=255, source_component=190)
-        if m.wait_heartbeat(timeout=10) is None:
+        hb, end = None, time.monotonic() + 10
+        while hb is None and time.monotonic() < end:     # the drone's own heartbeat, not a ground station's it forwards
+            hb = m.recv_match(type="HEARTBEAT", blocking=True, timeout=1.0)
+            if hb is not None and hb.type == mavutil.mavlink.MAV_TYPE_GCS:
+                hb = None
+        if hb is None:
             raise SystemExit(f"drone {did}: no heartbeat on {dev}")
+        m.target_system, m.target_component = hb.get_srcSystem(), hb.get_srcComponent()
         if m.target_system != did:
             raise SystemExit(f"{dev} answered as MAV_SYS_ID {m.target_system}, not drone {did}: wrong drone or ID not set")
         ob.send_heartbeat(m)
@@ -166,6 +172,7 @@ def cmd_start(a) -> int:
     end = t_pc / 1e6 + duration + 15.0
     print(f"show starts in {a.lead:.0f} s and lasts {duration:.0f} s. Keep this running (it keeps the drones' "
           "clocks); Ctrl+C (or SIGTERM) aborts: every drone lands where it is.")
+    print(f"show time 0 = PC clock (time.monotonic) {t_pc / 1e6:.3f} s", flush=True)
     import signal
 
     def _stop(*_):

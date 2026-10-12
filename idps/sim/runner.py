@@ -200,7 +200,9 @@ class Simulation:
         return la * fa + lb * (1 - fa)
 
     # main loop -----------------------------------------------------------
-    def run(self, sink, progress=None, truth_rate_hz: float = 120.0, truth_path=None) -> RunStats:
+    def run(self, sink, progress=None, truth_rate_hz: float = 120.0, truth_path=None, pace=None) -> RunStats:
+        """pace(t), when given, is called before each frame is simulated (live mode: wait for the
+        frame's time on the wall clock)."""
         sc = self.sc
         stats = RunStats()
         net = sc.network
@@ -210,7 +212,6 @@ class Simulation:
         next_health = {st.id: 0.5 + 0.01 * i for i, st in enumerate(self.stations)}
         out_queue: list = []          # (t_send, counter, bytes) - reorders by network delay
         counter = 0
-        last_progress = 0.0
         truth = TruthWriter(truth_path, self, truth_rate_hz) if truth_path else None
 
         def emit(t_send, data):
@@ -228,6 +229,18 @@ class Simulation:
                 sink.send(t_send, data)
                 stats.packets += 1
 
+        try:
+            self._loop(heap, stats, emit, flush, truth, progress, pace, seq, next_health)
+            flush(math.inf)
+        finally:
+            if truth:
+                truth.close()
+            sink.close()
+        return stats
+
+    def _loop(self, heap, stats, emit, flush, truth, progress, pace, seq, next_health):
+        sc = self.sc
+        last_progress = 0.0
         while heap:
             t, i, k = heapq.heappop(heap)
             st = self.stations[i]
@@ -235,6 +248,8 @@ class Simulation:
                 heapq.heappush(heap, (st.frame_time(k + 1), i, k + 1))
             if t > sc.duration_s:
                 continue
+            if pace:
+                pace(t)
             if truth:
                 truth.advance(t)
             stats.frames += 1
@@ -273,12 +288,8 @@ class Simulation:
             if progress and t - last_progress >= 1.0:
                 last_progress = t
                 progress(t, stats)
-        flush(math.inf)
         if truth:
             truth.advance(sc.duration_s + 1e-9)
-            truth.close()
-        sink.close()
-        return stats
 
     @staticmethod
     def _reported_offset_ns(st: SimStation, t: float) -> int:

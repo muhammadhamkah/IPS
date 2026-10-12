@@ -132,11 +132,15 @@ idps-engine live --port 5600 --calib calibration.yaml --site venue.yaml \
   from everything else.
 * `--backend python` runs the Python reference instead of the C++ core.
 
+## Closed loop with PX4
+
+`idps-sim px4` films PX4 simulator drones in real time and streams to `idps-engine live`.
+The engine's positions are all PX4 flies on. With 3 drones flying the demo show, the
+engine's positions in flight were within p95 3.0 mm (worst 5.1 mm) of the marker the
+cameras filmed. Setup and results are in [px4/README.md](../px4/README.md#closed-loop-the-simulated-cameras-fly-the-drones).
+
 ## Not done yet
 
-* **Closing the loop with PX4 SITL.** The simulated cameras watching the SITL drones, so
-  the engine's positions actually fly them. Today the PX4 tests use a stand-in for the
-  engine, and the engine tests use pre-planned paths.
 * **The pre-flight spot check on live marker IDs** (`Fleet.preflight`): it needs the
   engine running at the venue.
 * **Asynchronous per-camera updates** (ARCHITECTURE §5.1, Phase 5+), multi-marker drones and

@@ -4,7 +4,9 @@ A low-cost, modular optical positioning system for indoor drones. It is built fr
 Raspberry Pi 5 camera stations (one per OV9281 global-shutter camera, powered over Ethernet), coded active 850 nm IR
 markers, and a central PC engine with a live 3D dashboard.
 
-**Status:** Phase 0 (no hardware needed). Done: protocol, planner + desktop dashboard, simulator. Next: positioning engine.
+**Status:** Phase 0 (no hardware needed). Done: protocol, planner + desktop dashboard, simulator, show pipeline
+and PX4 module, positioning engine (C++ core), and the closed loop: simulated cameras and the engine flying PX4
+simulator drones through a show.
 
 | Document | Contents |
 |---|---|
@@ -156,6 +158,9 @@ blink code. Positions go out in NED, to each drone by its ID. The per-slot work 
 core (built by `pip install -e .`, with the Python version as reference and fallback). In
 the simulator, 50 drones and 17 cameras: p95 ≤ 4.8 mm, all identified, no wrong IDs, 5×
 real time, 22 ms delay (p99) from exposure to output (docs/ENGINE.md).
+
+Closed loop with PX4's simulator: `idps-sim px4` films the SITL drones in real time, and the
+engine's positions fly them through a show (px4/README.md).
 
 The wire format is in `protocol/idps_protocol.h`; the Python mirror is `idps/protocol/`;
 golden vectors are in `protocol/vectors/`.

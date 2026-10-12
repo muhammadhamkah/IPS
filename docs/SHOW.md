@@ -175,6 +175,11 @@ stand-in for the IDPS positions. All of these passed:
 * abort mid-show;
 * refusing to start when two drones were swapped.
 
+**Closed loop:** the same show then flew on positions from simulated cameras and the real
+engine, with no stand-in. The engine named the drones on their spots, their start checks
+passed, and they flew and landed. In flight the engine was within p95 3 mm of the true
+marker.
+
 Details are in `px4/README.md`.
 
 `idps-show play drone_007.json --dry-run` prints one drone's path, for testing.

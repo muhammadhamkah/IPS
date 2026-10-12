@@ -2,8 +2,9 @@
 
 Reads each simulated drone's true position (HIL_STATE_QUATERNION on udp 14800+i), places it
 at that drone's home spot from the show manifest (every SITL drone starts at its own 0,0),
-adds 2 mm noise, and sends it back as the IDPS position: MAVLink ODOMETRY in NED with
-heading 0, exactly as idps.show.fleet does.
+moves it to the marker (8 cm above the centre, EKF2_EV_POS_Z in run_sitl.sh), adds 2 mm noise,
+and sends it back as the IDPS position: MAVLink ODOMETRY in NED with heading 0, exactly as
+idps.show.fleet does. For the real thing, cameras and engine, see idps-sim px4 (px4/README.md).
 
     python px4/sitl/idps_stand_in.py out/show/manifest.json 3
 """
@@ -19,8 +20,10 @@ from pymavlink import mavutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from idps.show.fleet import odometry_fields  # noqa: E402
+from idps.sim.live import quat_to_R  # noqa: E402
 
 R_EARTH = 6378137.0
+MARKER_FRD = np.array([0.0, 0.0, -0.08])
 
 
 def stand_in(instance: int, home, noise_m: float = 0.002):
@@ -36,6 +39,7 @@ def stand_in(instance: int, home, noise_m: float = 0.002):
         ned = np.array([math.radians(lat - origin[0]) * R_EARTH,
                         math.radians(lon - origin[1]) * R_EARTH * math.cos(math.radians(origin[0])),
                         -(alt - origin[2])]) + home + rng.normal(0, noise_m, 3)
+        ned += quat_to_R(h.attitude_quaternion) @ MARKER_FRD
         m.mav.odometry_send(**odometry_fields(ned, int(time.monotonic() * 1e6)))
 
 

@@ -73,6 +73,7 @@ clone also needs a NuttX tag for the version script:
 | `EKF2_GPS_CTRL`, `EKF2_BARO_CTRL` | 0 | Indoors: IDPS only |
 | `EKF2_MAG_TYPE` | 5 (none), and `SYS_HAS_MAG` 0 | Heading comes from IDPS as 0 = North (D20, R20) |
 | `EKF2_EV_DELAY` | measured | Camera exposure to PX4, over Wi-Fi |
+| `MPC_TKO_RAMP_T` | 0.5 s | PX4 eases into a take-off over 3 s by default, while the show file climbs from its first second |
 | `EKF2_EV_POS_X/Y/Z` | marker offset | If the marker isn't at the reference point (R16) |
 | `COM_OF_LOSS_T`, `COM_OBL_RC_ACT` | e.g. 0.5 s, Land | If the module stops streaming |
 | Geofence | the performance area | Last line of defence |
@@ -102,3 +103,56 @@ idps-show start  out/show/manifest.json $L --lead 10
 | Tracking (true position vs file) | 8–11 cm median, about 30 cm p95, at up to 1.3 m/s. This depends on the airframe's tuning: default gains gave twice the error. Tune real show drones |
 | Abort mid-show | All three landed where they were |
 | Two drones swapped on their spots | Both refused ("2.60 m from home spot"), so nobody started |
+
+## Closed loop: the simulated cameras fly the drones
+
+Here the stand-in is replaced by the real thing. Nothing in the loop knows where a drone is
+except through the cameras:
+
+```
+SITL drones (PX4 + SIH physics) ──true state──▶ idps-sim px4: 9 simulated camera stations, in real time
+        ▲                                                   │ UDP, the real wire protocol
+        └──── ODOMETRY (VISION) ◀── idps-engine live ◀──────┘
+```
+
+```
+EV_DELAY_MS=20 px4/sitl/run_sitl.sh 3                     # 20 ms: camera exposure to the drone
+idps-sim px4 examples/scenarios/lab_three_drones.yaml --manifest out/show/manifest.json -o out/loop &
+idps-engine live --port 5600 --calib out/loop/calibration.yaml --site examples/sites/lab.yaml \
+    --link 1=udpin:127.0.0.1:14030 --link 2=udpin:127.0.0.1:14031 --link 3=udpin:127.0.0.1:14032 \
+    -o out/loop/positions.csv &
+idps-show upload out/show/manifest.json $L --sitl
+idps-show start  out/show/manifest.json $L --lead 10      # prints "show time 0 = ..."
+python px4/sitl/score_loop.py out/loop out/show/manifest.json --start <show time 0>
+```
+
+* **`idps-sim px4`** takes its cameras and camera, timing and network models from the
+  scenario. Its drones are the show's drones, each standing on its home spot at the start.
+  * Each SITL drone's true state arrives 100 times a second.
+  * Latitude and longitude come in 1.1 cm steps, which is coarser than the cameras resolve.
+    The simulator therefore follows the drone's velocity and pulls gently towards those
+    steps, which keeps it within about 4 mm of PX4's own truth.
+  * The stations film on the wall clock, and `truth.csv` records what they filmed.
+* **The engine reaches each drone on PX4's payload link (udp 14030+i).** A SITL drone has
+  6 MAVLink links: PX4 uses 5 and the truth link is the 6th.
+* **The drones' states are received in a separate process.** Inside the camera loop's own
+  process, the receiving threads held up the cameras by up to 400 ms (Python's interpreter
+  lock). Now the cameras stay within about 15 ms of the clock.
+
+**Results** (3 drones, the 26 s demo show, the lab's 9 cameras, positions only from the
+engine):
+
+| Test | Result |
+|---|---|
+| Before take-off | The engine named all three drones by their blink codes. Every drone's start checks (positions arriving, within 0.5 m of its home spot) passed on the engine's positions |
+| Show | All three took off at the same instant, flew their parts and landed |
+| Engine position vs the marker the cameras filmed | **In flight: p95 2.8–3.0 mm, worst 5.1 mm.** On the ground: p95 ≤ 2.8 mm |
+| PX4's own estimate vs the truth | 2 mm on the ground; 2–3.5 cm in flight |
+| Flight (true centre vs the show file) | Median 10–12 cm, p95 23–27 cm, worst 38–43 cm at the demo path's sharp corners |
+
+* **Flight tracking is about as good as with the perfect-position stand-in** (8–11 cm median,
+  about 30 cm p95). It comes from PX4 controlling the simulated quad (it wobbles about ±10 cm
+  even on smooth parts of the path), not from the positions. Tune the real airframe.
+* **The default take-off ramp was the worst error.** Each drone sat on the ground for 1.5 s
+  while the file climbed, then lurched up to 24 cm sideways: up to 64 cm off in height. With
+  `MPC_TKO_RAMP_T` = 0.5 s it lifts off with the file.
