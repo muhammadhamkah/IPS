@@ -132,6 +132,8 @@ class Simulation:
 
     # world state ---------------------------------------------------------
     STATE_DT = 1e-3            # drone state is precomputed on a 1 kHz grid, in 1 s blocks
+    ATTITUDE_TAU_S = 0.08      # tilt response time constant
+    ATTITUDE_HISTORY_S = 0.6   # lag history computed before each block (>> tau, so blocks join smoothly)
 
     def _block(self, b: int):
         """Positions/markers/up axes/tilt for all drones on block b's time grid."""
@@ -139,12 +141,21 @@ class Simulation:
             return self._blk
         sc, dt = self.sc, self.STATE_DT
         n = int(round(1.0 / dt))
-        tg = b + np.arange(-1, n + 2) * dt                 # one padding sample each side for derivatives
+        h = int(round(self.ATTITUDE_HISTORY_S / dt))
+        tg = b + np.arange(-1 - h, n + 2) * dt             # history for the attitude lag, +1 sample each side
         D = len(sc.drones)
-        P = np.stack([d.trajectory.position(tg) for d in sc.drones])            # (D, N+3, 3)
+        P = np.stack([d.trajectory.position(tg) for d in sc.drones])            # (D, H+N+3, 3)
         A = np.zeros_like(P)
         A[:, 1:-1] = (P[:, 2:] - 2 * P[:, 1:-1] + P[:, :-2]) / (dt * dt)
         A[:, 0], A[:, -1] = A[:, 1], A[:, -2]
+        # A drone tilts to accelerate, but its attitude cannot change instantly: the tilt follows
+        # the commanded acceleration through a first-order lag (time constant ATTITUDE_TAU_S).
+        # Without it, a waypoint path's step in acceleration would flip the tilt in one step and
+        # jump an offset marker sideways.
+        a = dt / (self.ATTITUDE_TAU_S + dt)
+        for i in range(1, A.shape[1]):
+            A[:, i] = A[:, i - 1] + a * (A[:, i] - A[:, i - 1])
+        P, A, tg = P[:, h:], A[:, h:], tg[h:]
         M = np.empty_like(P)
         U = np.empty_like(P)
         tilt = np.empty(P.shape[:2])

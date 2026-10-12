@@ -13,6 +13,7 @@ markers, and a central PC engine with a live 3D dashboard.
 | [docs/RISKS.md](docs/RISKS.md) | Error-budget findings, critical risk register, decisions needed from the owners |
 | [docs/VALIDATION.md](docs/VALIDATION.md) | Accuracy metric definition, ground-truth methods, test catalogue, flight gate |
 | [docs/WORKFLOW.md](docs/WORKFLOW.md) | Operator workflow: planner → install → one-click aim → wand + calibration square → fly |
+| [docs/ENGINE.md](docs/ENGINE.md) | The positioning engine: camera dots → matched, triangulated, tracked and identified drones → each drone's position; simulator results |
 | [docs/SHOW.md](docs/SHOW.md) | Show design in Blender (Skybrush Studio) → `idps-show` check and per-drone export → upload to each drone → synchronised start |
 | [px4/README.md](px4/README.md) | The `idps_show` PX4 module: each drone flies its own file from its SD card; build, set-up and simulator test |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | Station parts list (Pi 5 + OV9281), PoE+ power budget, what to verify on the first station |
@@ -142,6 +143,17 @@ idps-sim run examples/scenarios/venue_swarm.yaml --dest 127.0.0.1:47600 --realti
 gigabit switch with hardware PTP, the clocks simulated message by message (`clocks.csv`).
 `lab_wifi.yaml` is the same lab on Wi-Fi with the binned sensor mode, for comparison.
 `idps-sim clocks` compares clock-sync options (docs/NETWORK_TIMING.md).
+
+## Positioning engine (`idps-engine`)
+
+```
+idps-engine replay out/sim/packets.idpsraw --calib out/sim/calibration.yaml --truth out/sim/truth.csv
+idps-engine live --port 5600 --calib calibration.yaml --site venue.yaml --link 1=udpout:192.168.50.101:14550 ...
+```
+
+Matches every camera's dots to marker tracks, triangulates, filters and reads each marker's
+blink code. Positions go out in NED, to each drone by its ID. In the simulator: 25 drones and
+17 cameras at p95 ≤ 6.4 mm, all identified, no wrong IDs (docs/ENGINE.md).
 
 The wire format is in `protocol/idps_protocol.h`; the Python mirror is `idps/protocol/`;
 golden vectors are in `protocol/vectors/`.

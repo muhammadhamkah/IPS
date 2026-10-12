@@ -183,6 +183,8 @@ station and before the rest are ordered (docs/HARDWARE.md):
 
 ## 5. Central positioning engine (`idps-engine`)
 
+*Implemented (v1): `idps/engine/`, results and status in docs/ENGINE.md. Asynchronous per-camera updates, multi-marker drones and the C++ hot path are still to come.*
+
 ### 5.1 Stage pipeline
 
 ```text
