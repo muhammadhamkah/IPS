@@ -448,6 +448,102 @@ static bool triangulate(const std::vector<Vec3> &O, const std::vector<Vec3> &D, 
     }
 }
 
+
+// Solve S Y = B for symmetric positive-definite S (m x m) and B (m x c), in place in B.
+static bool chol_solve(std::vector<double> &S, int m, std::vector<double> &B, int c) {
+    for (int j = 0; j < m; j++) {
+        double d = S[j * m + j];
+        for (int k = 0; k < j; k++) d -= S[j * m + k] * S[j * m + k];
+        if (!(d > 0)) return false;
+        d = std::sqrt(d);
+        S[j * m + j] = d;
+        for (int i = j + 1; i < m; i++) {
+            double a = S[i * m + j];
+            for (int k = 0; k < j; k++) a -= S[i * m + k] * S[j * m + k];
+            S[i * m + j] = a / d;
+        }
+    }
+    for (int col = 0; col < c; col++) {
+        for (int i = 0; i < m; i++) {                    // L y = b
+            double a = B[i * c + col];
+            for (int k = 0; k < i; k++) a -= S[i * m + k] * B[k * c + col];
+            B[i * c + col] = a / S[i * m + i];
+        }
+        for (int i = m - 1; i >= 0; i--) {               // L^T x = y
+            double a = B[i * c + col];
+            for (int k = i + 1; k < m; k++) a -= S[k * m + i] * B[k * c + col];
+            B[i * c + col] = a / S[i * m + i];
+        }
+    }
+    return true;
+}
+
+// Kalman update of [p, v] at tr.t from lines of sight: camera k at O[k] saw the marker along
+// D[k] at tr.t + dt[k]; the components of (p + v dt - O) across the line are zero.
+static void bearing_update(Track &tr, const std::vector<Vec3> &O, const std::vector<Vec3> &D,
+                           const std::vector<double> &dt, double sigma_ang) {
+    const int m = 2 * (int)O.size();
+    if (m == 0) return;
+    std::vector<double> H((size_t)m * 6), z(m), r2(m);
+    for (size_t k = 0; k < O.size(); k++) {
+        const Vec3 &d = D[k];
+        Vec3 a = std::fabs(d[0]) < 0.9 ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+        double ad = dot(a, d);
+        Vec3 u{a[0] - ad * d[0], a[1] - ad * d[1], a[2] - ad * d[2]};
+        double un = norm(u);
+        u = {u[0] / un, u[1] / un, u[2] / un};
+        Vec3 w{d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0]};
+        Vec3 q{tr.x[0] + tr.x[3] * dt[k] - O[k][0], tr.x[1] + tr.x[4] * dt[k] - O[k][1], tr.x[2] + tr.x[5] * dt[k] - O[k][2]};
+        double rng = std::max(norm(q), 0.1);
+        const Vec3 *e[2] = {&u, &w};
+        for (int r = 0; r < 2; r++) {
+            int row = 2 * (int)k + r;
+            for (int j = 0; j < 3; j++) {
+                H[row * 6 + j] = (*e[r])[j];
+                H[row * 6 + 3 + j] = (*e[r])[j] * dt[k];
+            }
+            z[row] = dot(*e[r], O[k]);
+            r2[row] = (sigma_ang * rng) * (sigma_ang * rng);
+        }
+    }
+    // HP = H P (m x 6); S = HP H^T + R
+    std::vector<double> HP((size_t)m * 6, 0.0), S((size_t)m * m, 0.0);
+    for (int i = 0; i < m; i++)
+        for (int j = 0; j < 6; j++) {
+            double a = 0;
+            for (int k = 0; k < 6; k++) a += H[i * 6 + k] * tr.P[k * 6 + j];
+            HP[i * 6 + j] = a;
+        }
+    for (int i = 0; i < m; i++)
+        for (int j = 0; j < m; j++) {
+            double a = 0;
+            for (int k = 0; k < 6; k++) a += HP[i * 6 + k] * H[j * 6 + k];
+            S[i * m + j] = a + (i == j ? r2[i] : 0.0);
+        }
+    std::vector<double> Y = HP;                          // Y = S^-1 H P  (m x 6), K = Y^T
+    if (!chol_solve(S, m, Y, 6)) return;
+    std::vector<double> nu(m);
+    for (int i = 0; i < m; i++) {
+        double a = z[i];
+        for (int k = 0; k < 6; k++) a -= H[i * 6 + k] * tr.x[k];
+        nu[i] = a;
+    }
+    for (int j = 0; j < 6; j++) {
+        double a = 0;
+        for (int i = 0; i < m; i++) a += Y[i * 6 + j] * nu[i];
+        tr.x[j] += a;
+    }
+    double Pn[36];
+    for (int i = 0; i < 6; i++)
+        for (int j = 0; j < 6; j++) {
+            double a = 0;
+            for (int k = 0; k < m; k++) a += Y[k * 6 + i] * HP[k * 6 + j];
+            Pn[i * 6 + j] = tr.P[i * 6 + j] - a;
+        }
+    for (int i = 0; i < 6; i++)
+        for (int j = 0; j < 6; j++) tr.P[i * 6 + j] = 0.5 * (Pn[i * 6 + j] + Pn[j * 6 + i]);
+}
+
 // ------------------------------------------------------------------ the engine core
 class Core {
   public:
@@ -643,20 +739,20 @@ class Core {
                 continue;
             }
             tr.rejects = 0;
-            double K[18];
-            for (int i = 0; i < 6; i++)
-                for (int j = 0; j < 3; j++) {
-                    double a = 0;
-                    for (int m = 0; m < 3; m++) a += tr.P[i * 6 + m] * Si[m * 3 + j];
-                    K[i * 3 + j] = a;
-                }
-            for (int i = 0; i < 6; i++) tr.x[i] += K[i * 3] * y[0] + K[i * 3 + 1] * y[1] + K[i * 3 + 2] * y[2];
-            double Pn[36];
-            for (int i = 0; i < 6; i++)
-                for (int j = 0; j < 6; j++)
-                    Pn[i * 6 + j] = tr.P[i * 6 + j] -
-                                    (K[i * 3] * tr.P[j] + K[i * 3 + 1] * tr.P[6 + j] + K[i * 3 + 2] * tr.P[12 + j]);
-            std::copy(Pn, Pn + 36, tr.P);
+            // The triangulated point only screened the epoch; the filter is updated with each
+            // camera's line of sight at that camera's own exposure time (see engine.py
+            // _bearing_update): no velocity guess is folded into a measurement.
+            {
+                std::vector<Vec3> Ok, Dk;
+                std::vector<double> dk;
+                for (size_t k = 0; k < obs.size(); k++)
+                    if (keep[k]) {
+                        Ok.push_back(cams[fcam(obs[k].frame)].pos);
+                        Dk.push_back(D[k]);
+                        dk.push_back(times[obs[k].frame] - Tm);
+                    }
+                bearing_update(tr, Ok, Dk, dk, max_sigma);
+            }
             tr.hits++;
             tr.last_update = T;
             tr.updated_epoch = epochs;

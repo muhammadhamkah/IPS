@@ -154,3 +154,25 @@ def test_cpp_core_matches_python_reference(lab_run):
     for a, b in zip(py, cpp):
         assert (a.t_ns, a.marker_id, a.n_cams) == (b.t_ns, b.marker_id, b.n_cams)
         assert np.allclose(a.pos, b.pos, atol=1e-9) and np.allclose(a.cov, b.cov, rtol=1e-6, atol=1e-15)
+
+
+def test_bearing_update_has_no_velocity_feedback():
+    """Cameras exposing at different instants, alternating camera sets between slots, and a
+    1 m/s velocity error to start with: the line-of-sight update converges instead of feeding
+    the velocity error back into the position (the cause of the old 10-18 mm bursts)."""
+    from idps.engine.tracker import KalmanCV, Track
+    rng = np.random.default_rng(5)
+    cams = rng.uniform([-15, -15, 8], [15, 15, 12], (8, 3))
+    v_true = np.array([2.0, -1.0, 0.3])
+    tr = Track(1, KalmanCV(np.zeros(3), 0.0, np.eye(3) * 1e-4, q=400.0), 0.0)
+    tr.kf.x[3:] = v_true + np.array([1.0, 0.0, 0.0])                # wrong velocity prior
+    for k in range(1, 241):
+        T = k / 120
+        tr.kf.predict(T)
+        subset = cams[0::2] if k % 2 else cams[1::2]               # alternating camera sets
+        dt = rng.uniform(-0.004, 0.004, len(subset))               # each camera's own exposure time
+        X = v_true[None] * (T + dt)[:, None]                       # the marker when each camera looked
+        D = (X - subset) / np.linalg.norm(X - subset, axis=1, keepdims=True)
+        Engine._bearing_update(tr, subset, D, dt, 1e-5)
+    assert np.linalg.norm(tr.kf.pos - v_true * 2.0) < 1e-3          # < 1 mm
+    assert np.linalg.norm(tr.kf.vel - v_true) < 0.02

@@ -423,31 +423,29 @@ class Engine:
         sig = max(self.sigma_ang.values())
         X, cov, ok, keep, ncam = triangulate_many(tix, O, D, F, X0, V[tix] * dt[:, None], n, sig,
                                                    cfg.max_resid_px, cfg.min_cams_update)
-        # batched Kalman update of the tracks that triangulated
+        # The triangulated point only screens the epoch (dropped cameras, outlier gate). The
+        # filter itself is updated with each camera's line of sight at that camera's own exposure
+        # time ("bearing update"): the state (position and velocity at Tm) must lie on every line,
+        # p + v dt_i on the line from camera i. Position and velocity are estimated together, so
+        # no velocity guess is ever folded into a measurement (that feedback made slots with
+        # different camera sets pull the velocity apart, giving 10-18 mm bursts).
         rejected: set[int] = set()
-        idx = np.nonzero(ok)[0]
-        if len(idx):
-            x = np.array([self.tracks[i].kf.x for i in idx])
-            P = np.array([self.tracks[i].kf.P for i in idx])
-            S = P[:, :3, :3] + cov[idx] + np.eye(3) * 1e-8
-            Si = np.linalg.inv(S)
-            y = X[idx] - x[:, :3]
-            d2 = np.einsum("ni,nij,nj->n", y, Si, y)
-            K = np.einsum("nij,njk->nik", P[:, :, :3], Si)
-            x = x + np.einsum("nij,nj->ni", K, y)
-            P = P - np.einsum("nij,njk->nik", K, P[:, :3, :])
-            for k, i in enumerate(idx):
-                tr = self.tracks[i]
-                if tr.state == CONFIRMED and d2[k] > cfg.innov_gate and tr.rejects < cfg.innov_max_rejects:
-                    tr.rejects += 1                    # an outlier (e.g. a wrongly matched dot): coast this epoch,
-                    rejected.add(i)                    # but keep its dots (no new track from them)
-                    continue
-                tr.rejects = 0
-                tr.kf.x, tr.kf.P = x[k], P[k]
-                tr.hits += 1
-                tr.last_update = T
-                tr.updated_epoch = self.stats["epochs"]
-                tr.n_cams = int(ncam[i])
+        for i in np.nonzero(ok)[0]:
+            tr = self.tracks[i]
+            Pp = tr.kf.P[:3, :3]
+            y3 = X[i] - tr.kf.pos
+            d2 = float(y3 @ np.linalg.solve(Pp + cov[i] + np.eye(3) * 1e-8, y3))
+            if tr.state == CONFIRMED and d2 > cfg.innov_gate and tr.rejects < cfg.innov_max_rejects:
+                tr.rejects += 1                        # an outlier (e.g. a wrongly matched dot): coast this epoch,
+                rejected.add(i)                        # but keep its dots (no new track from them)
+                continue
+            mine = np.nonzero((tix == i) & keep)[0]
+            self._bearing_update(tr, O[mine], D[mine], dt[mine], sig)
+            tr.rejects = 0
+            tr.hits += 1
+            tr.last_update = T
+            tr.updated_epoch = self.stats["epochs"]
+            tr.n_cams = int(ncam[i])
         for r, (ti, fi, di) in enumerate(rows):
             f = frames[fi]
             if ti in rejected:
@@ -457,6 +455,31 @@ class Engine:
                 continue
             if keep[r]:
                 self.tracks[ti].add_brightness(times[fi], f.station_id, f.sum[di])
+
+    @staticmethod
+    def _bearing_update(tr: Track, O, D, dt, sigma_ang: float):
+        """Kalman update of [position, velocity] at tr.kf.t from lines of sight: camera k at
+        O[k] saw the marker along D[k] at time tr.kf.t + dt[k]. Each line gives two linear
+        measurements: the components of (p + v dt - O) across the line are zero, with noise
+        sigma_ang times the range."""
+        x, P = tr.kf.x, tr.kf.P
+        rows, z, r2 = [], [], []
+        for o, d, t in zip(O, D, dt):
+            a = np.array([1.0, 0.0, 0.0]) if abs(d[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+            u = a - (a @ d) * d
+            u /= np.linalg.norm(u)
+            w = np.cross(d, u)
+            rng = max(np.linalg.norm(x[:3] + x[3:] * t - o), 0.1)
+            for e in (u, w):
+                rows.append(np.r_[e, e * t])
+                z.append(e @ o)
+                r2.append((sigma_ang * rng) ** 2)
+        H = np.array(rows)
+        S = H @ P @ H.T + np.diag(r2)
+        K = np.linalg.solve(S, H @ P).T
+        x = x + K @ (np.array(z) - H @ x)
+        P = P - K @ H @ P
+        tr.kf.x, tr.kf.P = x, 0.5 * (P + P.T)
 
     def _start_tracks(self, frames, times, T, used):
         cfg = self.cfg

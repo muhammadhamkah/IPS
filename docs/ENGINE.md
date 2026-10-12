@@ -25,14 +25,19 @@ stations ──UDP──▶ ingest ─▶ 1/120 s slots ─▶ match to tracks �
    * A moving track can't take a dot on a known fixed reflection.
    * A dot the station flags as two merged markers is left out when 3 other cameras see the
      drone.
-4. **Triangulation.** The engine finds the point closest to all of a track's lines of
-   sight, weighting each line by its distance from the camera.
-   * The point is time-stamped at the average exposure time of those cameras. Each line is
-     shifted by the drone's velocity to that instant.
-   * A camera that misses the point by more than 3 px is dropped.
-5. **Tracking.** A constant-velocity Kalman filter runs per marker.
-   * A measurement more than 5σ from the prediction is treated as a glitch and skipped,
-     unless that happens 3 times in a row (then it's real motion).
+4. **Screening.** The engine finds the point closest to all of a track's lines of sight
+   (weighted by distance). That point is used only to check the slot:
+   * a camera that misses it by more than 3 px is dropped;
+   * a point more than 5σ from the prediction is treated as a glitch and skipped, unless
+     that happens 3 times in a row (then it's real motion).
+5. **Tracking.** A constant-velocity Kalman filter runs per marker. It is updated directly
+   with each camera's **line of sight at that camera's own exposure time**. The drone's
+   position and velocity must put it on every line at that instant, so both are estimated
+   together.
+   * The first version triangulated a point and corrected each camera's line with the
+     estimated velocity. A slightly wrong velocity then biased the point, slots with
+     different camera sets pulled the velocity apart, and the result was short 10–18 mm
+     bursts. Updating with the lines themselves removes that feedback.
    * A track is confirmed after 8 updates and deleted after 0.5 s without one.
 6. **New tracks.** These start from leftover dots: two cameras whose lines nearly cross
    inside the volume, confirmed by a dot in a third camera.
@@ -69,9 +74,9 @@ The engine is given the *estimated* calibration (camera pose errors of 0.05–0.
 
 | Scenario | Drones / cameras | Identified after | Position error: median / worst p95 / worst | Available | Wrong IDs | Speed (C++ core) |
 |---|---|---|---|---|---|---|
-| Lab 6 × 6 × 3 m (`lab_three_drones`) | 3 / 9 | 3.1 s | 2.0 mm / 5.1 mm / 5.7 mm | 100 % | 0 | 43× real time |
-| Venue 50 × 20 × 20 m (`venue_swarm`) | 25 / 17 | ≤ 3.6 s | 1.7 mm / 6.4 mm / 15 mm | 100 % | 0 | 12× real time |
-| Venue, **the 50-drone target** (`venue_swarm_50`) | 50 / 17 | ≤ 3.8 s | 1.8 mm / 9.3 mm / 18 mm | 99.9–100 % | 0 | **6.1× real time** |
+| Lab 6 × 6 × 3 m (`lab_three_drones`) | 3 / 9 | 3.1 s | 1.9 mm / 4.0 mm / 4.7 mm | 100 % | 0 | 41× real time |
+| Venue 50 × 20 × 20 m (`venue_swarm`) | 25 / 17 | ≤ 3.6 s | 1.6 mm / 3.8 mm / 8.0 mm | 100 % | 0 | 8.7× real time |
+| Venue, **the 50-drone target** (`venue_swarm_50`) | 50 / 17 | ≤ 3.8 s | 1.7 mm / 4.8 mm / 8.8 mm | 100 % | 0 | **5.2× real time** |
 
 The requirement is p95 ≤ 10 mm.
 
@@ -87,9 +92,9 @@ and positions (to 1e-9 m) on a simulated lab show.
 
 | | Python reference | C++ core |
 |---|---|---|
-| Speed | 0.6× real time | **6.1× real time** |
-| Processing per 1/120 s slot | | median 0.55 ms, p99 3.7 ms (budget 8.3 ms) |
-| Delay, camera exposure → position out | | **median 17 ms, p99 20 ms, worst 28 ms** |
+| Speed | 0.2× real time | **5.2× real time** |
+| Processing per 1/120 s slot | | p99 3.8 ms (budget 8.3 ms) |
+| Delay, camera exposure → position out | | **median 19 ms, p99 22 ms, worst 28 ms** |
 
 The delay is mostly fixed by design:
 * the slot (on average half of 8.3 ms);
@@ -106,10 +111,10 @@ PX4 is told this delay with `EKF2_EV_DELAY`.
   once a drone is named. Before, all drones decoded in the same slot, which gave 35–50 ms
   spikes.
 
-**Next accuracy item.** A few drones show short bursts of 10–18 mm during sharp
-manoeuvres: 0.12 % of positions at 50 drones. This happens with 7 or more cameras and also
-with perfect calibration, so it comes from the tracking filter's motion model, not from
-geometry. Candidates: a constant-acceleration or two-model (IMM) filter.
+**Line-of-sight filter update.** Updating the filter with each camera's line of sight
+(above), instead of a triangulated point, cut the worst p95 at 50 drones from 9.3 to 4.8 mm,
+and the worst single position from 18 to 8.8 mm. It costs some speed (6.1× → 5.2× real
+time) for the larger update per track.
 
 ## Use
 
@@ -136,7 +141,6 @@ idps-engine live --port 5600 --calib calibration.yaml --site venue.yaml \
   engine running at the venue.
 * **Asynchronous per-camera updates** (ARCHITECTURE §5.1, Phase 5+), multi-marker drones and
   live re-pose of moving gimbals.
-* **The tracking-filter bursts** above.
 
 **Simulator change made with the engine:** the drone's tilt now follows its acceleration
 with a 0.08 s lag. Before, it flipped instantly at waypoints, so the marker 8 cm above the
