@@ -74,6 +74,9 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.addTab(page, "Planner")
+        from idps.ui.sim.tab import SimTab
+        self.sim = SimTab(self)
+        self.tabs.addTab(self.sim, "Simulate")
         from idps.ui.live.tab import LiveTab
         self.live = LiveTab(self)
         self.tabs.addTab(self.live, "Live tracking")
@@ -637,13 +640,15 @@ class MainWindow(QMainWindow):
     def about(self):
         from idps import __version__
         QMessageBox.about(self, "About IDPS", f"<b>IDPS</b> {__version__}<br>Indoor Drone Positioning System"
-                          "<br><br>Planner: draw the venue, plan cameras, export the install sheet.")
+                          "<br><br>Planner: draw the venue, plan cameras, export the install sheet."
+                          "<br>Simulate: film simulated drones with the planned cameras and check the accuracy.")
 
     def closeEvent(self, e):
         if not self._maybe_save():
             e.ignore()
             return
         self.live.shutdown()
+        self.sim.shutdown()
         for thread, worker in list(self._running):
             worker.stop()
             thread.quit()

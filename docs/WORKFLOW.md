@@ -92,6 +92,17 @@ negative downwards.
 The plan is saved as a versioned project file (`plan.yaml`). The same file drives the
 on-site aim step and is compared against the calibration result.
 
+
+**Check it in simulation (Simulate tab).** Before anything is bought or installed, the
+dashboard flies simulated drones through the planned layout: a formation, random paths, or the
+show itself from Blender. Simulated cameras film them, and the real positioning engine
+positions them. The tab reports:
+* whether the worst drone meets the accuracy requirement;
+* whether every drone was identified;
+* where accuracy drops (the 3D replay colours each marker by its error).
+
+If it falls short, adjust the plan (the Advisor's fixes) and run it again.
+
 ---
 
 ## Step 2: Install (on site)

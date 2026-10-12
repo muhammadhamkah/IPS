@@ -56,6 +56,23 @@ bash packaging/macos/build_app.sh                # optional: build a double-clic
   tape-measure install text, **Show** and **Apply**;
 * **Auto-fix plan** gives an ordered to-do list that reaches the requirement.
 
+**Simulate tab:** after placing the cameras, check the layout before installing anything.
+* **Run simulation** films drones with exactly the planned cameras (pixels, wire packets, PTP
+  clocks, packet loss, and a calibration error you choose; the default is the 0.05 mrad
+  target). Marker brightness is matched to the venue's camera distances. The real positioning
+  engine then works out where each drone is, and the result is scored against the truth.
+* A 20 s run with 12 drones takes about 12 s for the lab (9 cameras) and about 19 s for the
+  50 × 20 × 20 m venue (17 cameras). Worst drone p95: 3.8 mm and 5.0 mm.
+* Drones: a formation, random paths, or **your show file** (`.skyc` or a CSV zip from
+  Blender). Show drones stand on their spots for 5 s first so the engine can name them.
+* Results:
+  * the worst drone's p95 against the requirement, how many drones were identified (and any
+    wrong IDs), and how much of the time they were tracked;
+  * a table per drone;
+  * a 3D replay with each marker coloured by its error;
+  * picking a drone shows the lines of sight from every camera that has it in frame, and that
+    camera's 1280 × 800 image with the blinking dots.
+
 **Install measurements:** the **Dimensions** overlay (⌘D) and the **Measure** tool (M); export
 adds `measurements.csv`.
 

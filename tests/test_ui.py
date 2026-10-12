@@ -557,7 +557,7 @@ def test_live_tab_brain_alerts_and_accept(win, app):
     site = site_from_dict(win.doc.to_site_dict(), str(win.doc.path))
     plan = Plan.load("examples/plans/lab.yaml")
     win._plan_done(plan, evaluate(site, plan.cameras), site)
-    win.tabs.setCurrentIndex(1)
+    win.tabs.setCurrentWidget(win.live)
     assert not win.toolbar.isVisible()                    # drawing tools belong to the Planner
     live = win.live
     live.n_drones.setValue(6)
@@ -609,6 +609,42 @@ def test_live_tab_brain_alerts_and_accept(win, app):
     win.grab()                                                  # renders the live layers
     live.stop()
     assert live.show_sim is None and not live.cards
+
+
+def test_simulate_tab_runs_the_planned_layout(win, app, tmp_path):
+    """Simulate tab: the planned cameras film drones, the engine finds them, the replay plays."""
+    from idps.plan.model import Plan
+    from idps.plan.planner import evaluate
+    from idps.plan.site import site_from_dict
+    from idps.show.demo import write_demo_skyc
+    sim = win.sim
+    win.tabs.setCurrentWidget(sim)
+    assert not sim.run()                                        # nothing planned yet: explains instead
+    assert "Plan the cameras first" in sim.status.text()
+    win.open_doc("examples/sites/lab.yaml")
+    site = site_from_dict(win.doc.to_site_dict(), str(win.doc.path))
+    plan = Plan.load("examples/plans/lab.yaml")
+    win._plan_done(plan, evaluate(site, plan.cameras), site)
+    sim.n_drones.setValue(3)
+    sim.duration.setValue(8)
+    assert sim.run()
+    sim.wait()
+    res = sim.res
+    assert res is not None and len(res.drones) == 3 and res.identified == 3
+    assert res.worst_p95_mm < site.requirements.p95_mm
+    assert sim.table.rowCount() == 3 and "meets the requirement" in sim.status.text()
+    sim.table.selectRow(1)
+    assert sim.view.selected == res.drone_ids.index(res.drones[1].drone_id)
+    sim.slider.setValue(sim.slider.maximum() // 2)
+    assert "markers in frame" in sim.image_note.text()
+    win.grab()                                                  # renders the replay layers and camera image
+    sim.toggle_play()
+    # a show file: drones stand on their spots, then fly it
+    sim.set_show(str(write_demo_skyc(tmp_path / "demo.skyc", n=3)))
+    assert sim.mode.currentData() == "show" and sim.run()
+    sim.wait()
+    assert sim.res.show_start_s is not None and sim.res.identified == 3
+    assert sim.clock.text().startswith("show T")
 
 
 def test_window_fits_a_laptop_screen(win, app):
