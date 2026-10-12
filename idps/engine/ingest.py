@@ -12,6 +12,10 @@ import numpy as np
 
 from idps.protocol import packets as P
 
+# one marker record (protocol MARKER struct "<ffIHBB"), read straight into arrays
+MARKER_DT = np.dtype([("x", "<f4"), ("y", "<f4"), ("sum", "<u4"), ("peak", "<u2"), ("area", "u1"), ("mflags", "u1")])
+assert MARKER_DT.itemsize == P.MARKER.size
+
 
 @dataclass
 class CameraFrame:
@@ -58,7 +62,11 @@ class Ingest:
     def feed(self, data: bytes) -> list[CameraFrame]:
         """One packet in; zero or one complete frame out (as a list)."""
         try:
-            h, body = P.decode(data)
+            h = P.decode_header(data)
+            if h.msg_type == P.MSG_FRAME_OBS:
+                body = self._frame_obs(h, data)
+            else:
+                _, body = P.decode(data)
         except P.ProtocolError:
             self.stations.setdefault(-1, StationStats()).bad += 1
             return []
@@ -86,11 +94,22 @@ class Ingest:
         if have >= (obs.n_markers_total or 0) and any(p.flags & P.FLAG_LAST_PART for p in parts):
             del self._parts[key]
             parts.sort(key=lambda p: p.part_index)
-            return [self._frame(parts[0], [m for p in parts for m in p.markers], seen)]
+            return [self._frame(parts[0], [p.markers for p in parts], seen)]
         if len(self._parts) > 256:                           # forget parts of frames that never completed
             for k in list(self._parts)[:128]:
                 del self._parts[k]
         return []
+
+    @staticmethod
+    def _frame_obs(h: P.Header, data: bytes) -> P.FrameObs:
+        """FRAME_OBS with its markers as one structured array (no per-marker objects)."""
+        if h.payload_len < P.FRAME.size:
+            raise P.ProtocolError("short frame")
+        (frame_id, t_mid, exp, proc, sync, part, n, n_total, thr, drops) = P.FRAME.unpack_from(data, P.HEADER.size)
+        if h.payload_len != P.FRAME.size + n * P.MARKER.size:
+            raise P.ProtocolError("marker count mismatch")
+        m = np.frombuffer(data, MARKER_DT, count=n, offset=P.HEADER.size + P.FRAME.size)
+        return P.FrameObs(h.station_id, frame_id, t_mid, exp, m, proc, sync, thr, drops, n_total, part, h.flags)
 
     def _frame(self, obs: P.FrameObs, markers, seen) -> CameraFrame:
         seen.add(obs.frame_id)
@@ -98,6 +117,10 @@ class Ingest:
             for fid in sorted(seen)[:256]:
                 seen.discard(fid)
         self.stations[obs.station_id].frames += 1
-        a = np.array([(m.x, m.y, m.sum, m.peak, m.mflags) for m in markers], float).reshape(-1, 5)
-        return CameraFrame(obs.station_id, obs.frame_id, obs.t_mid_ns, a[:, :2], a[:, 2], a[:, 3],
-                           a[:, 4].astype(int), obs.sync_state, obs.flags)
+        m = markers if isinstance(markers, np.ndarray) else (
+            np.concatenate(markers) if markers and isinstance(markers[0], np.ndarray) else
+            np.array([(k.x, k.y, k.sum, k.peak, k.area, k.mflags) for k in markers], MARKER_DT))
+        xy = np.empty((len(m), 2))
+        xy[:, 0], xy[:, 1] = m["x"], m["y"]
+        return CameraFrame(obs.station_id, obs.frame_id, obs.t_mid_ns, xy, m["sum"].astype(float),
+                           m["peak"].astype(float), m["mflags"].astype(int), obs.sync_state, obs.flags)

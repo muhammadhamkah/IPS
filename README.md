@@ -152,8 +152,10 @@ idps-engine live --port 5600 --calib calibration.yaml --site venue.yaml --link 1
 ```
 
 Matches every camera's dots to marker tracks, triangulates, filters and reads each marker's
-blink code. Positions go out in NED, to each drone by its ID. In the simulator: 25 drones and
-17 cameras at p95 ≤ 6.4 mm, all identified, no wrong IDs (docs/ENGINE.md).
+blink code. Positions go out in NED, to each drone by its ID. The per-slot work runs in a C++
+core (built by `pip install -e .`, with the Python version as reference and fallback). In
+the simulator, 50 drones and 17 cameras: p95 ≤ 9.3 mm, all identified, no wrong IDs, 6×
+real time, 20 ms delay (p99) from exposure to output (docs/ENGINE.md).
 
 The wire format is in `protocol/idps_protocol.h`; the Python mirror is `idps/protocol/`;
 golden vectors are in `protocol/vectors/`.

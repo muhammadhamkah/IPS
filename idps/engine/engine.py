@@ -77,7 +77,8 @@ class StaticMask:
 @dataclass
 class EngineConfig:
     epoch_hz: float = 120.0
-    reorder_s: float = 0.025          # wait this long for late packets before closing an epoch
+    reorder_s: float = 0.008          # wait this long for late packets before closing an epoch
+                                      # (wired PTP stations: 4-8 ms is enough; Wi-Fi stations need ~25 ms)
     sigma_px: float = 0.15            # centroid + calibration noise per ray, pixels
     gate_px: float = 4.0              # matching gate around a track's prediction (plus its uncertainty)
     max_resid_px: float = 3.0         # a ray missing the triangulated point by more is dropped
@@ -93,7 +94,9 @@ class EngineConfig:
     innov_max_rejects: int = 3        # ... unless it happens this many times in a row (then it is real motion)
     inherit_radius_m: float = 0.5     # a new track this close to a lost one takes over its ID ...
     inherit_within_s: float = 1.0     # ... if that track was lost less than this long ago
-    decode_every_s: float = 0.5
+    decode_every_s: float = 0.5       # read a track's blink code this often until it has an ID ...
+    decode_every_named_s: float = 2.0 # ... and this often afterwards (to keep checking it)
+    decodes_per_epoch: int = 2        # at most this many decodes per 1/120 s slot (spreads the work)
     decode_window_s: float = 2.5
     id_votes_needed: int = 2
 
@@ -112,9 +115,11 @@ class Output:
 
 class Engine:
     def __init__(self, cams: dict[int, CameraCal], config: EngineConfig | None = None, bounds=None,
-                 frame=None):
+                 frame=None, backend: str = "auto"):
         """bounds: (lo, hi) world box where markers can be (default: around the cameras).
-        frame: idps.core.frames.Frame to also output NED."""
+        frame: idps.core.frames.Frame to also output NED.
+        backend: "cpp" (the compiled core, idps/engine/_core.cpp), "python" (this file, the
+        reference) or "auto" (the core if it is built, else Python)."""
         self.cams = cams
         self.cfg = config or EngineConfig()
         P = np.array([c.position for c in cams.values()])
@@ -129,6 +134,54 @@ class Engine:
         self.sigma_ang = {sid: self.cfg.sigma_px / c.f_px for sid, c in cams.items()}
         self.static = {sid: StaticMask() for sid in cams}
         self.stats = {"epochs": 0, "frames": 0, "unknown_station": 0, "tracks_started": 0, "outputs": 0}
+        self._core = None
+        if backend not in ("auto", "cpp", "python"):
+            raise ValueError(f"unknown backend {backend!r}")
+        if backend != "python":
+            try:
+                from idps.engine import _core
+            except ImportError:
+                if backend == "cpp":
+                    raise ImportError("the C++ engine core is not built: pip install -e . (needs a C++ compiler)")
+            else:
+                self._core = self._make_core(_core)
+        self.backend = "cpp" if self._core is not None else "python"
+
+    def _make_core(self, _core):
+        cams = list(self.cams.values())
+        self._cam_index = {c.station_id: i for i, c in enumerate(cams)}
+        conf = {k: v for k, v in vars(self.cfg).items() if k != "epoch_hz"}
+        return _core.Core(np.array([c.station_id for c in cams], np.int32), np.array([c.position for c in cams]),
+                          np.array([c.R for c in cams]), np.array([c.f_px for c in cams]),
+                          np.array([c.cx for c in cams]), np.array([c.cy for c in cams]),
+                          np.array([c.distortion for c in cams]),
+                          np.array([[c.width, c.height] for c in cams], np.int32),
+                          np.asarray(self.bounds[0], float), np.asarray(self.bounds[1], float), conf)
+
+    @property
+    def n_live_tracks(self) -> int:
+        return len(self._core.track_states()) if self._core is not None else len(self.tracks)
+
+    def _process_core(self, frames: list[CameraFrame]) -> list[Output]:
+        fcam = np.array([self._cam_index[f.station_id] for f in frames], np.int32)
+        ft = np.array([self._t(f.t_ns) for f in frames])
+        nz = [f for f in frames if f.n]
+        dframe = np.repeat(np.arange(len(frames), dtype=np.int32), [f.n for f in frames])
+        xy = np.concatenate([f.xy for f in nz]) if nz else np.zeros((0, 2))
+        sm = np.concatenate([f.sum for f in nz]) if nz else np.zeros(0)
+        fl = np.concatenate([f.mflags for f in nz]).astype(np.int32) if nz else np.zeros(0, np.int32)
+        r = self._core.process(fcam, ft, dframe, np.ascontiguousarray(xy, float), np.ascontiguousarray(sm, float), fl)
+        self.stats["tracks_started"] = self._core.tracks_started
+        out = []
+        ned = self.frame.ned(r["pos"]) if (self.frame is not None and len(r["pos"])) else None
+        for k in range(len(r["track"])):
+            o = Output(self.t0_ns + int(round(r["t"][k] * 1e9)), int(r["marker_id"][k]), r["pos"][k].copy(),
+                       r["vel"][k].copy(), r["cov"][k].copy(), int(r["n_cams"][k]), int(r["track"][k]))
+            if ned is not None:
+                o.ned = ned[k]
+            out.append(o)
+        self.stats["outputs"] += len(out)
+        return out
 
     # ---------------------------------------------------------------- time
     def _t(self, t_ns: int) -> float:
@@ -171,7 +224,7 @@ class Engine:
         if not frames:
             return []
         self.stats["epochs"] += 1
-        return self._process(frames)
+        return self._process_core(frames) if self._core is not None else self._process(frames)
 
     # ---------------------------------------------------------------- one epoch
     def _process(self, frames: list[CameraFrame]) -> list[Output]:
@@ -223,10 +276,12 @@ class Engine:
                 self._inherit(tr, T)
         self._dedupe()
 
+        due = sorted((tr for tr in self.tracks if tr.state == CONFIRMED and T >= tr.next_decode),
+                     key=lambda tr: (tr.next_decode, tr.tid))
+        for tr in due[:cfg.decodes_per_epoch]:
+            self._decode(tr, T)
         out = []
         for tr in self.tracks:
-            if tr.state == CONFIRMED and T >= tr.next_decode:
-                self._decode(tr, T)
             if tr.state == CONFIRMED and tr.marker_id is not None and tr.updated_epoch == self.stats["epochs"]:
                 o = Output(self.t0_ns + int(round(tr.kf.t * 1e9)), tr.marker_id, tr.kf.pos.copy(), tr.kf.vel.copy(),
                            tr.kf.P[:3, :3].copy(), tr.n_cams, tr.tid)
@@ -501,7 +556,7 @@ class Engine:
 
     def _decode(self, tr: Track, T: float):
         cfg = self.cfg
-        tr.next_decode = T + cfg.decode_every_s
+        tr.next_decode = T + (cfg.decode_every_named_s if tr.marker_id is not None else cfg.decode_every_s)
         t, lv = tr.levels(T - cfg.decode_window_s)
         mid, n, _ = decode(t, lv)
         if mid is None:

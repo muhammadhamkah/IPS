@@ -22,7 +22,7 @@ def cmd_replay(a) -> int:
     if a.site:
         from idps.plan.site import load_site
         frame = load_site(a.site).frame
-    eng = Engine(cams, EngineConfig(), frame=frame)
+    eng = Engine(cams, EngineConfig(reorder_s=a.reorder_ms / 1000), frame=frame, backend=a.backend)
     ing = Ingest()
     outputs = []
     t0 = time.perf_counter()
@@ -33,7 +33,7 @@ def cmd_replay(a) -> int:
     wall = time.perf_counter() - t0
     span = (outputs[-1].t_ns - outputs[0].t_ns) * 1e-9 if outputs else 0.0
     lost = sum(s.lost for s in ing.stations.values())
-    print(f"{eng.stats['frames']} frames from {len(ing.stations)} stations ({lost} packets lost), "
+    print(f"[{eng.backend}] {eng.stats['frames']} frames from {len(ing.stations)} stations ({lost} packets lost), "
           f"{eng.stats['epochs']} epochs, {eng.stats['tracks_started']} tracks started, {len(outputs)} positions; "
           f"{wall:.1f} s to process {span:.1f} s of data ({span / max(wall, 1e-9):.1f}x real time)")
     if a.out:
@@ -68,7 +68,7 @@ def cmd_live(a) -> int:
     from idps.plan.site import load_site
     from idps.show.fleet import odometry_fields
     frame = load_site(a.site).frame
-    eng = Engine(load_calibration(a.calib), EngineConfig(), frame=frame)
+    eng = Engine(load_calibration(a.calib), EngineConfig(reorder_s=a.reorder_ms / 1000), frame=frame)
     ing = Ingest()
     mavs = {}
     if a.link:
@@ -107,7 +107,7 @@ def cmd_live(a) -> int:
                                 o.n_cams, f"{1000 * (o.cov.trace() / 3) ** 0.5:.2f}"])
             if now - last_print >= 2.0:
                 live = {m: c for m, (t, c) in seen.items() if now - t < 0.5}
-                print(f"{len(ing.stations)} stations, {eng.stats['frames']} frames, {len(eng.tracks)} tracks; "
+                print(f"{len(ing.stations)} stations, {eng.stats['frames']} frames, {eng.n_live_tracks} tracks; "
                       f"drones with positions: {sorted(live) or 'none'}; sent {sent}")
                 last_print = now
     except KeyboardInterrupt:
@@ -129,6 +129,9 @@ def main(argv=None) -> int:
     r.add_argument("--site", help="venue site file: also output NED")
     r.add_argument("-o", "--out", help="write positions to this CSV")
     r.add_argument("--true-calib", action="store_true", help="simulator only: use the exact camera poses")
+    r.add_argument("--reorder-ms", type=float, default=8.0, help="wait for late packets (Wi-Fi stations: ~25)")
+    r.add_argument("--backend", default="auto", choices=["auto", "cpp", "python"],
+                   help="engine core: compiled C++ (default when built) or the Python reference")
     lv = sub.add_parser("live", help="run live: camera-station packets in, each drone's position out")
     lv.add_argument("--port", type=int, default=5600, help="UDP port the stations send to")
     lv.add_argument("--host", default="0.0.0.0")
@@ -136,6 +139,7 @@ def main(argv=None) -> int:
     lv.add_argument("--site", required=True, help="venue site file (origin and North, for NED)")
     lv.add_argument("--link", action="append", help="DRONE_ID=DEVICE: send that drone its position (MAVLink ODOMETRY)")
     lv.add_argument("-o", "--out", help="also log positions to this CSV")
+    lv.add_argument("--reorder-ms", type=float, default=8.0, help="wait for late packets (Wi-Fi stations: ~25)")
     a = ap.parse_args(argv)
     return {"replay": cmd_replay, "live": cmd_live}[a.cmd](a)
 

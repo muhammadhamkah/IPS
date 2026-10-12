@@ -1,0 +1,15 @@
+# The 50-drone target (engine throughput benchmark): the venue_swarm scenario with twice the drones.
+# 50 x 20 x 20 m venue, 25 drones flying random routes at up to 4 m/s,
+# seen by the planned 17-camera layout.
+name: Venue - 50-drone swarm
+plan: ../plans/venue_50x20x20.yaml
+duration_s: 30
+seed: 7
+
+# Brighter LEDs for long range: markers closer than ~15 m saturate (flagged), as they would on real hardware.
+camera_model: {sensor: OV9281, fps: 120, exposure_us: 400, peak_at_10m: 4000, threshold_dn: 20}
+timing: {sync: ptp, jitter_sigma_us: 5, clock_profile: pi5_ptp_hw}   # Pi 5 stations, hardware PTP
+network: {loss: 0.001, latency_ms: 2, jitter_ms: 1}
+calibration_error: {rot_mrad: 0.05, pos_mm: 2}
+
+swarm: {count: 50, motion: random, speed: 4.0, first_marker_id: 1}

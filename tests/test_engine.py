@@ -131,4 +131,26 @@ def test_engine_ned_output_and_reflections_ignored(lab_run):
     assert vel_ned(frame, np.r_[v, 0.0]) == pytest.approx([2, 0, 0])
     # the simulated cameras each see fixed reflections: they never become identified drones
     assert {o.marker_id for o in out} == {17, 42, 99}
-    assert any(m.xy.size for m in eng.static.values())
+    if eng.backend == "cpp":
+        assert eng._core.n_static_spots() > 0
+    else:
+        assert any(m.xy.size for m in eng.static.values())
+
+
+def _run(packets, d, backend):
+    eng, ing, out = Engine(load_calibration(d / "calibration.yaml"), backend=backend), Ingest(), []
+    for _, pkt in packets:
+        for f in ing.feed(pkt):
+            out += eng.feed(f)
+    return out + eng.flush()
+
+
+def test_cpp_core_matches_python_reference(lab_run):
+    """The compiled core is a port of the Python engine: same tracks, IDs and positions."""
+    pytest.importorskip("idps.engine._core")
+    packets, d = lab_run
+    py, cpp = _run(packets, d, "python"), _run(packets, d, "cpp")
+    assert len(py) == len(cpp) > 300
+    for a, b in zip(py, cpp):
+        assert (a.t_ns, a.marker_id, a.n_cams) == (b.t_ns, b.marker_id, b.n_cams)
+        assert np.allclose(a.pos, b.pos, atol=1e-9) and np.allclose(a.cov, b.cov, rtol=1e-6, atol=1e-15)

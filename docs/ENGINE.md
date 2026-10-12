@@ -67,27 +67,55 @@ The simulator models:
 The engine is given the *estimated* calibration (camera pose errors of 0.05–0.1 mrad and
 2 mm), not the true one.
 
-| Scenario | Drones / cameras | Identified after | Position error: median / p95 / worst | Positions available | Wrong IDs | Speed |
+| Scenario | Drones / cameras | Identified after | Position error: median / worst p95 / worst | Available | Wrong IDs | Speed (C++ core) |
 |---|---|---|---|---|---|---|
-| Lab 6 × 6 × 3 m (`lab_three_drones`) | 3 / 9 | 3.0 s | 1.9–2.1 mm / 2.1–5.1 mm / 5.7 mm | 100 % | 0 | 3.5× real time |
-| Venue 50 × 20 × 20 m (`venue_swarm`), 4 m/s random paths | 25 / 17 | 2.5–3.5 s | 1.7 mm (mean) / ≤ 6.4 mm / 15 mm | 100 % | 0 | 1.0× real time |
+| Lab 6 × 6 × 3 m (`lab_three_drones`) | 3 / 9 | 3.1 s | 2.0 mm / 5.1 mm / 5.7 mm | 100 % | 0 | 43× real time |
+| Venue 50 × 20 × 20 m (`venue_swarm`) | 25 / 17 | ≤ 3.6 s | 1.7 mm / 6.4 mm / 15 mm | 100 % | 0 | 12× real time |
+| Venue, **the 50-drone target** (`venue_swarm_50`) | 50 / 17 | ≤ 3.8 s | 1.8 mm / 9.3 mm / 18 mm | 99.9–100 % | 0 | **6.1× real time** |
 
-The requirement is p95 ≤ 10 mm. The live mode was checked the same way: the simulator
-streamed UDP in real time to `idps-engine live`, which output NED positions with the same
-accuracy.
+The requirement is p95 ≤ 10 mm.
 
-**Speed is the open problem.** The engine is plain Python and NumPy. It keeps up with the
-lab at 3.5× real time, but only just with 25 drones and 17 cameras. The per-slot work is
-already batched. The next steps, in order:
-1. move the remaining per-dot Python loops (matching candidates, track start) into array
-   code;
-2. split ingest and engine into two processes;
-3. port the per-slot core to C++ (ARCHITECTURE §5.2), if profiling still says so.
+## Speed and delay
+
+The per-slot work (matching, triangulation, tracking, new tracks, reflections, blink codes)
+runs in a **C++ core**, `idps/engine/_core.cpp` (pybind11, built by `pip install`). It is a
+line-by-line port of the Python engine in `engine.py`, which stays as the reference and as
+the fallback when no compiler is available. A test checks that both give the same tracks, IDs
+and positions (to 1e-9 m) on a simulated lab show.
+
+**50 drones / 17 cameras** (this cloud machine, one core):
+
+| | Python reference | C++ core |
+|---|---|---|
+| Speed | 0.6× real time | **6.1× real time** |
+| Processing per 1/120 s slot | | median 0.55 ms, p99 3.7 ms (budget 8.3 ms) |
+| Delay, camera exposure → position out | | **median 17 ms, p99 20 ms, worst 28 ms** |
+
+The delay is mostly fixed by design:
+* the slot (on average half of 8.3 ms);
+* waiting 8 ms for late packets (`--reorder-ms`; 4–8 ms is enough for wired PTP stations,
+  while Wi-Fi stations need about 25 ms);
+* the station's own processing (about 3 ms);
+* the network (about 2 ms).
+
+PX4 is told this delay with `EKF2_EV_DELAY`.
+
+**Two things made the difference beyond C++:**
+* Each dot is read from the packet straight into arrays.
+* Blink-code decoding is spread out: at most 2 decodes per slot, and every 2 s, not 0.5 s,
+  once a drone is named. Before, all drones decoded in the same slot, which gave 35–50 ms
+  spikes.
+
+**Next accuracy item.** A few drones show short bursts of 10–18 mm during sharp
+manoeuvres: 0.12 % of positions at 50 drones. This happens with 7 or more cameras and also
+with perfect calibration, so it comes from the tracking filter's motion model, not from
+geometry. Candidates: a constant-acceleration or two-model (IMM) filter.
 
 ## Use
 
 ```
-idps-sim run examples/scenarios/venue_swarm.yaml -o out/sim
+pip install -e .              # also builds the C++ core (needs a C++ compiler: Xcode command line tools on a Mac)
+idps-sim run examples/scenarios/venue_swarm_50.yaml -o out/sim
 idps-engine replay out/sim/packets.idpsraw --calib out/sim/calibration.yaml --truth out/sim/truth.csv [-o positions.csv]
 
 idps-engine live --port 5600 --calib calibration.yaml --site venue.yaml \
@@ -97,6 +125,7 @@ idps-engine live --port 5600 --calib calibration.yaml --site venue.yaml \
 * `--truth` scores the output against the simulator's ground truth.
 * `--true-calib` (simulator only) uses the exact camera poses, to separate calibration error
   from everything else.
+* `--backend python` runs the Python reference instead of the C++ core.
 
 ## Not done yet
 
@@ -107,7 +136,7 @@ idps-engine live --port 5600 --calib calibration.yaml --site venue.yaml \
   engine running at the venue.
 * **Asynchronous per-camera updates** (ARCHITECTURE §5.1, Phase 5+), multi-marker drones and
   live re-pose of moving gimbals.
-* **Speed**, above.
+* **The tracking-filter bursts** above.
 
 **Simulator change made with the engine:** the drone's tilt now follows its acceleration
 with a 0.08 s lag. Before, it flipped instantly at waypoints, so the marker 8 cm above the
