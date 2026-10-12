@@ -57,6 +57,20 @@ def test_skybrush_csv_zip(tmp_path):
     assert d.colour([0.55])[0] == pytest.approx([255, 50, 0])
 
 
+def test_csv_zip_from_a_mac_keeps_drone_numbers(tmp_path):
+    """A zipped folder from macOS: Drone 1..12 inside a folder, plus __MACOSX debris.
+    Drone N must become slot N (not 1, 10, 11, 12, 2, ...)."""
+    p = tmp_path / "flyable.zip"
+    with zipfile.ZipFile(p, "w") as z:
+        for k in range(1, 13):
+            z.writestr(f"flyable/Drone {k}.csv", f"Time [msec],x [m],y [m],z [m],Red,Green,Blue\n0,{k},0,0,255,0,0\n"
+                                                 f"1000,{k},0,1,255,0,0\n")
+            z.writestr(f"__MACOSX/flyable/._Drone {k}.csv", "\x00\x05junk")
+    show = load_show(p)
+    assert [d.name for d in show.drones] == [f"Drone {k}" for k in range(1, 13)]
+    assert [d.sample([0.0])[0][0] for d in show.drones] == list(range(1, 13))
+
+
 def test_placement_enu_to_ned():
     pl = Placement()                                             # Blender +X East, +Y North, +Z up
     assert pl.to_ned([1, 2, 3]) == pytest.approx([2, 1, -3])

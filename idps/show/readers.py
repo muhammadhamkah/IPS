@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -28,7 +29,7 @@ from idps.show.model import Show, track_from_points, track_from_samples
 def load_show(path: str | Path) -> Show:
     path = Path(path)
     if path.is_dir():
-        return _load_csv_files({p.name: p.read_text() for p in sorted(path.glob("*.csv"))}, str(path))
+        return _load_csv_files({p.name: p.read_text() for p in path.glob("*.csv") if not _junk(p.name)}, str(path))
     if path.suffix.lower() == ".csv":
         return _load_csv_files({path.name: path.read_text()}, str(path))
     if not zipfile.is_zipfile(path):
@@ -37,7 +38,8 @@ def load_show(path: str | Path) -> Show:
         names = z.namelist()
         if any(n.endswith("show.json") for n in names):
             return _load_skyc(z, str(path))
-        csvs = {n: z.read(n).decode("utf-8-sig") for n in names if n.lower().endswith(".csv")}
+        csvs = {n: z.read(n).decode("utf-8-sig") for n in names
+                if n.lower().endswith(".csv") and not _junk(n)}
         if csvs:
             return _load_csv_files(csvs, str(path))
     raise ValueError(f"{path}: no show.json or CSV files inside")
@@ -98,7 +100,7 @@ def _track_from_traj(name, traj: dict, settings: dict, lights):
 # --------------------------------------------------------------------------- CSV
 def _load_csv_files(files: dict, source: str) -> Show:
     drones = []
-    for name, text in sorted(files.items()):
+    for name, text in sorted(files.items(), key=lambda kv: _natural(kv[0])):
         rows = [r for r in csv.reader(io.StringIO(text)) if r and not r[0].lstrip().startswith("#")]
         if rows and not _is_number(rows[0][0]):
             rows = rows[1:]                                         # header
@@ -111,6 +113,17 @@ def _load_csv_files(files: dict, source: str) -> Show:
     if not drones:
         raise ValueError(f"{source}: no drone CSV files")
     return Show(drones, source, "csv")
+
+
+def _junk(name: str) -> bool:
+    """macOS zip debris (__MACOSX/, ._Drone 1.csv) and other hidden files."""
+    p = PurePosixPath(name)
+    return "__MACOSX" in p.parts or p.name.startswith(".")
+
+
+def _natural(name: str):
+    """Sort key so 'Drone 2' comes before 'Drone 10': drone N becomes slot N."""
+    return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", name)]
 
 
 def _is_number(s: str) -> bool:
