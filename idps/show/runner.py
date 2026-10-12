@@ -1,5 +1,7 @@
-"""Show player for one PX4 drone: the building block of the PC's fleet player
-(idps.show.fleet), and usable on its own against one drone or PX4 SITL.
+"""Testing tool: play one drone's file from the PC through PX4 offboard, or print it.
+
+Shows are flown by the drones themselves (the ``idps_show`` PX4 module, D22); this streams
+setpoints from the PC instead, to try a single path against one drone or PX4 SITL.
 
 It loads a ``drone_NNN.json``, waits for the show start time and streams PX4 **offboard**
 setpoints at 50 Hz over any MAVLink link (serial, or UDP over Wi-Fi):

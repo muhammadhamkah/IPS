@@ -1,0 +1,31 @@
+#!/bin/bash
+# Start N headless PX4 SITL quadcopters (SIH, no Gazebo) set up like IDPS show drones:
+# position, height and heading only from external vision (IDPS), no GPS, compass or baro.
+# Instance i has MAV_SYS_ID i+1 (= drone ID), MAVLink on udp 14540+i, and a ground-truth link
+# on 14800+i for the IDPS stand-in (idps_stand_in.py).
+#
+#   PX4_DIR=~/PX4-Autopilot px4/sitl/run_sitl.sh 3
+set -e
+PX4_DIR=${PX4_DIR:-$HOME/PX4-Autopilot}
+B=$PX4_DIR/build/px4_sitl_default
+N=${1:-1}
+[ -x "$B/bin/px4" ] || { echo "build first: make -C $PX4_DIR px4_sitl_default EXTERNAL_MODULES_LOCATION=$(cd "$(dirname "$0")/.." && pwd)"; exit 1; }
+echo "idps_show start" > "$B/etc/init.d-posix/airframes/10040_sihsim_quadx.post"
+pkill -x px4 2>/dev/null || true; sleep 1
+export PX4_PARAM_EKF2_EV_CTRL=11 PX4_PARAM_EKF2_HGT_REF=3 PX4_PARAM_EKF2_GPS_CTRL=0 PX4_PARAM_EKF2_BARO_CTRL=0 \
+       PX4_PARAM_EKF2_MAG_TYPE=5 PX4_PARAM_SYS_HAS_MAG=0 PX4_PARAM_EKF2_EVP_NOISE=0.01 PX4_PARAM_EKF2_EVA_NOISE=0.05
+# SIH's default drag (1 N per m/s on a 1 kg quad) is far above a real quad's; tighter position
+# gains, as a tuned show drone would have.
+export PX4_PARAM_SIH_KDV=0.2 PX4_PARAM_MPC_XY_P=1.8 PX4_PARAM_MPC_XY_VEL_P_ACC=4.0 PX4_PARAM_MPC_XY_VEL_I_ACC=1.5 \
+       PX4_PARAM_MPC_Z_P=1.5 PX4_PARAM_MPC_Z_VEL_P_ACC=6.0
+for ((i=0;i<N;i++)); do
+  mkdir -p "$B/rootfs/$i"; cd "$B/rootfs/$i"
+  rm -f parameters*.bson dataman
+  PX4_SYS_AUTOSTART=10040 PX4_SIM_MODEL=sihsim_quadx nohup "$B/bin/px4" -i $i -d "$B/etc" > out.log 2>&1 &
+done
+sleep 10
+for ((i=0;i<N;i++)); do
+  "$B/bin/px4-mavlink" --instance $i start -u $((14700+i)) -o $((14800+i)) -m custom -r 400000 >/dev/null 2>&1
+  "$B/bin/px4-mavlink" --instance $i stream -u $((14700+i)) -s HIL_STATE_QUATERNION -r 50 >/dev/null 2>&1
+done
+echo "$N drone(s) up. Links: $(for ((i=0;i<N;i++)); do printf -- '--link %d=udpin:127.0.0.1:%d ' $((i+1)) $((14540+i)); done)"

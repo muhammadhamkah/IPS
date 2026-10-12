@@ -178,35 +178,127 @@ def test_cli_check_export_blender(tmp_path):
     assert main(["play", str(tmp_path / "ok" / "drone_001.json"), "--dry-run"]) == 0
 
 
-def test_fleet_player_sends_positions_and_setpoints(tmp_path, lab):
-    """PC-side flying (no companion): ODOMETRY with yaw 0 for seen drones, setpoints for all."""
-    from idps.show.fleet import Fix, FleetPlayer, odometry_fields, parse_links
+def test_fleet_sends_positions_as_vision_with_heading_north(tmp_path, lab):
+    """IDPS positions go to PX4 as ODOMETRY marked VISION (EKF2 ignores MOCAP), heading 0."""
+    from idps.show.fleet import Fix, Fleet, odometry_fields, parse_links
     site, cams = lab
     show = load_show(write_demo_skyc(tmp_path / "s.skyc", n=3))
     man = export_px4(show, tmp_path / "out", report=check_show(show, site, cams))
-
-    def link():
-        log = {"odo": [], "sp": []}
-        mav = types.SimpleNamespace(odometry_send=lambda **k: log["odo"].append(k),
-                                    set_position_target_local_ned_send=lambda *a, **k: log["sp"].append(k))
-        return types.SimpleNamespace(target_system=1, target_component=1, mav=mav, log=log)
-
-    links = {1: link(), 3: link()}
-    fleet = FleetPlayer(man, links)
-    seen = {1: Fix(np.array([1.0, 2.0, -0.5]))}                          # drone 3 not seen this tick
-    clock = {"t": 500.0}
-    fleet.run(500.0, positions=lambda: seen, clock=lambda: clock["t"],
-              sleep=lambda s: clock.__setitem__("t", clock["t"] + 0.02))
-    n = len(links[1].log["sp"])
-    assert n == pytest.approx((fleet.t_end + 2.0) * 50, abs=3) and len(links[3].log["sp"]) == n
-    assert len(links[1].log["odo"]) == n and not links[3].log["odo"]
-    o = links[1].log["odo"][0]
-    assert (o["x"], o["y"], o["z"]) == (1.0, 2.0, -0.5) and o["q"] == [1.0, 0.0, 0.0, 0.0]   # facing North
-    assert o["frame_id"] == 1 and o["pose_covariance"][20] > 0 and np.isnan(o["pose_covariance"][15])
+    sent = {1: [], 3: []}
+    links = {k: types.SimpleNamespace(mav=types.SimpleNamespace(odometry_send=lambda k=k, **f: sent[k].append(f)))
+             for k in sent}
+    fleet = Fleet(man, links)
+    assert fleet.send_positions({1: Fix(np.array([1.0, 2.0, -0.5]))}, now_s=12.5) == 1      # drone 3 not seen
+    o = sent[1][0]
+    assert not sent[3] and (o["x"], o["y"], o["z"]) == (1.0, 2.0, -0.5) and o["time_usec"] == 12_500_000
+    assert o["q"] == [1.0, 0.0, 0.0, 0.0] and o["estimator_type"] == 3 and o["frame_id"] == 1    # North, VISION, NED
+    assert o["pose_covariance"][20] > 0 and np.isnan(o["pose_covariance"][15])
     assert odometry_fields([0, 0, 0], 0, yaw_rad=np.pi)["q"][3] == pytest.approx(1.0)
     assert parse_links(["2=udpout:10.0.0.2:14550"]) == {2: "udpout:10.0.0.2:14550"}
     with pytest.raises(ValueError):
-        FleetPlayer(man, {9: link()})
+        Fleet(man, {9: None})
+
+
+def test_trj_file_layout_and_crc(tmp_path):
+    """The .trj the PX4 module reads: fixed layout, PX4's CRC-32, corruption detected."""
+    import struct
+    from idps.show.trj import HEADER_SIZE, SAMPLE, crc32, from_bytes, read_trj
+    show = load_show(write_demo_skyc(tmp_path / "s.skyc", n=2))
+    man = json.loads(export_px4(show, tmp_path / "out").read_text())
+    d = man["drones"][1]
+    b = (tmp_path / "out" / d["trj"]).read_bytes()
+    t = read_trj(tmp_path / "out" / d["trj"])
+    assert b[:8] == b"IDPSTRJ1" and struct.unpack_from("<H", b, 12)[0] == 2 == t.drone_id
+    assert struct.unpack_from("<I", b, 20)[0] == len(t.pos) and len(b) == HEADER_SIZE + len(t.pos) * SAMPLE.itemsize
+    assert d["trj_crc32"] == crc32(b) and d["trj_bytes"] == len(b)
+    doc = json.loads((tmp_path / "out" / d["file"]).read_text())
+    S = np.asarray(doc["samples"])
+    assert np.allclose(t.pos, S[:, 1:4], atol=1e-4) and np.allclose(t.rgb, S[:, 10:13], atol=0.51)
+
+    def px4_crc32(data, c=0):                    # NuttX/PX4 crc32part, bit by bit
+        for byte in data:
+            c ^= byte
+            for _ in range(8):
+                c = (c >> 1) ^ 0xEDB88320 if c & 1 else c >> 1
+        return c
+    assert crc32(b[:300]) == px4_crc32(b[:300])
+    bad = bytearray(b)
+    bad[HEADER_SIZE + 5] ^= 0xFF
+    with pytest.raises(ValueError, match="corrupt"):
+        from_bytes(bytes(bad))
+    with pytest.raises(ValueError, match="truncated"):
+        from_bytes(b[:-40])
+
+
+class FakeDrone:
+    """Answers IDPS show commands like the PX4 module: ACK with state and file CRC."""
+
+    def __init__(self, did, crc, refuse=None):
+        self.did, self.crc, self.refuse, self.state = did, crc, refuse, 1
+        self.target_system, self.target_component = did, 1
+        self.inbox, self.cmds, self.beats = [], [], 0
+        self.mav = types.SimpleNamespace(command_int_send=self._cmd, heartbeat_send=self._hb)
+
+    def _hb(self, *a):
+        self.beats += 1
+
+    def _cmd(self, target, comp, frame, command, cur, auto, p1, p2, p3, p4, x, y, z):
+        self.cmds.append((target, command, p1, p2, p3, p4, x, y))
+        action = int(p1)
+        if action == 5:
+            return
+        ok = action != 2 or self.refuse is None
+        if action == 2 and ok:
+            self.state = 2
+        if action == 3:
+            self.state = 5
+        if not ok:
+            self.inbox.append(self._msg("STATUSTEXT", text=f"IDPS show: {self.refuse}"))
+        self.inbox.append(self._msg("COMMAND_ACK", command=0, result=0 if ok else 2, progress=self.state,
+                                    result_param2=self.crc - (1 << 32) if self.crc >= 1 << 31 else self.crc))
+
+    def _msg(self, kind, **f):
+        m = types.SimpleNamespace(**f)
+        m.get_type, m.get_srcSystem = (lambda: kind), (lambda: self.did)
+        return m
+
+    def recv_match(self, type=None, blocking=True, timeout=None):
+        kinds = type if isinstance(type, list) else [type]
+        for i, m in enumerate(self.inbox):
+            if m.get_type() in kinds:
+                return self.inbox.pop(i)
+        return None
+
+
+def test_onboard_commands_start_all_or_none(tmp_path):
+    from idps.show import onboard as ob
+    show = load_show(write_demo_skyc(tmp_path / "s.skyc", n=3))
+    man = export_px4(show, tmp_path / "out")
+    crcs = {d["drone_id"]: d["trj_crc32"] for d in json.loads(man.read_text())["drones"]}
+    fakes = {k: FakeDrone(k, c) for k, c in crcs.items()}
+    drones = ob.drones_from_manifest(man, fakes)
+    assert {k: d.crc for k, d in drones.items()} == crcs
+    r = ob.command(fakes[2], 2, ob.LOAD, crcs[2])
+    assert r.ok and r.state == "ready" and r.crc == crcs[2] and fakes[2].beats == 1
+    tgt, cmd, p1, p2, p3, p4, x, y = fakes[2].cmds[-1]
+    assert (tgt, cmd, p1, p2) == (2, 0, 1.0, 2.0) and (int(p3) << 16 | int(p4)) == crcs[2]
+    assert ob.start_time_fields(12_345_678_901) == (12345, 678901)
+    clock = lambda: 1_000_000_000_000                                       # noqa: E731  (1000 s, in ns)
+    t, rep = ob.start_all(drones, lead_s=10, clock=clock)
+    assert t == 1_010_000_000 and all(r.ok for r in rep.values())
+    assert {f.cmds[-1][6:] for f in fakes.values()} == {(1010, 0)}           # one start instant for all
+    fakes[3].refuse = "not on its home spot"
+    _, rep = ob.start_all(drones, lead_s=10, clock=clock)
+    assert not rep[3].ok and rep[3].text == "not on its home spot"
+    assert all(f.cmds[-1][2] == ob.ABORT for f in fakes.values())           # nobody flies a partial show
+    with pytest.raises(ValueError, match="not in the show"):
+        ob.drones_from_manifest(man, {9: FakeDrone(9, 0)})
+    sync = ob.ClockSync({1: fakes[1]}, hz=50, clock=clock).start()
+    import time
+    time.sleep(0.15)
+    sync.stop()
+    syncs = [c for c in fakes[1].cmds if c[2] == ob.SYNC]
+    assert syncs and syncs[0][6:] == (1000, 0)
 
 
 def test_drone_ids_from_names():
@@ -223,10 +315,10 @@ def test_drone_ids_from_names():
 
 
 def test_preflight_each_drone_on_its_own_spot(tmp_path, lab):
-    from idps.show.fleet import FleetPlayer
+    from idps.show.fleet import Fleet
     site, cams = lab
     show = load_show(write_demo_skyc(tmp_path / "s.skyc", n=4))
-    fleet = FleetPlayer(export_px4(show, tmp_path / "out"), {k: object() for k in (1, 2, 3, 4)})
+    fleet = Fleet(export_px4(show, tmp_path / "out"), {k: object() for k in (1, 2, 3, 4)})
     homes = fleet.homes
     assert fleet.preflight({k: h for k, h in homes.items()}) == []                       # all in place
     swapped = {1: homes[2], 2: homes[1], 3: homes[3], 4: homes[4]}
@@ -236,5 +328,5 @@ def test_preflight_each_drone_on_its_own_spot(tmp_path, lab):
     assert any(p.startswith("Drone 3:") and "m from its spot" in p for p in probs)
     assert any(p.startswith("Drone 4: not seen") for p in probs)
     assert any(p.startswith("Marker 9:") for p in probs)
-    one_link = FleetPlayer(tmp_path / "out" / "manifest.json", {1: object()})
+    one_link = Fleet(tmp_path / "out" / "manifest.json", {1: object()})
     assert any("Drone 2: no link" in p for p in one_link.preflight(dict(homes)))

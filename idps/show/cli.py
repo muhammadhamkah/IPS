@@ -4,8 +4,11 @@ one trajectory file per PX4 drone, and build the venue inside Blender.
   idps-show blender-venue --site venue.yaml --plan plan.yaml -o idps_venue.py
   idps-show check  show.skyc --site venue.yaml --plan plan.yaml
   idps-show export show.skyc --site venue.yaml --plan plan.yaml -o out/show
-  idps-show fly    out/show/manifest.json --link 7=udpout:192.168.50.107:14550 ...   (PC -> drones, by drone ID)
-  idps-show play   out/show/drone_007.json --dry-run        (one drone, e.g. PX4 SITL)
+  idps-show upload out/show/manifest.json --link 7=udpout:192.168.50.107:14550 ...  (file to each drone's SD card)
+  idps-show start  out/show/manifest.json --link ...       (all drones start together; Ctrl+C aborts)
+  idps-show status out/show/manifest.json --link ...
+  idps-show abort  --link ...
+  idps-show play   out/show/drone_007.json --dry-run        (print one drone's path; testing only)
   idps-show demo   -o demo.skyc --drones 8
 """
 from __future__ import annotations
@@ -95,31 +98,96 @@ def cmd_play(a) -> int:
                 + ["--device", a.device, "--baud", str(a.baud)])
 
 
-def cmd_fly(a) -> int:
-    from idps.show.fleet import FleetPlayer, parse_links
+def _connect(a) -> dict:
+    """--link DRONE_ID=DEVICE -> {drone ID: pymavlink connection}; each drone must answer with
+    that MAV_SYS_ID (a mixed-up address would otherwise reach the wrong drone)."""
+    import time
+    from pymavlink import mavutil
+    from idps.show import onboard as ob
+    from idps.show.fleet import parse_links
     links = parse_links(a.link)
     if not links:
-        print("give each drone's link: --link DRONE_ID=DEVICE (e.g. 7=udpout:192.168.50.107:14550)")
-        return 2
-    if not a.sitl:
-        print("Live positions come from the IDPS engine, which is not built yet. Use --sitl to fly "
-              "PX4 SITL drones (they position themselves).")
-        return 2
-    from pymavlink import mavutil
-    import time
+        raise SystemExit("give each drone's link: --link DRONE_ID=DEVICE (e.g. 7=udpout:192.168.50.107:14550)")
     mavs = {}
     for did, dev in links.items():
-        m = mavutil.mavlink_connection(dev)
-        m.wait_heartbeat()
+        m = mavutil.mavlink_connection(dev, source_system=255, source_component=190)
+        if m.wait_heartbeat(timeout=10) is None:
+            raise SystemExit(f"drone {did}: no heartbeat on {dev}")
         if m.target_system != did:
-            print(f"{dev} answered as MAV_SYS_ID {m.target_system}, not drone {did}: wrong drone or ID not set")
-            return 1
+            raise SystemExit(f"{dev} answered as MAV_SYS_ID {m.target_system}, not drone {did}: wrong drone or ID not set")
+        ob.send_heartbeat(m)
         mavs[did] = m
-    fleet = FleetPlayer(a.manifest, mavs)
-    start = a.start if a.start else time.time() + 5.0
-    print(f"flying {len(mavs)} drone(s), show starts in {start - time.time():.1f} s; "
-          "arm and switch to OFFBOARD now")
-    fleet.run(start)
+    time.sleep(0.5)                                  # let PX4 register the ground station
+    return mavs
+
+
+def cmd_upload(a) -> int:
+    from idps.show import onboard as ob
+    drones = ob.drones_from_manifest(a.manifest, _connect(a))
+    path = "idps_show.trj" if a.sitl else ob.SD_PATH
+    bad = 0
+    for did, d in sorted(drones.items()):
+        ob.upload(d.mav, d.trj, path)
+        r = ob.command(d.mav, did, ob.LOAD, d.crc)
+        ok = r.ok and r.crc == d.crc
+        bad += not ok
+        print(f"drone {did}: {'OK' if ok else 'FAILED'}  {len(d.trj)} bytes, crc {d.crc:08x}, drone says {r.result} / "
+              f"{r.state}, crc {r.crc:08x} {r.text}")
+    return 1 if bad else 0
+
+
+def cmd_status(a) -> int:
+    from idps.show import onboard as ob
+    drones = ob.drones_from_manifest(a.manifest, _connect(a))
+    for did, d in sorted(drones.items()):
+        r = ob.command(d.mav, did, ob.STATUS)
+        match = "matches" if r.crc == d.crc else "DIFFERS from the show (upload again)"
+        print(f"drone {did}: {r.state}, file crc {r.crc:08x} {match}")
+    return 0
+
+
+def cmd_start(a) -> int:
+    import time
+    from idps.show import onboard as ob
+    mavs = _connect(a)
+    drones = ob.drones_from_manifest(a.manifest, mavs)
+    sync = ob.ClockSync(mavs).start()
+    print(f"clock sync to {len(mavs)} drone(s); starting in {ob.ClockSync.WARMUP_S:.0f} s ...")
+    time.sleep(ob.ClockSync.WARMUP_S)
+    t_pc, replies = ob.start_all(drones, lead_s=a.lead)
+    for did, r in sorted(replies.items()):
+        print(f"drone {did}: {r.result} ({r.state}) {r.text}")
+    if not all(r.ok for r in replies.values()):
+        print("Not started: every drone was told to abort. Fix the refused drone(s) and start again.")
+        sync.stop()
+        return 1
+    import json
+    duration = json.loads(open(a.manifest).read())["duration_s"]
+    end = t_pc / 1e6 + duration + 15.0
+    print(f"show starts in {a.lead:.0f} s and lasts {duration:.0f} s. Keep this running (it keeps the drones' "
+          "clocks); Ctrl+C (or SIGTERM) aborts: every drone lands where it is.")
+    import signal
+
+    def _stop(*_):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _stop)            # a dashboard or script stopping us = abort too
+    try:
+        while time.monotonic() < end:
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        for did, d in drones.items():
+            print(f"drone {did}: abort -> {ob.command(d.mav, did, ob.ABORT).result}")
+        return 1
+    finally:
+        sync.stop()
+    return 0
+
+
+def cmd_abort(a) -> int:
+    from idps.show import onboard as ob
+    for did, m in sorted(_connect(a).items()):
+        print(f"drone {did}: abort -> {ob.command(m, did, ob.ABORT).result}")
     return 0
 
 
@@ -160,12 +228,24 @@ def main(argv=None) -> int:
     d.add_argument("--drones", type=int, default=8)
     d.add_argument("--radius", type=float, default=2.4)
     d.add_argument("--height", type=float, default=1.8)
-    f = sub.add_parser("fly", help="fly a show from the PC: positions and setpoints to every drone")
-    f.add_argument("manifest", help="manifest.json from idps-show export")
-    f.add_argument("--link", action="append", help="DRONE_ID=DEVICE, one per drone (MAVLink over Wi-Fi/UDP); the drone's MAV_SYS_ID must match")
-    f.add_argument("--start", type=float, help="show start, Unix time (s); default: now + 5 s")
-    f.add_argument("--sitl", action="store_true", help="PX4 SITL drones: setpoints only, no IDPS positions")
-    p = sub.add_parser("play", help="play one drone file through PX4 offboard (one drone, e.g. SITL)")
+    def link_args(p):
+        p.add_argument("--link", action="append", help="DRONE_ID=DEVICE, one per drone, e.g. "
+                       "7=udpout:192.168.50.107:14550 (MAVLink over Wi-Fi); the drone's MAV_SYS_ID must match")
+
+    u = sub.add_parser("upload", help="upload each drone's show file to its SD card and verify it")
+    u.add_argument("manifest", help="manifest.json from idps-show export")
+    link_args(u)
+    u.add_argument("--sitl", action="store_true", help="PX4 SITL drones (file in the instance folder)")
+    st = sub.add_parser("status", help="each drone's show state and whether its file matches")
+    st.add_argument("manifest")
+    link_args(st)
+    sa = sub.add_parser("start", help="start every drone's show at the same instant (keeps running)")
+    sa.add_argument("manifest")
+    link_args(sa)
+    sa.add_argument("--lead", type=float, default=15.0, help="seconds from the command to the show start")
+    ab = sub.add_parser("abort", help="every drone lands where it is")
+    link_args(ab)
+    p = sub.add_parser("play", help="testing: stream one drone file from the PC through PX4 offboard, or print it")
     p.add_argument("drone_file")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--start", type=float)
@@ -173,7 +253,8 @@ def main(argv=None) -> int:
     p.add_argument("--baud", type=int, default=921600)
     a = ap.parse_args(argv)
     return {"check": cmd_check, "export": cmd_export, "blender-venue": cmd_blender, "demo": cmd_demo,
-            "fly": cmd_fly, "play": cmd_play}[a.cmd](a)
+            "upload": cmd_upload, "status": cmd_status, "start": cmd_start, "abort": cmd_abort,
+            "play": cmd_play}[a.cmd](a)
 
 
 if __name__ == "__main__":

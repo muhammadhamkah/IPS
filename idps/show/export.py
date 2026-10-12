@@ -24,6 +24,7 @@ import numpy as np
 from idps.show.check import ShowReport
 from idps.show.model import Show
 from idps.show.placement import Placement
+from idps.show.trj import Trj, crc32, write_trj
 
 FORMAT = "idps-traj/1"
 COLUMNS = ["t", "n", "e", "d", "vn", "ve", "vd", "an", "ae", "ad", "r", "g", "b"]
@@ -60,7 +61,8 @@ def drone_samples(track, placement: Placement, rate_hz: float, t0: float, t1: fl
 
 def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz: float = 20.0,
                report: ShowReport | None = None, venue: dict | None = None) -> Path:
-    """Write drone_NNN.json per drone (by drone ID) plus manifest.json. Returns the manifest path."""
+    """Write drone_NNN.json and drone_NNN.trj per drone (by drone ID) plus manifest.json.
+    Returns the manifest path."""
     pl = placement or Placement()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -81,8 +83,12 @@ def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz:
         text = json.dumps(doc, separators=(",", ":"))
         name = f"drone_{k:03d}.json"
         (out / name).write_text(text)
+        trj_name = f"drone_{k:03d}.trj"                   # what goes on the drone's SD card (D22)
+        b = write_trj(out / trj_name, Trj(k, rate_hz, float(S[0, 0]), home, 0.0, S[:, 1:4], S[:, 4:7],
+                                         S[:, 7:10], S[:, 10:13]))
         drones.append({"drone_id": k, "name": d.name, "file": name, "home_ned": doc["home_ned"],
-                      "sha256": hashlib.sha256(text.encode()).hexdigest()})
+                       "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                       "trj": trj_name, "trj_bytes": len(b), "trj_crc32": crc32(b)})
     manifest = {
         "format": "idps-show/1", "source": show.source, "duration_s": float(t1 - t0), "rate_hz": rate_hz,
         "placement": {"axes": pl.axes, "rotate_deg": pl.rotate_deg, "offset_ned": list(pl.offset_ned)},
