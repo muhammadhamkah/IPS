@@ -59,7 +59,7 @@ def test_skybrush_csv_zip(tmp_path):
 
 def test_csv_zip_from_a_mac_keeps_drone_numbers(tmp_path):
     """A zipped folder from macOS: Drone 1..12 inside a folder, plus __MACOSX debris.
-    Drone N must become slot N (not 1, 10, 11, 12, 2, ...)."""
+    Drone N must keep drone ID N (not 1, 10, 11, 12, 2, ...)."""
     p = tmp_path / "flyable.zip"
     with zipfile.ZipFile(p, "w") as z:
         for k in range(1, 13):
@@ -108,10 +108,11 @@ def test_export_and_player(tmp_path, lab):
     show = load_show(write_demo_skyc(tmp_path / "s.skyc", n=4))
     rep = check_show(show, site, cams)
     man = json.loads(export_px4(show, tmp_path / "out", report=rep).read_text())
-    assert man["format"] == "idps-show/1" and len(man["slots"]) == 4 and man["check"]["ok"]
-    slot = json.loads((tmp_path / "out" / man["slots"][0]["file"]).read_text())
-    assert slot["format"] == "idps-traj/1" and slot["frame"] == "NED" and slot["rate_hz"] == 20
-    pl = TrajectoryPlayer(tmp_path / "out" / man["slots"][0]["file"])
+    assert man["format"] == "idps-show/1" and len(man["drones"]) == 4 and man["check"]["ok"]
+    assert [d["drone_id"] for d in man["drones"]] == [1, 2, 3, 4] and man["drones"][0]["file"] == "drone_001.json"
+    doc = json.loads((tmp_path / "out" / man["drones"][0]["file"]).read_text())
+    assert doc["format"] == "idps-traj/1" and doc["frame"] == "NED" and doc["rate_hz"] == 20 and doc["drone_id"] == 1
+    pl = TrajectoryPlayer(tmp_path / "out" / man["drones"][0]["file"])
     sp = pl.setpoint(10.0)
     truth = Placement().to_ned(show.drones[0].sample([10.0]))[0]
     assert sp.pos == pytest.approx(truth, abs=0.02)                  # 20 Hz samples, linear in between
@@ -172,9 +173,9 @@ def test_cli_check_export_blender(tmp_path):
     assert main(["export", str(show), "--site", site, "--plan", plan, "--offset", "2,0,0", "-o", str(tmp_path / "x")]) == 1
     assert not (tmp_path / "x" / "manifest.json").exists()                     # refused
     assert main(["export", str(show), "--site", site, "--plan", plan, "-o", str(tmp_path / "ok")]) == 0
-    assert (tmp_path / "ok" / "slot_04.json").exists()
+    assert (tmp_path / "ok" / "drone_004.json").exists()
     assert main(["blender-venue", "--site", site, "--plan", plan, "-o", str(tmp_path / "v.py")]) == 0
-    assert main(["play", str(tmp_path / "ok" / "slot_01.json"), "--dry-run"]) == 0
+    assert main(["play", str(tmp_path / "ok" / "drone_001.json"), "--dry-run"]) == 0
 
 
 def test_fleet_player_sends_positions_and_setpoints(tmp_path, lab):
@@ -192,7 +193,7 @@ def test_fleet_player_sends_positions_and_setpoints(tmp_path, lab):
 
     links = {1: link(), 3: link()}
     fleet = FleetPlayer(man, links)
-    seen = {1: Fix(np.array([1.0, 2.0, -0.5]))}                          # slot 3 not seen this tick
+    seen = {1: Fix(np.array([1.0, 2.0, -0.5]))}                          # drone 3 not seen this tick
     clock = {"t": 500.0}
     fleet.run(500.0, positions=lambda: seen, clock=lambda: clock["t"],
               sleep=lambda s: clock.__setitem__("t", clock["t"] + 0.02))
@@ -206,3 +207,34 @@ def test_fleet_player_sends_positions_and_setpoints(tmp_path, lab):
     assert parse_links(["2=udpout:10.0.0.2:14550"]) == {2: "udpout:10.0.0.2:14550"}
     with pytest.raises(ValueError):
         FleetPlayer(man, {9: link()})
+
+
+def test_drone_ids_from_names():
+    """The show's "Drone 7" is flown by the drone with ID 7 (its MAV_SYS_ID and marker ID)."""
+    from idps.show.export import drone_ids
+    from idps.show.model import Show
+    tr = lambda n: track_from_points(n, [[0, [0, 0, 0], []], [1, [0, 0, 1], []]])     # noqa: E731
+    assert drone_ids(Show([tr("Drone 7"), tr("Drone 12"), tr("drone_3")])) == [7, 12, 3]
+    assert drone_ids(Show([tr("Alpha"), tr("Bravo")])) == [1, 2]                         # no numbers: in order
+    with pytest.raises(ValueError, match="same drone ID"):
+        drone_ids(Show([tr("Drone 2"), tr("Copy of Drone 2")]))
+    with pytest.raises(ValueError, match="1..255"):
+        drone_ids(Show([tr("Drone 300")]))
+
+
+def test_preflight_each_drone_on_its_own_spot(tmp_path, lab):
+    from idps.show.fleet import FleetPlayer
+    site, cams = lab
+    show = load_show(write_demo_skyc(tmp_path / "s.skyc", n=4))
+    fleet = FleetPlayer(export_px4(show, tmp_path / "out"), {k: object() for k in (1, 2, 3, 4)})
+    homes = fleet.homes
+    assert fleet.preflight({k: h for k, h in homes.items()}) == []                       # all in place
+    swapped = {1: homes[2], 2: homes[1], 3: homes[3], 4: homes[4]}
+    probs = fleet.preflight(swapped)
+    assert any("Drone 1: on Drone 2's spot" in p for p in probs) and len(probs) == 2
+    probs = fleet.preflight({1: homes[1], 2: homes[2], 3: homes[3] + [1.0, 0, 0], 9: homes[4]})
+    assert any(p.startswith("Drone 3:") and "m from its spot" in p for p in probs)
+    assert any(p.startswith("Drone 4: not seen") for p in probs)
+    assert any(p.startswith("Marker 9:") for p in probs)
+    one_link = FleetPlayer(tmp_path / "out" / "manifest.json", {1: object()})
+    assert any("Drone 2: no link" in p for p in one_link.preflight(dict(homes)))

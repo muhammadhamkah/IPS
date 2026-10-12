@@ -4,8 +4,8 @@ one trajectory file per PX4 drone, and build the venue inside Blender.
   idps-show blender-venue --site venue.yaml --plan plan.yaml -o idps_venue.py
   idps-show check  show.skyc --site venue.yaml --plan plan.yaml
   idps-show export show.skyc --site venue.yaml --plan plan.yaml -o out/show
-  idps-show fly    out/show/manifest.json --link 1=udpout:192.168.50.101:14550 ...   (PC -> drones)
-  idps-show play   out/show/slot_01.json --dry-run          (one drone, e.g. PX4 SITL)
+  idps-show fly    out/show/manifest.json --link 7=udpout:192.168.50.107:14550 ...   (PC -> drones, by drone ID)
+  idps-show play   out/show/drone_007.json --dry-run        (one drone, e.g. PX4 SITL)
   idps-show demo   -o demo.skyc --drones 8
 """
 from __future__ import annotations
@@ -70,7 +70,7 @@ def cmd_export(a) -> int:
         print("Not exported: fix the errors above, or pass --force to export anyway (not for flying).")
         return 1
     path = export_px4(show, a.out, pl, a.rate, rep, venue={"site": str(a.site), "origin": site.frame.to_dict()})
-    print(f"wrote {len(show.drones)} slot files and {path}")
+    print(f"wrote {len(show.drones)} drone files (by drone ID) and {path}")
     return 0
 
 
@@ -91,7 +91,7 @@ def cmd_demo(a) -> int:
 
 def cmd_play(a) -> int:
     from idps.show.runner import main as play
-    return play([a.slot_file] + (["--dry-run"] if a.dry_run else []) + (["--start", str(a.start)] if a.start else [])
+    return play([a.drone_file] + (["--dry-run"] if a.dry_run else []) + (["--start", str(a.start)] if a.start else [])
                 + ["--device", a.device, "--baud", str(a.baud)])
 
 
@@ -99,7 +99,7 @@ def cmd_fly(a) -> int:
     from idps.show.fleet import FleetPlayer, parse_links
     links = parse_links(a.link)
     if not links:
-        print("give each drone's link: --link SLOT=DEVICE (e.g. 1=udpout:192.168.50.101:14550)")
+        print("give each drone's link: --link DRONE_ID=DEVICE (e.g. 7=udpout:192.168.50.107:14550)")
         return 2
     if not a.sitl:
         print("Live positions come from the IDPS engine, which is not built yet. Use --sitl to fly "
@@ -108,10 +108,13 @@ def cmd_fly(a) -> int:
     from pymavlink import mavutil
     import time
     mavs = {}
-    for slot, dev in links.items():
+    for did, dev in links.items():
         m = mavutil.mavlink_connection(dev)
         m.wait_heartbeat()
-        mavs[slot] = m
+        if m.target_system != did:
+            print(f"{dev} answered as MAV_SYS_ID {m.target_system}, not drone {did}: wrong drone or ID not set")
+            return 1
+        mavs[did] = m
     fleet = FleetPlayer(a.manifest, mavs)
     start = a.start if a.start else time.time() + 5.0
     print(f"flying {len(mavs)} drone(s), show starts in {start - time.time():.1f} s; "
@@ -142,12 +145,12 @@ def main(argv=None) -> int:
     c.add_argument("show", help=".skyc, Skybrush CSV ZIP, folder of CSVs or one CSV")
     venue_args(c)
     limit_args(c)
-    e = sub.add_parser("export", help="check, then write one slot file per PX4 drone + manifest.json")
+    e = sub.add_parser("export", help="check, then write one file per drone ID + manifest.json")
     e.add_argument("show")
     venue_args(e)
     limit_args(e)
     e.add_argument("-o", "--out", default="out/show")
-    e.add_argument("--rate", type=float, default=20.0, help="samples per second in the slot files")
+    e.add_argument("--rate", type=float, default=20.0, help="samples per second in the drone files")
     e.add_argument("--force", action="store_true", help="export even if the check finds errors")
     b = sub.add_parser("blender-venue", help="write a Blender script that builds the venue in Blender")
     venue_args(b)
@@ -159,11 +162,11 @@ def main(argv=None) -> int:
     d.add_argument("--height", type=float, default=1.8)
     f = sub.add_parser("fly", help="fly a show from the PC: positions and setpoints to every drone")
     f.add_argument("manifest", help="manifest.json from idps-show export")
-    f.add_argument("--link", action="append", help="SLOT=DEVICE, one per drone (MAVLink over Wi-Fi/UDP)")
+    f.add_argument("--link", action="append", help="DRONE_ID=DEVICE, one per drone (MAVLink over Wi-Fi/UDP); the drone's MAV_SYS_ID must match")
     f.add_argument("--start", type=float, help="show start, Unix time (s); default: now + 5 s")
     f.add_argument("--sitl", action="store_true", help="PX4 SITL drones: setpoints only, no IDPS positions")
-    p = sub.add_parser("play", help="play one slot file through PX4 offboard (one drone, e.g. SITL)")
-    p.add_argument("slot_file")
+    p = sub.add_parser("play", help="play one drone file through PX4 offboard (one drone, e.g. SITL)")
+    p.add_argument("drone_file")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--start", type=float)
     p.add_argument("--device", default="/dev/ttyAMA0")

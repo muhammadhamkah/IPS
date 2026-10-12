@@ -1,7 +1,7 @@
 """Show player for one PX4 drone: the building block of the PC's fleet player
 (idps.show.fleet), and usable on its own against one drone or PX4 SITL.
 
-It loads a ``slot_NN.json``, waits for the show start time and streams PX4 **offboard**
+It loads a ``drone_NNN.json``, waits for the show start time and streams PX4 **offboard**
 setpoints at 50 Hz over any MAVLink link (serial, or UDP over Wi-Fi):
 
 * ``SET_POSITION_TARGET_LOCAL_NED`` with position, velocity and acceleration feed-forward
@@ -96,15 +96,15 @@ class TrajectoryPlayer:
 
 def main(argv=None) -> int:
     import argparse
-    ap = argparse.ArgumentParser(prog="idps-show-play", description="Play a slot file on a PX4 drone")
-    ap.add_argument("slot_file")
+    ap = argparse.ArgumentParser(prog="idps-show-play", description="Play a drone file on a PX4 drone")
+    ap.add_argument("drone_file")
     ap.add_argument("--device", default="/dev/ttyAMA0",
                     help="flight-controller link: serial device, or e.g. udpin:0.0.0.0:14540 for PX4 SITL")
     ap.add_argument("--baud", type=int, default=921600)
     ap.add_argument("--start", type=float, help="show start, Unix time (s); default: now + 5 s")
     ap.add_argument("--dry-run", action="store_true", help="print setpoints at 2 Hz instead of sending")
     a = ap.parse_args(argv)
-    pl = TrajectoryPlayer(a.slot_file)
+    pl = TrajectoryPlayer(a.drone_file)
     if a.dry_run:
         for t in np.arange(pl.t[0], pl.t[-1] + 1e-9, 0.5):
             sp = pl.setpoint(t)

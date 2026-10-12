@@ -1,20 +1,22 @@
 """Export a checked show as one file per drone, for PX4 drones.
 
-Each drone gets ``slot_NN.json`` ("idps-traj/1"): its trajectory sampled in the venue's
+Each drone gets ``drone_NNN.json`` ("idps-traj/1"), named by its **drone ID**: its trajectory sampled in the venue's
 **NED** frame (D18) with position, velocity and acceleration (feed-forward for PX4's
 position controller), a fixed yaw of 0 (North, decision D7), and its LED colour. The PC plays
-every slot to its drone through PX4 offboard mode over Wi-Fi (idps.show.fleet, D20).
-``manifest.json`` lists the slots, their home spots (where each drone is placed before the
+every file to its drone through PX4 offboard mode over Wi-Fi (idps.show.fleet, D20).
+``manifest.json`` lists the drones, their home spots (where each drone is placed before the
 show), the show length and the check result.
 
-Slots, not drones: the show defines *slots* (Drone 1, Drone 2, ...). At the venue each
-physical drone is put on a slot's home spot; IDPS knows which drone stands there from its
-marker ID, so any drone can fly any slot.
+Drone IDs (D21): every physical drone has a fixed ID, and the same number is its PX4
+``MAV_SYS_ID`` and its IR marker ID. The show's "Drone 7" is flown by the drone with ID 7,
+which must stand on Drone 7's home spot; IDPS checks that before take-off from the marker IDs
+(idps.show.fleet.preflight).
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +27,26 @@ from idps.show.placement import Placement
 
 FORMAT = "idps-traj/1"
 COLUMNS = ["t", "n", "e", "d", "vn", "ve", "vd", "an", "ae", "ad", "r", "g", "b"]
+
+
+MAX_DRONE_ID = 255                       # PX4 MAV_SYS_ID 1..255; marker IDs 0..255
+
+
+def drone_ids(show: Show) -> list[int]:
+    """Drone ID for each show drone: the number in its name ("Drone 7" -> 7), or 1..N in
+    order when the names carry no numbers. Duplicates and IDs outside 1..255 are errors."""
+    nums = [re.findall(r"\d+", d.name) for d in show.drones]
+    if all(nums):
+        ids = [int(n[-1]) for n in nums]
+    else:
+        ids = list(range(1, len(show.drones) + 1))
+    dup = sorted({i for i in ids if ids.count(i) > 1})
+    if dup:
+        raise ValueError(f"two show drones have the same drone ID: {dup}; rename them in Blender")
+    bad = [i for i in ids if not 1 <= i <= MAX_DRONE_ID]
+    if bad:
+        raise ValueError(f"drone IDs must be 1..{MAX_DRONE_ID} (PX4 MAV_SYS_ID): {bad}")
+    return ids
 
 
 def drone_samples(track, placement: Placement, rate_hz: float, t0: float, t1: float) -> np.ndarray:
@@ -38,17 +60,17 @@ def drone_samples(track, placement: Placement, rate_hz: float, t0: float, t1: fl
 
 def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz: float = 20.0,
                report: ShowReport | None = None, venue: dict | None = None) -> Path:
-    """Write slot_NN.json per drone plus manifest.json. Returns the manifest path."""
+    """Write drone_NNN.json per drone (by drone ID) plus manifest.json. Returns the manifest path."""
     pl = placement or Placement()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     t0, t1 = show.t_start, show.duration
-    slots = []
-    for k, d in enumerate(show.drones, 1):
+    drones = []
+    for k, d in zip(drone_ids(show), show.drones):
         S = drone_samples(d, pl, rate_hz, t0, t1)
         home = S[0, 1:4]
         doc = {
-            "format": FORMAT, "slot": k, "name": d.name, "frame": "NED",
+            "format": FORMAT, "drone_id": k, "name": d.name, "frame": "NED",
             "frame_note": "metres from the venue origin (calibration square corner): N along its long arm, "
                           "E along its short arm, D down. Time in seconds from the show start.",
             "rate_hz": rate_hz, "yaw_deg": 0.0, "home_ned": [round(float(x), 3) for x in home],
@@ -57,14 +79,14 @@ def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz:
             "samples": [[round(float(x), 4) for x in row] for row in S],
         }
         text = json.dumps(doc, separators=(",", ":"))
-        name = f"slot_{k:02d}.json"
+        name = f"drone_{k:03d}.json"
         (out / name).write_text(text)
-        slots.append({"slot": k, "name": d.name, "file": name, "home_ned": doc["home_ned"],
+        drones.append({"drone_id": k, "name": d.name, "file": name, "home_ned": doc["home_ned"],
                       "sha256": hashlib.sha256(text.encode()).hexdigest()})
     manifest = {
         "format": "idps-show/1", "source": show.source, "duration_s": float(t1 - t0), "rate_hz": rate_hz,
         "placement": {"axes": pl.axes, "rotate_deg": pl.rotate_deg, "offset_ned": list(pl.offset_ned)},
-        "venue": venue or {}, "slots": slots,
+        "venue": venue or {}, "drones": drones,
         "check": None if report is None else {"ok": report.ok, "summary": report.summary(),
                                               "errors": sum(f.severity == "error" for f in report.findings),
                                               "warnings": sum(f.severity == "warning" for f in report.findings)},

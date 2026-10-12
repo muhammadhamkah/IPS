@@ -1,11 +1,11 @@
 # Designing and flying a show
 
 ```
-Blender + Skybrush Studio ──.skyc──▶ idps-show check ──▶ idps-show export ──▶ slot_NN.json + manifest.json
+Blender + Skybrush Studio ──.skyc──▶ idps-show check ──▶ idps-show export ──▶ drone_NNN.json + manifest.json
   (design inside the                 (venue, cameras,     (one file per                │
-   IDPS venue)                         limits, spacing)     drone slot, NED)             ▼
+   IDPS venue)                         limits, spacing)     drone ID, NED)               ▼
                                                                           idps-show fly (PC) ──Wi-Fi, MAVLink──▶ PX4 on each drone
-                                                                            • setpoints from each slot file, 50 Hz
+                                                                            • setpoints from each drone's file, 50 Hz
                                                                             • IDPS position + heading 0 (North)
 ```
 
@@ -66,7 +66,7 @@ The report gives the time, the NED position and the drones involved for each pro
 included demo show (`idps-show demo`) passes. Shifted 2 m North, it fails with *outside* and
 *coverage* errors, which is the kind of mistake this step exists to catch.
 
-## 3. Export one file per drone slot
+## 3. Export one file per drone ID
 
 ```
 idps-show export show.skyc --site venue.yaml --plan plan.yaml -o out/show
@@ -75,18 +75,26 @@ idps-show export show.skyc --site venue.yaml --plan plan.yaml -o out/show
 The export **runs the checks first and refuses if there are errors**. `--force` overrides
 this, for testing only. It writes:
 
-* `slot_NN.json` (`idps-traj/1`), one per show drone, containing:
+* `drone_NNN.json` (`idps-traj/1`), one per show drone, named by its drone ID, containing:
   * the trajectory sampled at 20 Hz in the venue's NED frame;
   * velocity and acceleration (feed-forward for PX4);
   * LED colour;
   * yaw fixed at 0 = North (D7);
   * the home spot.
-* `manifest.json`: the slots, their home spots, the show length, the placement and the check
+* `manifest.json`: the drone IDs, their home spots, the show length, the placement and the check
   result, with a checksum per file.
 
-**Slots, not drones.** The show defines slots (Drone 1, Drone 2, …). At the venue, any drone
-can be put on any slot's home spot. IDPS identifies which drone stands there from its marker
-ID, and that drone gets the slot's file.
+**Drone IDs (D21).** Every physical drone has a fixed ID from 1 to 255, set once:
+* PX4 `MAV_SYS_ID` = the ID, so the drone answers to it over MAVLink;
+* its IR marker blinks the same ID;
+* a label on the drone shows it.
+
+The show's **Drone 7** (the number in the Blender/Skybrush name) is flown by the drone with
+**ID 7**, from `drone_007.json`. That drone is put on Drone 7's home spot. Names without
+numbers are numbered 1..N in order. Two drones with the same number stop the export.
+
+To swap in a spare drone, give the spare the missing drone's ID (set `MAV_SYS_ID` and its
+marker), or rename the drone in the show.
 
 ## 4. Fly: the PC drives every drone (PX4)
 
@@ -106,23 +114,35 @@ ID, and that drone gets the slot's file.
 
 **Flying the show:**
 ```
-idps-show fly out/show/manifest.json --link 1=udpout:192.168.50.101:14550 --link 2=udpout:192.168.50.102:14550 ...
+idps-show fly out/show/manifest.json --link 1=udpout:192.168.50.101:14550 --link 7=udpout:192.168.50.107:14550 ...
 ```
 `idps/show/fleet.py` runs every drone from one loop at 50 Hz.
 * **To each drone it sends:**
   * MAVLink `ODOMETRY`: the IDPS position in NED plus heading 0, for every drone the engine
     currently sees;
   * `SET_POSITION_TARGET_LOCAL_NED`: position, velocity and acceleration from the drone's
-    slot file, plus yaw 0 (type mask 2048).
+    own file, plus yaw 0 (type mask 2048).
 * **Home first:** it streams the home setpoints from the moment it starts, because PX4 only
   accepts OFFBOARD once setpoints are flowing. Arm the drones and switch them to OFFBOARD; the
   show starts at `--start`, or 5 s after launch by default.
 * **No clock sync on the drones:** all timing comes from the PC.
 
-`--link` pairs each slot with the drone standing on that slot's home spot. IDPS will check the
-pairing from the marker IDs once the engine is built. Until then, `fly` runs only against
-PX4 SITL (`--sitl`), where the simulated drones position themselves. `idps-show play
-slot_NN.json` flies a single slot (`--dry-run` prints it).
+`--link DRONE_ID=address` gives each drone's network address. `fly` checks that the drone
+at that address answers with that `MAV_SYS_ID`, so a mixed-up address can't send Drone 3's
+path to drone 7.
+
+**Pre-flight check: every drone on its own spot.** Before arming, the cameras read every
+marker ID on the ground, and `FleetPlayer.preflight` blocks take-off on any of these:
+* *Drone 4: not seen*;
+* *Drone 1: on Drone 2's spot*;
+* *Drone 3: 1.00 m from its spot*;
+* *Marker 9: a drone that is not in this show*;
+* a drone with no link.
+
+The check runs on the engine's positions, so until the engine is built `fly` runs only
+against PX4 SITL (`--sitl`), where the simulated drones position themselves.
+
+`idps-show play drone_007.json` flies a single drone (`--dry-run` prints it).
 
 **PX4 parameters:**
 * external vision: `EKF2_EV_CTRL` = horizontal position + vertical position + yaw;
@@ -146,9 +166,10 @@ Latency and dropouts matter more than bandwidth; measure them in Phase 7.
 * **Drone flight controller with Wi-Fi.** Choose the board (PX4 support, weight, Wi-Fi
   range and latency), or a standard PX4 board plus a Wi-Fi MAVLink bridge.
 * **Still to build:**
-  * the engine's position stream to `fly`, with slot pairing from marker IDs;
+  * the engine's position stream to `fly`, and the pre-flight check on live marker IDs;
   * the heading monitor (R20);
-  * a dashboard **Show** tab: 3D playback, check results, slot assignment, start and abort;
+  * a dashboard **Show** tab: 3D playback, check results, the pre-flight check per drone ID,
+    start and abort;
   * rehearsing a show in the simulator with the live-monitoring brain watching.
 * **Verify with PX4 SITL** (the simulator) before the first flight:
   * external-vision heading with the magnetometer off;

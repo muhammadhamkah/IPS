@@ -122,7 +122,7 @@ def _junk(name: str) -> bool:
 
 
 def _natural(name: str):
-    """Sort key so 'Drone 2' comes before 'Drone 10': drone N becomes slot N."""
+    """Sort key so 'Drone 2' comes before 'Drone 10': Drone N keeps drone ID N."""
     return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", name)]
 
 

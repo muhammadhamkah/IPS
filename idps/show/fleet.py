@@ -7,11 +7,15 @@ few-gram Wi-Fi-to-serial MAVLink bridge), so the PC does everything a companion 
   the IDPS position in the venue's NED frame, and the heading. Drones never yaw and always
   face North (D7), so the heading sent is the fixed yaw 0. PX4's EKF2 fuses both as external
   vision; that heading is also what replaces the magnetometer (off indoors).
-* **Show out.** For every slot, ``SET_POSITION_TARGET_LOCAL_NED`` at 50 Hz from the slot's
+* **Show out.** For every drone, ``SET_POSITION_TARGET_LOCAL_NED`` at 50 Hz from its
   file (position, velocity, acceleration, yaw 0), exactly as ``idps.show.runner`` does for
   one drone.
 
 Everything runs on the PC's clock, so the drones need no clock sync of their own.
+
+Drones are addressed by **drone ID** (D21): the same number is the show's "Drone N", the
+drone's PX4 ``MAV_SYS_ID`` and its IR marker ID. ``preflight`` checks, from the marker IDs the
+cameras see, that every drone stands on its own home spot before anything takes off.
 """
 from __future__ import annotations
 
@@ -67,8 +71,8 @@ class Fix:
 class FleetPlayer:
     """Streams positions and setpoints to every drone of a show.
 
-    ``links`` maps slot number -> pymavlink connection. ``positions`` (in ``tick``/``run``)
-    is a callable returning {slot: Fix} for the drones the engine currently sees; a drone
+    ``links`` maps drone ID -> pymavlink connection. ``positions`` (in ``tick``/``run``)
+    is a callable returning {drone ID: Fix} for the drones the engine currently sees; a drone
     missing from it gets no ODOMETRY that tick (PX4 then times out and lands if it lasts).
     """
 
@@ -78,27 +82,52 @@ class FleetPlayer:
         if man.get("format") != "idps-show/1":
             raise ValueError("not an idps-show/1 manifest")
         self.manifest = man
-        self.players = {s["slot"]: TrajectoryPlayer(path.parent / s["file"]) for s in man["slots"]}
+        self.players = {d["drone_id"]: TrajectoryPlayer(path.parent / d["file"]) for d in man["drones"]}
+        self.homes = {d["drone_id"]: np.asarray(d["home_ned"], float) for d in man["drones"]}
         unknown = set(links) - set(self.players)
         if unknown:
-            raise ValueError(f"no such slot(s) in the show: {sorted(unknown)}")
+            raise ValueError(f"drone ID(s) not in the show: {sorted(unknown)}")
         self.links = links
         self.yaw = yaw_rad
         self.t_end = max(p.t[-1] for p in self.players.values())
 
+    def preflight(self, seen: dict, tol_m: float = 0.3) -> list[str]:
+        """Problems that must block take-off, from what the cameras see on the ground.
+
+        ``seen`` maps marker ID (= drone ID) -> NED position. Returns plain-language problems:
+        a show drone not seen, a drone on another drone's spot or off its own, a marker that
+        is not in the show, and a drone with no link. Empty list = clear to arm.
+        """
+        problems = []
+        for did, home in sorted(self.homes.items()):
+            if did not in seen:
+                problems.append(f"Drone {did}: not seen (missing, marker off, or blocked)")
+                continue
+            off = float(np.linalg.norm(np.asarray(seen[did], float)[:2] - home[:2]))
+            if off > tol_m:
+                other = [o for o, h in self.homes.items()
+                         if o != did and np.linalg.norm(np.asarray(seen[did], float)[:2] - h[:2]) <= tol_m]
+                where = f"on Drone {other[0]}'s spot" if other else f"{off:.2f} m from its spot"
+                problems.append(f"Drone {did}: {where} (home N {home[0]:.2f} E {home[1]:.2f})")
+        for mid in sorted(set(seen) - set(self.homes)):
+            problems.append(f"Marker {mid}: a drone that is not in this show is in the area")
+        for did in sorted(set(self.homes) - set(self.links)):
+            problems.append(f"Drone {did}: no link given")
+        return problems
+
     def tick(self, show_t: float, positions: dict, now_s: float, boot_s: float) -> None:
         ms = int((now_s - boot_s) * 1000)
-        for slot, mav in self.links.items():
-            fix = positions.get(slot)
+        for did, mav in self.links.items():
+            fix = positions.get(did)
             if fix is not None:
                 mav.mav.odometry_send(**odometry_fields(fix.ned, int(now_s * 1e6), self.yaw, fix.vel))
-            sp = self.players[slot].setpoint(show_t)
+            sp = self.players[did].setpoint(show_t)
             mav.mav.set_position_target_local_ned_send(mav.target_system, mav.target_component,
                                                        **sp.mavlink_fields(ms))
 
     def run(self, start_epoch_s: float, positions=lambda: {}, clock=time.time, sleep=time.sleep,
             abort=lambda: False) -> None:
-        """From now (home setpoints, so PX4 accepts OFFBOARD) to 2 s after the last slot ends."""
+        """From now (home setpoints, so PX4 accepts OFFBOARD) to 2 s after the last drone ends."""
         period = 1.0 / SETPOINT_HZ
         boot = clock()
         while not abort():
@@ -111,11 +140,11 @@ class FleetPlayer:
 
 
 def parse_links(specs) -> dict:
-    """['1=udpout:192.168.50.101:14550', ...] -> {1: 'udpout:...'}"""
+    """['7=udpout:192.168.50.107:14550', ...] -> {7: 'udpout:...'} (drone ID = DEVICE)"""
     out = {}
     for s in specs or []:
-        slot, _, dev = s.partition("=")
+        did, _, dev = s.partition("=")
         if not dev:
-            raise ValueError(f"--link needs SLOT=DEVICE, got {s!r}")
-        out[int(slot)] = dev
+            raise ValueError(f"--link needs DRONE_ID=DEVICE, got {s!r}")
+        out[int(did)] = dev
     return out
