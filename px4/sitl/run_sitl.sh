@@ -33,7 +33,7 @@ export PX4_PARAM_EKF2_EV_CTRL=11 PX4_PARAM_EKF2_HGT_REF=3 PX4_PARAM_EKF2_GPS_CTR
 # default, while the show file climbs from its first second).
 export PX4_PARAM_SIH_KDV=0.2 PX4_PARAM_MPC_XY_P=1.8 PX4_PARAM_MPC_XY_VEL_P_ACC=4.0 PX4_PARAM_MPC_XY_VEL_I_ACC=1.5 \
        PX4_PARAM_MPC_Z_P=1.5 PX4_PARAM_MPC_Z_VEL_P_ACC=6.0 \
-       PX4_PARAM_MPC_TKO_RAMP_T=0.5
+       PX4_PARAM_MPC_TKO_RAMP_T=0.5 PX4_PARAM_SIM_BAT_MIN_PCT=100   # simulated battery never drains (no low-battery failsafe)
 # DRONE=micro60: a 60 g indoor show quad (65 mm frame: motors 2.3 cm from the axes, thrust/weight
 # 3.5, 20 ms motors, inertia 3e-5 / 3e-5 / 5e-5 kg m^2) instead of SIH's 1 kg default, with
 # show-drone limits (5 m/s up, 4 m/s down, 60 degree tilt) and rate gains scaled down for its

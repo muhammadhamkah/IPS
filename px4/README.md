@@ -140,6 +140,15 @@ on micro60. What it took to get within 3 cm:
 | Velocity loop with D and a large I term; drag carried by the vertical P term alone | `MPC_XY_VEL_D_ACC` 0, `MPC_XY_VEL_I_ACC` 0.5, `MPC_XY_P` 5, `MPC_Z_P` 4, `MPC_Z_VEL_P_ACC` 12, `MPC_Z_VEL_I_ACC` 4 |
 | A new clock-sync point moved show time by up to 10 ms at once: a 1 cm setpoint jump at 1 m/s | The module plays the show on a slewed clock (catches up at 5 ms/s, never steps) |
 
+**One command** builds the show, starts the drones, flies and scores it:
+
+```
+PX4_DIR=~/PX4-Autopilot px4/sitl/run_loop.sh vision    # engine-like positions inside PX4
+PX4_DIR=~/PX4-Autopilot px4/sitl/run_loop.sh cameras   # the closed loop: simulated cameras + engine
+```
+
+`N=3` flies 3 of the 5 drones; results and logs go to `out/loop`.
+
 To measure tracking, the module reports how far the drone is from its file at its own show time
 (`DEBUG_FLOAT_ARRAY "track"`, logged by the stand-in as `truth.track.csv` and by `idps-sim px4`
 as `track.csv`). Comparing the PC's clock with the simulator's would add the simulator's clock
@@ -155,6 +164,10 @@ slips (it runs a few % off real time and stalls under load) to the error.
 | Exact, but `IMU_NOISE` 0.25 | 6–8 mm | 31 mm |
 | Exact, 40 ms late and not compensated (`EV_DELAY_MS=0`) | 5–8 mm | 51 mm |
 
+* **Repeat runs vary.** Most runs stay within 2.2 cm, but some show one smooth 4–10 cm sag on
+  one or two drones at once (3-drone runs: 5 of 6 within 3 cm; 5-drone runs on a 4-core machine:
+  1 of 4). That the sags hit separate simulated drones at the same instant points to the host
+  starving the simulators rather than the flight code; confirm on a faster machine.
 * **The IMU's vibration decides it.** At SIH's full noise the drones wander 2 cm RMS whatever the
   tuning (worst 7–10 cm); at 0.1 they stay within 2.2 cm, at 0.25 just over 3 cm. 0.1 is still
   several times a bare MEMS IMU's noise; on a real 60 g quad it means balanced props and a

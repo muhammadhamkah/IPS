@@ -243,8 +243,11 @@ int64_t IdpsShow::show_clock_us(hrt_abstime now)
 	// jump the setpoint. Run with the local clock (at the synced rate) and slew towards the sync.
 	const int64_t target = pc_now_us(now);
 
-	if (_show_pc_at == 0 || now <= _show_pc_at) {
+	if (_show_pc_at == 0) {
 		_show_pc = target;
+
+	} else if (now <= _show_pc_at) {
+		return _show_pc;                // no time has passed (the simulator's clock may stand still)
 
 	} else {
 		const double dt = (double)(now - _show_pc_at);
