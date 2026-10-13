@@ -24,7 +24,7 @@
  *
  * Start sequence: from the start command it streams the home setpoint (so PX4 accepts
  * OFFBOARD), switches to OFFBOARD 3 s before the start, arms 2 s before, and at the start
- * plays the file at 50 Hz (position, velocity and acceleration, yaw fixed). At the end, or on
+ * plays the file at 200 Hz (position, velocity and acceleration, yaw fixed). At the end, or on
  * abort, it commands LAND. If anything else takes the drone out of OFFBOARD (a failsafe, the
  * pilot), it stops and leaves the drone to PX4.
  */
@@ -39,6 +39,11 @@
 #include <systemlib/mavlink_log.h>
 #include <uORB/Publication.hpp>
 #include <uORB/Subscription.hpp>
+#include <uORB/topics/debug_array.h>
+#include <uORB/topics/debug_vect.h>
+#include <uORB/topics/vehicle_attitude.h>
+#include <uORB/topics/vehicle_odometry.h>
+#include <lib/parameters/param.h>
 #include <uORB/topics/offboard_control_mode.h>
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/vehicle_command.h>
@@ -48,6 +53,8 @@
 #include <uORB/topics/vehicle_status.h>
 
 using namespace time_literals;
+
+static constexpr hrt_abstime SETPOINT_PERIOD = 5_ms;   // 200 Hz: at 1.2 m/s a setpoint moves 6 mm per period
 
 class IdpsShow : public ModuleBase<IdpsShow>, public px4::ScheduledWorkItem
 {
@@ -77,10 +84,12 @@ private:
 	void ack(const vehicle_command_s &cmd, uint8_t result);
 	void send_vehicle_command(uint32_t command, float param1 = NAN, float param2 = NAN);
 	void publish_setpoint(hrt_abstime now, float show_t);
+	bool evaluate(float show_t, trajectory_setpoint_s &sp);
 	static bool pc_time_us(const vehicle_command_s &cmd, int64_t &t_us);
 	void sync_add(hrt_abstime local, int64_t pc_us);
 	bool sync_valid(hrt_abstime now) const;
 	int64_t pc_now_us(hrt_abstime now) const;
+	int64_t show_clock_us(hrt_abstime now);
 	const char *state_name() const;
 
 	static constexpr hrt_abstime MODE_LEAD = 3_s;          // switch to OFFBOARD this long before the start
@@ -93,6 +102,7 @@ private:
 	// Clock sync with the PC: per-second minima of (local receive time - PC send time).
 	static constexpr int SYNC_BUCKETS = 16;
 	static constexpr hrt_abstime SYNC_BUCKET = 1_s;
+	static constexpr double CLOCK_SLEW = 0.005;              // show clock catches up with a sync change at 5 ms/s
 	struct SyncPoint { hrt_abstime t; int64_t d; };
 	SyncPoint _sync[SYNC_BUCKETS] {};
 	int _sync_count{0};
@@ -109,6 +119,8 @@ private:
 	uint32_t _file_crc{0};
 	State _state{State::NoFile};
 	int64_t _start_pc{0};             // show start in the PC's clock (µs)
+	int64_t _show_pc{0};              // the PC's clock as the show plays it: slewed, never stepped
+	hrt_abstime _show_pc_at{0};
 	bool _mode_sent{false};
 	bool _arm_sent{false};
 	uint8_t _rgb[3] {};
@@ -123,6 +135,36 @@ private:
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
 	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
+	// Simulator only: SIH's exact position, republished as DEBUG_VECT "truth" for IDPS's SITL tests
+	// (HIL_STATE_QUATERNION carries latitude/longitude in 1.1 cm steps). Nothing publishes it on a drone.
+	uORB::Subscription _groundtruth_sub{ORB_ID(vehicle_local_position_groundtruth)};
+	uORB::Publication<debug_vect_s> _truth_pub{ORB_ID(debug_vect)};
+	uORB::Publication<debug_array_s> _track_pub{ORB_ID(debug_array)};
+	vehicle_local_position_s _gt{};                      // simulator only: the true position
+	bool _have_gt{false};
+
+	// Simulator only (idps_show sitl_vision on [delay_ms [noise_mm [rate_hz]]]): IDPS inside PX4.
+	// The true marker position goes straight to EKF2 as visual odometry, optionally delayed like
+	// a real link (it then carries its arrival time, as MAVLink ODOMETRY does without time sync,
+	// and EKF2_EV_DELAY compensates), with the engine's noise and at its rate. Stands in for the
+	// camera loop where the host cannot run cameras, engine and drones in real time.
+public:
+	void set_sitl_vision(bool on, float delay_ms, float noise_mm, float rate_hz);
+private:
+	void sitl_vision(const vehicle_local_position_s &gt);
+	struct VisionSample { hrt_abstime t; float p[3]; };
+	static constexpr int VISION_BUF = 64;
+	VisionSample _vbuf[VISION_BUF] {};
+	int _vhead{0}, _vcount{0};
+	bool _sitl_vision{false};
+	hrt_abstime _sitl_delay{0};
+	float _sitl_noise{0.f};                    // m, 1 sigma per axis
+	hrt_abstime _sitl_period{0};
+	hrt_abstime _sitl_last{0};
+	float _ev_pos[3] {};
+	uORB::Subscription _attitude_gt_sub{ORB_ID(vehicle_attitude_groundtruth)};
+	vehicle_attitude_s _att_gt{};
+	uORB::Publication<vehicle_odometry_s> _visual_odometry_pub{ORB_ID(vehicle_visual_odometry)};
 
 	uORB::Publication<offboard_control_mode_s> _offboard_control_mode_pub{ORB_ID(offboard_control_mode)};
 	uORB::Publication<trajectory_setpoint_s> _trajectory_setpoint_pub{ORB_ID(trajectory_setpoint)};

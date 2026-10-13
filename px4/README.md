@@ -26,7 +26,7 @@ idps-show export ─▶ drone_007.trj ─▶ idps-show upload ─(MAVLink FTP, W
 3. **Countdown and flight:**
    * It streams the home setpoint.
    * At −3 s it switches to OFFBOARD; at −2 s it arms.
-   * At 0 it flies the file at 50 Hz: position, velocity and acceleration, interpolated
+   * At 0 it flies the file at 200 Hz: position, velocity and acceleration, interpolated
      between the 20 Hz samples, with yaw fixed at 0 (North).
 4. **At the end** it commands LAND, and PX4 disarms on touchdown.
 5. **On `abort`** it commands LAND where the drone is. If anything else takes the drone out
@@ -53,6 +53,10 @@ make px4_fmu-v6c_default EXTERNAL_MODULES_LOCATION=/path/to/IPS/px4   # your fli
 make px4_sitl_default    EXTERNAL_MODULES_LOCATION=/path/to/IPS/px4   # simulator
 ```
 
+For the 60 g simulator profile, also apply `px4/sitl/sih_noise_scale.patch` before building the
+simulator (`git apply /path/to/IPS/px4/sitl/sih_noise_scale.patch`). It only lets SIH's IMU
+noise be scaled from the environment; without it `IMU_NOISE` has no effect.
+
 The PX4 build needs Python 3.11 or 3.12; its `empy` package fails to build on 3.13. A shallow
 clone also needs a NuttX tag for the version script:
 `git -C platforms/nuttx/NuttX/nuttx tag nuttx-11.0.0`.
@@ -72,7 +76,8 @@ clone also needs a NuttX tag for the version script:
 | `EKF2_HGT_REF` | 3 (vision) | Height from IDPS |
 | `EKF2_GPS_CTRL`, `EKF2_BARO_CTRL` | 0 | Indoors: IDPS only |
 | `EKF2_MAG_TYPE` | 5 (none), and `SYS_HAS_MAG` 0 | Heading comes from IDPS as 0 = North (D20, R20) |
-| `EKF2_EV_DELAY` | measured | Camera exposure to PX4, over Wi-Fi |
+| `EKF2_EV_DELAY` | measured | Camera exposure to PX4: what `idps-engine live` reports as "exposure to send", plus Wi-Fi |
+| `EKF2_DELAY_MAX` | `EKF2_EV_DELAY` + 10 ms | EKF2 fuses this far in the past and predicts the rest from the IMU. PX4's 200 ms default leaves centimetres of IMU drift in every position |
 | `MPC_TKO_RAMP_T` | 0.5 s | PX4 eases into a take-off over 3 s by default, while the show file climbs from its first second |
 | `EKF2_EV_POS_X/Y/Z` | marker offset | If the marker isn't at the reference point (R16) |
 | `COM_OF_LOSS_T`, `COM_OBL_RC_ACT` | e.g. 0.5 s, Land | If the module stops streaming |
@@ -122,6 +127,41 @@ the torque arms by the same factor of 10. The dynamics are identical, and the in
 * all five flew and landed;
 * about 9 cm median from the path, p95 22–24 cm, worst 0.44–0.6 m.
 
+### Within 3 cm of the file
+
+The choreographed 5-drone show (`examples/shows/five_drones_sphere_square.py`: grid, sphere,
+360° turn, square, turn, grid; 63 s, up to 1.2 m/s) first flew 6–7 cm median and 17–27 cm worst
+on micro60. What it took to get within 3 cm:
+
+| Cause | Fix (all in `run_sitl.sh`'s micro60 profile or the module) |
+|---|---|
+| EKF2 fused vision 200 ms in the past (`EKF2_DELAY_MAX`, raised by unused sensors' delays) and integrated the noisy IMU over the rest: 2–4 cm of estimate error | `EKF2_DELAY_MAX` = vision delay + 10 ms; other sensors' delays 0; `EKF2_TAU_POS/VEL` 0.1; `EKF2_ACC_NOISE` 1.5 |
+| SIH adds a fixed-wing's in-flight IMU noise (accelerometer 0.5/1.7/1.4 m/s², gyro 8°/s, white): the drone wanders 2–3 cm RMS even hovering | `px4/sitl/sih_noise_scale.patch` lets `IMU_NOISE` scale it; micro60 uses 0.1 (see below) |
+| Velocity loop with D and a large I term; drag carried by the vertical P term alone | `MPC_XY_VEL_D_ACC` 0, `MPC_XY_VEL_I_ACC` 0.5, `MPC_XY_P` 5, `MPC_Z_P` 4, `MPC_Z_VEL_P_ACC` 12, `MPC_Z_VEL_I_ACC` 4 |
+| A new clock-sync point moved show time by up to 10 ms at once: a 1 cm setpoint jump at 1 m/s | The module plays the show on a slewed clock (catches up at 5 ms/s, never steps) |
+
+To measure tracking, the module reports how far the drone is from its file at its own show time
+(`DEBUG_FLOAT_ARRAY "track"`, logged by the stand-in as `truth.track.csv` and by `idps-sim px4`
+as `track.csv`). Comparing the PC's clock with the simulator's would add the simulator's clock
+slips (it runs a few % off real time and stalls under load) to the error.
+
+**Results** (5 drones, the whole show, positions inside PX4 via `SITL_VISION`, `IMU_NOISE` 0.1):
+
+| Positions | Median | Worst (all drones) |
+|---|---|---|
+| Exact, no delay | 3–4 mm | 20 mm |
+| Exact, 20 ms late (`EV_DELAY_MS=20`) | 3 mm | 15 mm |
+| Like the engine: 2 mm noise, 120 Hz, 28 ms late (`SITL_VISION="28 2 120" EV_DELAY_MS=28`) | 4–5 mm | **22 mm** |
+| Exact, but `IMU_NOISE` 0.25 | 6–8 mm | 31 mm |
+| Exact, 40 ms late and not compensated (`EV_DELAY_MS=0`) | 5–8 mm | 51 mm |
+
+* **The IMU's vibration decides it.** At SIH's full noise the drones wander 2 cm RMS whatever the
+  tuning (worst 7–10 cm); at 0.1 they stay within 2.2 cm, at 0.25 just over 3 cm. 0.1 is still
+  several times a bare MEMS IMU's noise; on a real 60 g quad it means balanced props and a
+  soft-mounted flight controller. Measure it on the real airframe (PX4's `sensor_combined` in
+  hover) before trusting these numbers.
+* **Set `EKF2_EV_DELAY` to the real delay.** 40 ms of uncompensated delay doubles the worst case.
+
 **No quadcopter can accelerate downward faster than gravity:** its propellers only push. A
 path that asks for more than 9.8 m/s² downward (a fast vertical bounce) cannot be followed at
 any weight, however the drone is tuned.
@@ -150,11 +190,14 @@ python px4/sitl/score_loop.py out/loop out/show/manifest.json --start <show time
 
 * **`idps-sim px4`** takes its cameras and camera, timing and network models from the
   scenario. Its drones are the show's drones, each standing on its home spot at the start.
-  * Each SITL drone's true state arrives 100 times a second.
-  * Latitude and longitude come in 1.1 cm steps, which is coarser than the cameras resolve.
-    The simulator therefore follows the drone's velocity and pulls gently towards those
-    steps, which keeps it within about 4 mm of PX4's own truth.
-  * The stations film on the wall clock, and `truth.csv` records what they filmed.
+  * Each SITL drone's true state arrives 100 times a second, with its exact position from the
+    module (`DEBUG_VECT "truth"`; latitude and longitude alone come in 1.1 cm steps).
+  * Each state is timed by PX4's own clock, offset by its quickest delivery: timing states by
+    when Python received them added tens of ms of jitter, centimetres at show speeds.
+  * The last 0.64 s of states are kept, so a frame filmed late still sees each drone where it
+    was at the frame's time.
+  * The stations film on the wall clock, and `truth.csv` records what they filmed; `track.csv`
+    is each drone's distance from its file (see above).
 * **`--workers K`** shares the cameras out over K processes, as a real install has one computer
   per camera. With 5 SITL drones and 11 cameras on a 4-core machine, two workers kept the
   cameras within about 40 ms of the clock (p99).
@@ -178,6 +221,17 @@ engine):
 * **Flight tracking is about as good as with the perfect-position stand-in** (8–11 cm median,
   about 30 cm p95). It comes from PX4 controlling the simulated quad (it wobbles about ±10 cm
   even on smooth parts of the path), not from the positions. Tune the real airframe.
+* **`idps-engine live` reports "exposure to send" every 2 s** (about 25–30 ms here): set
+  `EKF2_EV_DELAY` to it (`EV_DELAY_MS` for `run_sitl.sh`), plus the Wi-Fi delay on real drones.
+* **The loop needs a machine that runs it in real time.** On a 4-core cloud machine, 5 micro60
+  drones and 11 cameras at 60 fps did not fit: with PX4 logging on, the cameras fell seconds
+  behind, and PX4's simulated clocks (lockstep: each instance's own, a few % off and stalling
+  under load) disagreed with the cameras' by tens to hundreds of ms. Positions then reached the
+  drones late and out of step, and the drones flew away although the engine's positions were
+  right (1.5–1.9 mm median, p95 3–4 mm). `PX4_BUILD=px4_sitl_nolockstep` (`make
+  px4_sitl_nolockstep ...`) runs PX4 on the real clock but costs about half a core per drone.
+  Use 8+ cores, `PX4_PARAM_SDLOG_MODE=-1` (no PX4 logs), and check the cameras' "behind the
+  clock" and the engine's "exposure to send" before trusting a loop result.
 * **The default take-off ramp was the worst error.** Each drone sat on the ground for 1.5 s
   while the file climbed, then lurched up to 24 cm sideways: up to 64 cm off in height. With
   `MPC_TKO_RAMP_T` = 0.5 s it lifts off with the file.

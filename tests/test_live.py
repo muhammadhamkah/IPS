@@ -52,6 +52,18 @@ def test_sitl_drone_state_in_world_frame():
     assert math.isclose(s[13], 20.0, abs_tol=1e-6) and s[10] > 0
 
 
+def test_sitl_drone_times_states_by_px4_clock_not_by_arrival():
+    """States arriving late by a jittery delay are timed by PX4's own clock (which may run a
+    few % fast), offset by the quickest delivery."""
+    d = SitlDrone(0, 1, [0, 0, 0], 0.0, Frame())
+    rng = np.random.default_rng(1)
+    for k in range(1000):
+        px4 = 100.0 + k * 0.01
+        pc = 5.0 + k * 0.01 / 1.03                                    # PX4's clock 3 % fast
+        got = d._pc_time(pc + 0.002 + rng.exponential(0.02), px4)
+    assert abs(got - (pc + 0.002)) < 0.003
+
+
 def test_sitl_world_extrapolates_and_reads_consistently():
     frame = Frame()
     rows = [{"drone_id": 1, "home_ned": [0, 0, 0]}, {"drone_id": 2, "home_ned": [1, 0, 0]}]
@@ -59,10 +71,21 @@ def test_sitl_world_extrapolates_and_reads_consistently():
     assert w.wait(0.0) == [1, 2]
     SitlWorld.write(w.arr, 0, np.r_[1.0, 0, 0, 1, 2.0, 0, 0, 0, 0, 0.08, 0, 0, 1, 0])
     SitlWorld.write(w.arr, 1, np.r_[1.0, 1, 0, 1, 0, 0, 0, 0, 0, 0.08, 0, 0, 1, 0])
-    assert w.wait(0.0) == [] and (w.arr[:, 0] == 2).all()
+    assert w.wait(0.0) == []
     P, M, U, tilt = w.state(1.01)
     assert np.allclose(P[0], [0.02, 0, 1]) and np.allclose(M[1], [1, 0, 1.08])
     assert np.allclose(w.state(5.0)[0][0], [0.1, 0, 1])               # extrapolation capped at 50 ms
+
+
+def test_sitl_world_films_a_late_frame_where_the_drone_was():
+    """A frame rendered late (the host was busy) still sees each drone at the frame's time."""
+    w = SitlWorld([{"drone_id": 1, "home_ned": [0, 0, 0]}], 0.0, Frame())
+    for k in range(200):                                              # 2 s at 100 Hz, 1 m/s along x
+        t = k * 0.01
+        SitlWorld.write(w.arr, 0, np.r_[t, t, 0, 1, 1.0, 0, 0, 0, 0, 0.08, 0, 0, 1, 0])
+    P, M, _, _ = w.state(1.555)                                       # 0.43 s behind the newest snap
+    assert np.allclose(P[0], [1.555, 0, 1]) and np.allclose(M[0], [1.555, 0, 1.08])
+    assert np.allclose(w.state(0.2)[0][0], [1.31, 0, 1])              # older than the ring: from its oldest
 
 
 def test_cameras_filming_sitl_drones_feed_the_engine(tmp_path):

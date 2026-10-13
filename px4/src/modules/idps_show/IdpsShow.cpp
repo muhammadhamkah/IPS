@@ -1,13 +1,14 @@
 #include "IdpsShow.hpp"
 
 #include <lib/mathlib/mathlib.h>
+#include <lib/matrix/matrix/math.hpp>
 #include <math.h>
 #include <px4_platform_common/getopt.h>
 #include <px4_platform_common/log.h>
 #include <string.h>
 
 IdpsShow::IdpsShow() :
-	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::lp_default)
+	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::nav_and_controllers)   // with the position controller
 {
 	snprintf(_path, sizeof(_path), "%s/idps_show.trj", PX4_STORAGEDIR);
 }
@@ -15,7 +16,7 @@ IdpsShow::IdpsShow() :
 bool IdpsShow::init()
 {
 	load();                        // a file left from an earlier upload is ready straight away
-	ScheduleOnInterval(20_ms);     // 50 Hz
+	ScheduleOnInterval(SETPOINT_PERIOD);
 	return true;
 }
 
@@ -236,6 +237,26 @@ int64_t IdpsShow::pc_now_us(hrt_abstime now) const
 	return (int64_t)now - (int64_t)llround(offset);
 }
 
+int64_t IdpsShow::show_clock_us(hrt_abstime now)
+{
+	// A new clock sync point can move the PC's time by a few ms; stepping the show by that would
+	// jump the setpoint. Run with the local clock (at the synced rate) and slew towards the sync.
+	const int64_t target = pc_now_us(now);
+
+	if (_show_pc_at == 0 || now <= _show_pc_at) {
+		_show_pc = target;
+
+	} else {
+		const double dt = (double)(now - _show_pc_at);
+		const int64_t predicted = _show_pc + (int64_t)llround(dt * (1.0 - _sync_b));   // pc = local - offset
+		const int64_t step = (int64_t)llround(dt * CLOCK_SLEW);
+		_show_pc = predicted + math::constrain(target - predicted, -step, step);
+	}
+
+	_show_pc_at = now;
+	return _show_pc;
+}
+
 void IdpsShow::handle_command(const vehicle_command_s &cmd)
 {
 	if (cmd.command != vehicle_command_s::VEHICLE_CMD_CUSTOM_0) {
@@ -322,6 +343,26 @@ void IdpsShow::handle_command(const vehicle_command_s &cmd)
 
 void IdpsShow::publish_setpoint(hrt_abstime now, float show_t)
 {
+	trajectory_setpoint_s sp{};
+
+	if (!evaluate(show_t, sp)) {
+		abort("show file read error");
+		return;
+	}
+
+	sp.timestamp = now;
+
+	offboard_control_mode_s ocm{};
+	ocm.position = true;
+	ocm.velocity = true;
+	ocm.acceleration = true;
+	ocm.timestamp = now;
+	_offboard_control_mode_pub.publish(ocm);
+	_trajectory_setpoint_pub.publish(sp);
+}
+
+bool IdpsShow::evaluate(float show_t, trajectory_setpoint_s &sp)
+{
 	const idps::TrjHeader &h = _file.header();
 	const float h_s = 1.f / h.rate_hz;
 	float fidx = (show_t - h.t0) * h.rate_hz;
@@ -338,16 +379,13 @@ void IdpsShow::publish_setpoint(hrt_abstime now, float show_t)
 	idps::TrjSample a{}, b{};
 
 	if (!_file.sample(k, a) || !_file.sample(k + 1, b)) {
-		abort("show file read error");
-		return;
+		return false;
 	}
 
 	// Cubic Hermite through the samples' positions and velocities; acceleration linear.
 	const float f2 = f * f, f3 = f2 * f;
 	const float h00 = 2 * f3 - 3 * f2 + 1, h10 = f3 - 2 * f2 + f, h01 = -2 * f3 + 3 * f2, h11 = f3 - f2;
 	const float d00 = 6 * f2 - 6 * f, d10 = 3 * f2 - 4 * f + 1, d01 = -6 * f2 + 6 * f, d11 = 3 * f2 - 2 * f;
-
-	trajectory_setpoint_s sp{};
 
 	for (int i = 0; i < 3; i++) {
 		sp.position[i] = h00 * a.pos[i] + h10 * h_s * a.vel[i] + h01 * b.pos[i] + h11 * h_s * b.vel[i];
@@ -359,15 +397,7 @@ void IdpsShow::publish_setpoint(hrt_abstime now, float show_t)
 
 	sp.yaw = h.yaw;
 	sp.yawspeed = NAN;
-	sp.timestamp = now;
-
-	offboard_control_mode_s ocm{};
-	ocm.position = true;
-	ocm.velocity = true;
-	ocm.acceleration = true;
-	ocm.timestamp = now;
-	_offboard_control_mode_pub.publish(ocm);
-	_trajectory_setpoint_pub.publish(sp);
+	return true;
 }
 
 void IdpsShow::Run()
@@ -387,6 +417,25 @@ void IdpsShow::Run()
 		_landed = land.landed;
 	}
 
+	vehicle_local_position_s gt;
+
+	if (_groundtruth_sub.update(&gt)) {
+		debug_vect_s v{};
+		strncpy(v.name, "truth", sizeof(v.name));
+		v.x = gt.x;
+		v.y = gt.y;
+		v.z = gt.z;
+		v.timestamp = gt.timestamp;
+		_truth_pub.publish(v);
+
+		if (_sitl_vision) {
+			sitl_vision(gt);
+		}
+
+		_gt = gt;
+		_have_gt = true;
+	}
+
 	vehicle_command_s cmd{};
 
 	while (_vehicle_command_sub.update(&cmd)) {
@@ -404,7 +453,12 @@ void IdpsShow::Run()
 	const bool armed = _status.arming_state == vehicle_status_s::ARMING_STATE_ARMED;
 	const bool offboard = _status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD;
 
-	const int64_t to_start = _start_pc - pc_now_us(now);      // µs until the show starts
+	// µs until the show starts; while waiting the show clock follows the sync exactly
+	const int64_t to_start = _start_pc - (_state == State::Running ? show_clock_us(now) : pc_now_us(now));
+
+	if (_state == State::Waiting) {
+		_show_pc_at = 0;
+	}
 
 	if (_state == State::Waiting) {
 		// Stream the home setpoint until the start, so PX4 accepts OFFBOARD.
@@ -451,8 +505,30 @@ void IdpsShow::Run()
 	}
 
 	const idps::TrjHeader &h = _file.header();
-	const float show_t = h.t0 + (float)((double)(-to_start) * 1e-6);
+	// evaluated half a period ahead: the controller uses each setpoint until the next one
+	const float show_t = h.t0 + (float)((double)(-to_start + (int64_t)SETPOINT_PERIOD / 2) * 1e-6);
 	publish_setpoint(now, show_t);
+
+	if (_have_gt) {
+		// simulator only: how far the drone is from the file at its own show time, unaffected by
+		// how the PC and the simulator's clocks run (each simulated drone starts at its home spot)
+		trajectory_setpoint_s plan{};
+
+		if (evaluate(show_t - (float)SETPOINT_PERIOD * 0.5e-6f, plan)) {
+			debug_array_s v{};
+			strncpy(v.name, "track", sizeof(v.name));
+
+			const float gt_pos[3] {_gt.x, _gt.y, _gt.z};
+
+			for (int i = 0; i < 3; i++) {
+				v.data[i] = gt_pos[i] + h.home[i] - plan.position[i];
+			}
+
+			v.data[3] = show_t;
+			v.timestamp = now;
+			_track_pub.publish(v);
+		}
+	}
 
 	if (show_t > h.t0 + (float)(h.count - 1) / h.rate_hz + 0.5f) {
 		finish();
@@ -506,8 +582,92 @@ int IdpsShow::task_spawn(int argc, char *argv[])
 	return PX4_ERROR;
 }
 
+void IdpsShow::set_sitl_vision(bool on, float delay_ms, float noise_mm, float rate_hz)
+{
+	const char *names[3] = {"EKF2_EV_POS_X", "EKF2_EV_POS_Y", "EKF2_EV_POS_Z"};
+
+	for (int i = 0; i < 3; i++) {
+		param_t p = param_find(names[i]);
+		_ev_pos[i] = 0.f;
+
+		if (p != PARAM_INVALID) {
+			param_get(p, &_ev_pos[i]);
+		}
+	}
+
+	_sitl_delay = (hrt_abstime)(fmaxf(delay_ms, 0.f) * 1000.f);
+	_sitl_noise = fmaxf(noise_mm, 0.f) * 1e-3f;
+	_sitl_period = rate_hz > 0.f ? (hrt_abstime)(1e6f / rate_hz) : 0;
+	_vcount = 0;
+	_sitl_vision = on;
+	PX4_INFO("SITL vision %s, delay %.1f ms, noise %.1f mm, %.0f Hz", on ? "on" : "off", (double)delay_ms,
+		 (double)noise_mm, (double)rate_hz);
+}
+
+void IdpsShow::sitl_vision(const vehicle_local_position_s &gt)
+{
+	_attitude_gt_sub.update(&_att_gt);
+	const matrix::Dcmf R(matrix::Quatf(_att_gt.q));
+	// each simulated drone starts at its own origin, which is its home spot in the venue
+	matrix::Vector3f home{};
+
+	if (_state != State::NoFile) {
+		home = matrix::Vector3f(_file.header().home);
+	}
+
+	const matrix::Vector3f marker = matrix::Vector3f(gt.x, gt.y, gt.z) + home + R * matrix::Vector3f(_ev_pos);
+	const hrt_abstime now = hrt_absolute_time();
+	_vbuf[_vhead] = VisionSample{now, {marker(0), marker(1), marker(2)}};
+	_vhead = (_vhead + 1) % VISION_BUF;
+	_vcount = math::min(_vcount + 1, VISION_BUF);
+
+	// the newest sample at least _sitl_delay old
+	for (int k = 0; k < _vcount; k++) {
+		const VisionSample &s = _vbuf[(_vhead - 1 - k + VISION_BUF) % VISION_BUF];
+
+		if (now - s.t >= _sitl_delay) {
+			if (now < _sitl_last + _sitl_period) {
+				return;
+			}
+
+			_sitl_last = now;
+			vehicle_odometry_s o{};
+			o.timestamp = now;
+			o.timestamp_sample = now;            // its arrival time; EKF2_EV_DELAY says how old it is
+			o.pose_frame = vehicle_odometry_s::POSE_FRAME_NED;
+			for (int i = 0; i < 3; i++) {             // Gaussian noise (Box-Muller)
+				const float u1 = ((float)rand() + 1.f) / ((float)RAND_MAX + 2.f);
+				const float u2 = (float)rand() / (float)RAND_MAX;
+				o.position[i] = s.p[i] + _sitl_noise * sqrtf(-2.f * logf(u1)) * cosf(2.f * M_PI_F * u2);
+			}
+
+			o.q[0] = 1.f;                        // heading 0 = North (D20)
+			o.q[1] = o.q[2] = o.q[3] = 0.f;
+			o.velocity_frame = vehicle_odometry_s::VELOCITY_FRAME_UNKNOWN;
+
+			for (int i = 0; i < 3; i++) {
+				o.velocity[i] = NAN;
+				o.angular_velocity[i] = NAN;
+				o.position_variance[i] = 1e-6f;   // 1 mm
+				o.orientation_variance[i] = 1e-3f;
+				o.velocity_variance[i] = NAN;
+			}
+
+			o.quality = 100;
+			_visual_odometry_pub.publish(o);
+			return;
+		}
+	}
+}
+
 int IdpsShow::custom_command(int argc, char *argv[])
 {
+	if (argc >= 2 && strcmp(argv[0], "sitl_vision") == 0 && is_running()) {
+		get_instance()->set_sitl_vision(strcmp(argv[1], "on") == 0, argc >= 3 ? (float)atof(argv[2]) : 0.f,
+						argc >= 4 ? (float)atof(argv[3]) : 0.f, argc >= 5 ? (float)atof(argv[4]) : 0.f);
+		return 0;
+	}
+
 	return print_usage("unknown command");
 }
 
@@ -526,6 +686,7 @@ time by the IDPS PC with a MAVLink command. See the IDPS repository, docs/SHOW.m
 
 	PRINT_MODULE_USAGE_NAME("idps_show", "system");
 	PRINT_MODULE_USAGE_COMMAND("start");
+	PRINT_MODULE_USAGE_COMMAND_DESCR("sitl_vision", "simulator only: on [delay_ms [noise_mm [rate_hz]]] | off: true positions to EKF2");
 	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
 	return 0;
 }

@@ -11,6 +11,8 @@ import csv
 import sys
 import time
 
+import numpy as np
+
 
 def cmd_replay(a) -> int:
     from idps.engine.calib import load_calibration
@@ -83,7 +85,7 @@ def cmd_live(a) -> int:
     if w:
         w.writerow(["t_ns", "marker_id", "n", "e", "d", "vn", "ve", "vd", "n_cams", "sigma_mm"])
     print(f"listening on udp {a.host}:{a.port}; positions to drone(s) {sorted(mavs) or 'none'}; Ctrl+C to stop")
-    last_print, sent, seen = time.monotonic(), 0, {}
+    last_print, sent, seen, ages = time.monotonic(), 0, {}, []
     try:
         while True:
             try:
@@ -95,11 +97,15 @@ def cmd_live(a) -> int:
                 for f in ing.feed(data):
                     outs += eng.feed(f)
             now = time.monotonic()
+            now_ns = time.time_ns()                         # the system time base (PTP) the exposures are in
             for o in outs:
                 v = vel_ned(frame, o.vel)
                 seen[o.marker_id] = (now, o.n_cams)
                 mav = mavs.get(o.marker_id)                 # drone ID = marker ID (D21)
                 if mav is not None:
+                    # PX4 stamps a position on arrival; EKF2_EV_DELAY is the exposure-to-arrival
+                    # time, so the status line reports the part of it spent up to here
+                    ages.append((now_ns - o.t_ns) * 1e-9)
                     mav.mav.odometry_send(**odometry_fields(o.ned, int(now * 1e6), 0.0, v))
                     sent += 1
                 if w:
@@ -107,9 +113,11 @@ def cmd_live(a) -> int:
                                 o.n_cams, f"{1000 * (o.cov.trace() / 3) ** 0.5:.2f}"])
             if now - last_print >= 2.0:
                 live = {m: c for m, (t, c) in seen.items() if now - t < 0.5}
+                lat = (f"; exposure to send (ms) median {1000 * np.median(ages):.0f}, max {1000 * max(ages):.0f}"
+                       if ages else "")
                 print(f"{len(ing.stations)} stations, {eng.stats['frames']} frames, {eng.n_live_tracks} tracks; "
-                      f"drones with positions: {sorted(live) or 'none'}; sent {sent}")
-                last_print = now
+                      f"drones with positions: {sorted(live) or 'none'}; sent {sent}{lat}", flush=True)
+                last_print, ages = now, []
     except KeyboardInterrupt:
         pass
     finally:
