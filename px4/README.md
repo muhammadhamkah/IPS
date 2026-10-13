@@ -104,6 +104,28 @@ idps-show start  out/show/manifest.json $L --lead 10
 | Abort mid-show | All three landed where they were |
 | Two drones swapped on their spots | Both refused ("2.60 m from home spot"), so nobody started |
 
+## Small show drones (60 g)
+
+`DRONE=micro60 px4/sitl/run_sitl.sh 5` flies SIH as a 60 g indoor show quad instead of its 1 kg
+default:
+* the airframe: a 65 mm frame (motors 2.3 cm from the axes), thrust-to-weight 3.5, 20 ms
+  motors and its real inertia;
+* show-drone limits: 5 m/s up, 4 m/s down, 60° tilt;
+* controller gains to suit: rate gains scaled for its ~10× larger angular authority, 720°/s
+  rates, and firmer position and velocity loops.
+
+SIH only inverts the inertia matrix when its determinant is large enough, and a real 60 g quad's
+is not: the airframe then silently never rotates. The profile therefore multiplies inertia and
+the torque arms by the same factor of 10. The dynamics are identical, and the inverse is valid.
+
+**A 5-drone show** (114 s, up to 2.3 m/s and 8.5 m/s²), flown on exact positions:
+* all five flew and landed;
+* about 9 cm median from the path, p95 22–24 cm, worst 0.44–0.6 m.
+
+**No quadcopter can accelerate downward faster than gravity:** its propellers only push. A
+path that asks for more than 9.8 m/s² downward (a fast vertical bounce) cannot be followed at
+any weight, however the drone is tuned.
+
 ## Closed loop: the simulated cameras fly the drones
 
 Here the stand-in is replaced by the real thing. Nothing in the loop knows where a drone is

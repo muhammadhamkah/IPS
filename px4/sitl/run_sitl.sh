@@ -8,6 +8,7 @@
 #
 #   PX4_DIR=~/PX4-Autopilot px4/sitl/run_sitl.sh 3
 #   EV_DELAY_MS=20 px4/sitl/run_sitl.sh 3       # closed loop: camera exposure -> engine -> PX4 delay
+#   DRONE=micro60 px4/sitl/run_sitl.sh 5         # 60 g show quads instead of 1 kg
 set -e
 PX4_DIR=${PX4_DIR:-$HOME/PX4-Autopilot}
 B=$PX4_DIR/build/px4_sitl_default
@@ -24,6 +25,26 @@ export PX4_PARAM_EKF2_EV_CTRL=11 PX4_PARAM_EKF2_HGT_REF=3 PX4_PARAM_EKF2_GPS_CTR
 export PX4_PARAM_SIH_KDV=0.2 PX4_PARAM_MPC_XY_P=1.8 PX4_PARAM_MPC_XY_VEL_P_ACC=4.0 PX4_PARAM_MPC_XY_VEL_I_ACC=1.5 \
        PX4_PARAM_MPC_Z_P=1.5 PX4_PARAM_MPC_Z_VEL_P_ACC=6.0 \
        PX4_PARAM_MPC_TKO_RAMP_T=0.5
+# DRONE=micro60: a 60 g indoor show quad (65 mm frame: motors 2.3 cm from the axes, thrust/weight
+# 3.5, 20 ms motors, inertia 3e-5 / 3e-5 / 5e-5 kg m^2) instead of SIH's 1 kg default, with
+# show-drone limits (5 m/s up, 4 m/s down, 60 degree tilt) and rate gains scaled down for its
+# ~10x larger angular authority.
+# SIH inverts the inertia matrix only if det(100 I) >= FLT_EPSILON, which a real 60 g quad fails
+# (the airframe then never rotates). Rotation depends only on torque / inertia, so inertia and
+# torque arms (SIH_L_*, SIH_Q_MAX, SIH_KDW) are both 10x: identical dynamics, valid inverse.
+if [ "${DRONE:-}" = micro60 ]; then
+  export PX4_PARAM_SIH_MASS=0.06 PX4_PARAM_SIH_T_MAX=0.515 PX4_PARAM_SIH_T_TAU=0.02 PX4_PARAM_SIH_KDV=0.012 \
+         PX4_PARAM_SIH_L_ROLL=0.23 PX4_PARAM_SIH_L_PITCH=0.23 PX4_PARAM_SIH_Q_MAX=0.03 \
+         PX4_PARAM_SIH_IXX=0.0003 PX4_PARAM_SIH_IYY=0.0003 PX4_PARAM_SIH_IZZ=0.0005 PX4_PARAM_SIH_KDW=0.0003 \
+         PX4_PARAM_MPC_THR_HOVER=0.29 PX4_PARAM_MC_ROLLRATE_K=${RATE_K:-0.15} PX4_PARAM_MC_PITCHRATE_K=${RATE_K:-0.15} \
+         PX4_PARAM_MC_YAWRATE_K=${YAW_K:-0.08} \
+         PX4_PARAM_MPC_Z_VEL_MAX_UP=5 PX4_PARAM_MPC_Z_VEL_MAX_DN=4 PX4_PARAM_MPC_TILTMAX_AIR=60 \
+         PX4_PARAM_MPC_ACC_HOR_MAX=15 PX4_PARAM_MPC_ACC_UP_MAX=10 PX4_PARAM_MPC_ACC_DOWN_MAX=8 \
+         PX4_PARAM_FD_FAIL_R=80 PX4_PARAM_FD_FAIL_P=80 \
+         PX4_PARAM_MC_ROLLRATE_MAX=720 PX4_PARAM_MC_PITCHRATE_MAX=720 PX4_PARAM_MC_ROLL_P=10 PX4_PARAM_MC_PITCH_P=10 \
+         PX4_PARAM_MPC_XY_P=${XY_P:-2.5} PX4_PARAM_MPC_XY_VEL_P_ACC=${XY_VP:-6} PX4_PARAM_MPC_XY_VEL_I_ACC=2 \
+         PX4_PARAM_MPC_XY_VEL_D_ACC=0.3 PX4_PARAM_MPC_Z_P=${Z_P:-2} PX4_PARAM_MPC_Z_VEL_P_ACC=${Z_VP:-8}
+fi
 for ((i=0;i<N;i++)); do
   mkdir -p "$B/rootfs/$i"; cd "$B/rootfs/$i"
   rm -f parameters*.bson dataman

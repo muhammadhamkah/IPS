@@ -7,7 +7,8 @@ The layout was worked out from sample files; fields not listed are not needed he
       0  "XTJZ"
       4  u16  header size (140)        6  u16  1
       8  u32  body size (file size - 140)
-      plain files:  12 u32 drone ID, 16 u16 position rate (Hz), 18 u16 position samples
+      plain files:  12 u32 drone ID, 16 u16 position rate (Hz; read as the rate, but unconfirmed:
+                    see read_xtjz's rate_hz), 18 u16 position samples
       signed files: 12..139 is an opaque 128-byte block (the ID then comes from the file name)
     body: sections, each [u32 length][u8 channel][u8 encoding][u16 8][data]
       channels 1, 2, 3: x, y, z in cm, NED (z negative = above the floor), int16
@@ -71,7 +72,8 @@ def _channel(enc: int, data: bytes, wide: bool) -> np.ndarray:
     return v if wide else v % 256                         # colours are bytes: changes wrap around
 
 
-def read_xtjz(data: bytes, name: str = "") -> XtjzDrone:
+def read_xtjz(data: bytes, name: str = "", rate_hz: float | None = None) -> XtjzDrone:
+    """rate_hz: position samples per second, overriding the header's (and the 20 assumed for signed files)."""
     if data[:2] == b"\x1f\x8b":
         data = gzip.decompress(data)
     if data[:4] != MAGIC or len(data) < HEADER:
@@ -101,7 +103,7 @@ def read_xtjz(data: bytes, name: str = "") -> XtjzDrone:
     if not plain:                                          # signed header: ID from the name ("3.dat")
         m = re.search(r"(\d+)(?:\.\w+)*$", name)
         did, rate = (int(m.group(1)) if m else None), DEFAULT_RATE_HZ
-    return XtjzDrone(did, float(rate), pos, np.clip(rgb, 0, 255), not plain)
+    return XtjzDrone(did, float(rate_hz or rate), pos, np.clip(rgb, 0, 255), not plain)
 
 
 def show_from_xtjz(files: dict[str, bytes], source: str):
