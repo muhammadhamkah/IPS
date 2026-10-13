@@ -58,6 +58,35 @@ The drones carry **no companion computer** (D20).
      the show origin, 10 per second; colours 18 per position (180 per second). Plain and compressed (signed)
      files are both read. The file has no take-off or landing: it starts and ends in the air.
 
+### Or design a show in code (`idps.show.choreo`)
+
+A show built from formations, moves and rotations, without Blender:
+
+```
+python examples/shows/five_drones_sphere_square.py out/five.zip     # writes a Skybrush-style CSV ZIP
+idps-show check out/five.zip --site venue.yaml --plan plan.yaml
+```
+
+* **Moves are minimum-jerk:** they start and stop with zero speed and acceleration.
+* **Rotations** turn a formation about the vertical, eased in and out. The drones keep facing
+  North: they move, they don't yaw.
+* **`move_to(..., assign=True)`** chooses which drone goes to which place, keeping drones as far
+  apart as possible during the move.
+* **`stagger_s`** lets drones start up to that much later than each other, to keep them apart.
+* **`Choreography.plan_chain`** chooses the places for a whole sequence (grid → sphere → square →
+  grid) together. Every drone then ends on its own take-off spot, which the next show's
+  pre-flight check requires.
+
+The example: 5 drones, 63 s, a 1 m grid → sphere → 360° → square → 360° → back to the grid.
+* Up to 1.2 m/s and 1.3 m/s², with the closest designed approach 0.93 m.
+* In the simulator with 60 g quads, flown on camera positions only:
+  * the engine was within p95 3 mm in flight;
+  * the drones were 6–7 cm from the path (median), p95 12–15 cm, worst 23 cm;
+  * every drone landed 4–11 cm from its own take-off spot;
+  * the closest two drones actually came was 0.66 m.
+
+  Design for at least the airframe's tracking error on top of the spacing you need.
+
 ## 2. Check
 
 ```

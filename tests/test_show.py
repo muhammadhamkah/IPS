@@ -397,3 +397,24 @@ def test_check_measures_acceleration_on_sampled_paths():
     q = np.array([1.03, 2.0, 2.97])
     assert np.allclose(sm.sample(q), P[0] * 0 + np.c_[0 * q, 0 * q, 1.5 * q ** 2], atol=1e-3)
     assert np.allclose(sm.sample(q, 1)[:, 2], 3.0 * q, atol=0.02) and np.allclose(sm.sample(q, 2)[:, 2], 3.0, atol=0.2)
+
+
+def test_choreography_five_drone_show(tmp_path):
+    """The example show: smooth, at least 1 m apart throughout, and readable by the show tools."""
+    import sys
+    sys.path.insert(0, str(ROOT / "examples" / "shows"))
+    from five_drones_sphere_square import build
+
+    from idps.show.choreo import Choreography, min_jerk
+    from idps.show.readers import load_show
+    assert min_jerk(0.0) == 0 and min_jerk(1.0) == 1 and abs(min_jerk(0.5) - 0.5) < 1e-12
+    c = build()
+    rep = c.report()
+    assert rep["min_separation_m"] >= 0.92 and rep["max_speed_mps"] < 1.5 and rep["max_accel_mps2"] < 2.0
+    t, P, C = c.arrays()
+    assert np.allclose(P[:, 0], P[:, -1]) and np.allclose(P[:, 0, 2], 0)        # takes off and lands on its spot
+    show = load_show(c.write_csv_zip(tmp_path / "five.zip"))
+    assert len(show.drones) == 5 and abs(show.duration - t[-1]) < 1e-6
+    # assignment: two drones swapping places on a line would collide; crossing is avoided
+    start = np.array([[0.0, 0, 1], [2.0, 0, 1]])
+    assert Choreography.best_assignment(start, start[::-1].copy()) == [1, 0]

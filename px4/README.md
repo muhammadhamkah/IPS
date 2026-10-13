@@ -155,6 +155,9 @@ python px4/sitl/score_loop.py out/loop out/show/manifest.json --start <show time
     The simulator therefore follows the drone's velocity and pulls gently towards those
     steps, which keeps it within about 4 mm of PX4's own truth.
   * The stations film on the wall clock, and `truth.csv` records what they filmed.
+* **`--workers K`** shares the cameras out over K processes, as a real install has one computer
+  per camera. With 5 SITL drones and 11 cameras on a 4-core machine, two workers kept the
+  cameras within about 40 ms of the clock (p99).
 * **The engine reaches each drone on PX4's payload link (udp 14030+i).** A SITL drone has
   6 MAVLink links: PX4 uses 5 and the truth link is the 6th.
 * **The drones' states are received in a separate process.** Inside the camera loop's own

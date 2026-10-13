@@ -140,6 +140,14 @@ class SitlWorld:
                       frame.to_dict(), tuple(marker_offset_flu))
         self.proc = None
 
+    @classmethod
+    def attach(cls, buf, ids):
+        """The same shared states, read from another process (camera workers)."""
+        w = cls.__new__(cls)
+        w.ids, w.buf, w.proc, w._args = list(ids), buf, None, None
+        w.arr = np.frombuffer(buf, float).reshape(-1, SNAP)
+        return w
+
     def start(self):
         import multiprocessing as mp
         self.proc = mp.Process(target=_receive, args=self._args, daemon=True)
@@ -212,11 +220,62 @@ def live_scenario(sc: Scenario, manifest: dict, n: int | None = None, marker_off
     return sc, frame, rows
 
 
-def run_px4_loop(a) -> int:
-    """idps-sim px4: film the PX4 SITL drones in real time and stream to the engine."""
+def _stations_subset(sc: Scenario, idx: list[int]) -> Scenario:
+    """The scenario with only some of its camera stations (same station IDs, so each station's
+    random streams, clock and pose are the same as in the full simulation)."""
+    import copy
+    sub = copy.copy(sc)
+    sub.cameras = [sc.cameras[i] for i in idx]
+    sub.station_ids = [sc.station_ids[i] for i in idx]
+    return sub
+
+
+def _film(sc: Scenario, world: SitlWorld, epoch_ns: int, t0: float, t_start: float, duration: float, dest: str,
+          truth_path=None, report: bool = True):
+    """Run some camera stations against the wall clock until the end (or SIGTERM)."""
     import signal
 
-    from idps.sim.runner import UdpSink, write_calibration
+    from idps.sim.runner import UdpSink
+    sc.duration_s = t_start + duration + 60.0
+    sim = LiveSimulation(sc, world, epoch_ns, t0)
+    sc.duration_s = t_start + duration
+    for st in sim.stations:
+        st.phase += t_start
+        st.n_frames = int((sc.duration_s - st.phase) / st.period) + 1
+    host, port = dest.rsplit(":", 1)
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    def progress(t, s):
+        if report and int(t) % 5 == 0:
+            lag = np.array(sim.lag) * 1e3
+            print(f"  t={t - t_start:6.1f} s  frames {s.frames}  markers/frame {s.true_detections / max(1, s.frames):.2f}"
+                  f"  behind the clock (ms, last 2 s): median {np.median(lag):.1f}, p99 {np.percentile(lag, 99):.1f}, "
+                  f"max {lag.max():.1f}", flush=True)
+
+    try:
+        stats = sim.run(UdpSink(host, int(port), realtime=False), progress=progress, truth_path=truth_path,
+                        pace=sim.pace)
+        if report:
+            print(f"done: {stats.frames} frames, {stats.packets} packets, {sim.late} frames late", flush=True)
+    except KeyboardInterrupt:
+        if report:
+            print("stopped", flush=True)
+
+
+def _film_worker(scenario, manifest, drones, idx, buf, ids, epoch_ns, t0, t_start, duration, dest):
+    from idps.sim.scenario import load_scenario
+    sc = load_scenario(scenario)
+    sc, _, _ = live_scenario(sc, json.loads(Path(manifest).read_text()), drones)
+    _film(_stations_subset(sc, idx), SitlWorld.attach(buf, ids), epoch_ns, t0, t_start, duration, dest, report=False)
+
+
+def run_px4_loop(a) -> int:
+    """idps-sim px4: film the PX4 SITL drones in real time and stream to the engine. With
+    --workers K the stations are shared out over K processes (a real install has one computer
+    per camera)."""
+    import multiprocessing as mp
+
+    from idps.sim.runner import write_calibration
     from idps.sim.scenario import load_scenario
     man = json.loads(Path(a.manifest).read_text())
     sc = load_scenario(a.scenario)
@@ -229,38 +288,29 @@ def run_px4_loop(a) -> int:
     if missing:
         print(f"no state from SITL drone(s) {missing}: start them with px4/sitl/run_sitl.sh", file=sys.stderr)
         return 1
-    sc.duration_s = a.duration + 60.0                  # covers the start-up below
-    sim = LiveSimulation(sc, world, epoch_ns, t0)
+    sc.duration_s = a.duration + 60.0
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    write_calibration(sim, out / "calibration.yaml")
+    write_calibration(LiveSimulation(sc, world, epoch_ns, t0), out / "calibration.yaml")
     # truth.csv's t_s counts from t0 (time.monotonic): the PC clock the show runs on (idps-show start)
     (out / "loop.json").write_text(json.dumps({"t0_monotonic_s": t0, "epoch_ns": epoch_ns,
                                                "drones": [d["drone_id"] for d in rows]}))
-    # the stations start now, on the wall clock
-    t_start = time.monotonic() - t0 + 0.05
-    sc.duration_s = t_start + a.duration
-    for st in sim.stations:
-        st.phase += t_start
-        st.n_frames = int((sc.duration_s - st.phase) / st.period) + 1
-    host, port = a.dest.rsplit(":", 1)
-    print(f"filming {len(rows)} SITL drone(s) {[d['drone_id'] for d in rows]} with {len(sim.stations)} cameras "
-          f"('{sc.name}'), streaming to {a.dest} for {a.duration:g} s; calibration and truth in {out}", flush=True)
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
-
-    def progress(t, s):
-        if int(t) % 5 == 0:
-            lag = np.array(sim.lag) * 1e3
-            print(f"  t={t - t_start:6.1f} s  frames {s.frames}  markers/frame {s.true_detections / max(1, s.frames):.2f}"
-                  f"  behind the clock (ms, last 2 s): median {np.median(lag):.1f}, p99 {np.percentile(lag, 99):.1f}, "
-                  f"max {lag.max():.1f}", flush=True)
-
+    k = max(1, min(getattr(a, "workers", 1) or 1, len(sc.cameras)))
+    parts = [list(range(len(sc.cameras)))[i::k] for i in range(k)]
+    t_start = time.monotonic() - t0 + 0.5 + 0.5 * k          # time for the workers to start
+    procs = [mp.Process(target=_film_worker, args=(a.scenario, a.manifest, a.drones, idx, world.buf, world.ids,
+                                                    epoch_ns, t0, t_start, a.duration, a.dest), daemon=True)
+             for idx in parts[1:]]
+    for p in procs:
+        p.start()
+    print(f"filming {len(rows)} SITL drone(s) {[d['drone_id'] for d in rows]} with {len(sc.cameras)} cameras "
+          f"('{sc.name}') in {k} process(es), streaming to {a.dest} for {a.duration:g} s; calibration and truth in "
+          f"{out}", flush=True)
     try:
-        stats = sim.run(UdpSink(host, int(port), realtime=False), progress=progress,
-                        truth_path=out / "truth.csv", pace=sim.pace)
-        print(f"done: {stats.frames} frames, {stats.packets} packets, {sim.late} frames late", flush=True)
-    except KeyboardInterrupt:
-        print("stopped", flush=True)
+        _film(_stations_subset(sc, parts[0]), world, epoch_ns, t0, t_start, a.duration, a.dest,
+              truth_path=out / "truth.csv")
     finally:
+        for p in procs:
+            p.terminate()
         world.stop()
     return 0

@@ -224,6 +224,7 @@ def main(argv=None) -> int:
     x.add_argument("--dest", default="127.0.0.1:5600", help="engine address (idps-engine live --port)")
     x.add_argument("--duration", type=float, default=120.0, help="seconds to run")
     x.add_argument("-o", "--out", default="out/loop", help="folder for calibration.yaml and truth.csv")
+    x.add_argument("--workers", type=int, default=1, help="share the cameras out over this many processes")
     a = ap.parse_args(argv)
     if a.cmd == "px4":
         from idps.sim.live import run_px4_loop
