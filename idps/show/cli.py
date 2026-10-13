@@ -217,7 +217,7 @@ def main(argv=None) -> int:
         p.add_argument("--min-sep", type=float, default=1.0, help="minimum distance between drones (m)")
 
     c = sub.add_parser("check", help="check a show against the venue, cameras and drone limits")
-    c.add_argument("show", help=".skyc, Skybrush CSV ZIP, folder of CSVs or one CSV")
+    c.add_argument("show", help=".skyc, Skybrush CSV ZIP, folder of CSVs or one CSV, or a folder/ZIP of XTJZ files")
     venue_args(c)
     limit_args(c)
     e = sub.add_parser("export", help="check, then write one file per drone ID + manifest.json")

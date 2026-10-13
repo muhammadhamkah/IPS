@@ -11,6 +11,7 @@
 * **CSV (ZIP)** from Skybrush's CSV exporter: one CSV per drone, columns time (ms), x, y,
   z (m), red, green, blue (0-255).
 * A folder of such CSVs, or a single CSV.
+* Per-drone **XTJZ** files (``idps.show.xtjz``): a folder or ZIP of them, or the files.
 """
 from __future__ import annotations
 
@@ -26,18 +27,35 @@ import numpy as np
 from idps.show.model import Show, track_from_points, track_from_samples
 
 
-def load_show(path: str | Path) -> Show:
+def load_show(path: str | Path, more: list | None = None) -> Show:
+    """A show from a .skyc, a CSV ZIP, a folder, a CSV, or per-drone XTJZ files (one path, a
+    folder or ZIP of them, or several paths: `more`)."""
+    from idps.show.xtjz import is_xtjz, show_from_xtjz
     path = Path(path)
     if path.is_dir():
+        files = {p.name: p.read_bytes() for p in sorted(path.iterdir()) if p.is_file() and not _junk(p.name)}
+        xt = {n: b for n, b in files.items() if is_xtjz(b)}
+        if xt:
+            return show_from_xtjz(xt, str(path))
         return _load_csv_files({p.name: p.read_text() for p in path.glob("*.csv") if not _junk(p.name)}, str(path))
     if path.suffix.lower() == ".csv":
         return _load_csv_files({path.name: path.read_text()}, str(path))
+    head = path.read_bytes()
+    if is_xtjz(head):
+        files = {path.name: head}
+        for q in more or []:
+            files[Path(q).name] = Path(q).read_bytes()
+        return show_from_xtjz(files, str(path))
     if not zipfile.is_zipfile(path):
-        raise ValueError(f"{path}: not a .skyc or ZIP file")
+        raise ValueError(f"{path}: not a .skyc, ZIP or XTJZ file")
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
         if any(n.endswith("show.json") for n in names):
             return _load_skyc(z, str(path))
+        xt = {PurePosixPath(n).name: z.read(n) for n in names if not n.endswith("/") and not _junk(n)}
+        xt = {n: b for n, b in xt.items() if is_xtjz(b)}
+        if xt:
+            return show_from_xtjz(xt, str(path))
         csvs = {n: z.read(n).decode("utf-8-sig") for n in names
                 if n.lower().endswith(".csv") and not _junk(n)}
         if csvs:

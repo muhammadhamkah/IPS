@@ -77,6 +77,22 @@ def _merge(findings: list[Finding], kind, severity, drones, t, ned, message, gap
     findings.append(Finding(kind, severity, drones, t, t, tuple(round(float(x), 2) for x in ned), message))
 
 
+ACCEL_SPAN_S = 0.25     # sampled paths: acceleration averaged over ±this (no airframe changes thrust faster)
+
+
+def _accel(track, t):
+    """Acceleration along a track. A sampled path (straight lines between samples, e.g. a CSV or
+    per-drone binary export) has none inside its segments and a jump at every sample, so use
+    the second difference over ±ACCEL_SPAN_S: the acceleration the drone must hold over that
+    time, which also keeps the export's centimetre rounding from reading as acceleration."""
+    if any(len(seg.points) > 2 for seg in track.segments):
+        return track.sample(t, 2)
+    h = ACCEL_SPAN_S
+    a = (track.sample(t + h) - 2 * track.sample(t) + track.sample(t - h)) / (h * h)
+    a[(t - h < track.t_start) | (t + h > track.t_end)] = 0.0
+    return a
+
+
 def check_show(show: Show, site, cameras=None, placement: Placement | None = None,
                limits: Limits | None = None, coverage_dt_s: float = 0.25) -> ShowReport:
     """site: idps.plan.site.Site (venue, origin, requirements). cameras: planned cameras (optional)."""
@@ -93,7 +109,7 @@ def check_show(show: Show, site, cameras=None, placement: Placement | None = Non
     names = [d.name for d in show.drones]
     P = np.stack([pl.to_ned(d.sample(t)) for d in show.drones])               # (N, T, 3) NED
     V = np.stack([pl.vec_to_ned(d.sample(t, 1)) for d in show.drones])
-    A = np.stack([pl.vec_to_ned(d.sample(t, 2)) for d in show.drones])
+    A = np.stack([pl.vec_to_ned(_accel(d, t)) for d in show.drones])
     active = np.stack([(t >= d.t_start) & (t <= d.t_end) for d in show.drones])
     xyz = f.from_ned(P.reshape(-1, 3)).reshape(P.shape)                       # drawing frame, z = height
     req = site.requirements

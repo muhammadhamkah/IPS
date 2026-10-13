@@ -330,3 +330,64 @@ def test_preflight_each_drone_on_its_own_spot(tmp_path, lab):
     assert any(p.startswith("Marker 9:") for p in probs)
     one_link = Fleet(tmp_path / "out" / "manifest.json", {1: object()})
     assert any("Drone 2: no link" in p for p in one_link.preflight(dict(homes)))
+
+
+def _xtjz(drone_id, pos_cm, rgb, encoding=1, signed=False):
+    """Build an XTJZ file (idps.show.xtjz) for tests."""
+    import struct
+    pos_cm, rgb = np.asarray(pos_cm, int), np.asarray(rgb, int)
+
+    def rle(vals, wide):
+        out, k = bytearray(), 0
+        d = np.diff(np.r_[0, vals])
+        while k < len(d):
+            n = 1
+            while k + n < len(d) and d[k + n] == d[k] and n < 256:
+                n += 1
+            dv = int(d[k]) if wide else (int(d[k]) + 128) % 256 - 128          # colours wrap around
+            out += bytes([n - 1]) + struct.pack("<h" if wide else "<b", dv)
+            k += n
+        return bytes(out)
+
+    body = b""
+    for ch, vals, wide in [(1, pos_cm[:, 0], True), (2, pos_cm[:, 1], True), (3, pos_cm[:, 2], True),
+                           (5, rgb[:, 0], False), (6, rgb[:, 1], False), (7, rgb[:, 2], False)]:
+        data = (np.asarray(vals, "<i2" if wide else "u1").tobytes() if encoding == 1 else rle(vals, wide))
+        body += struct.pack("<IBBH", len(data), ch, encoding, 8) + data
+    head = b"XTJZ" + struct.pack("<HHI", 140, 1, len(body))
+    head += (bytes(range(128)) if signed else struct.pack("<IHH", drone_id, 20, len(pos_cm)).ljust(128, b"\0"))
+    return head + body
+
+
+def test_xtjz_reader_raw_and_run_length(tmp_path):
+    """Per-drone XTJZ files: plain and signed headers, raw and run-length channels, gzipped or not."""
+    import gzip
+
+    from idps.show.readers import load_show
+    from idps.show.xtjz import read_xtjz
+    n = 41
+    t = np.arange(n) / 20.0
+    pos = np.column_stack([np.round(100 * np.sin(t)), np.round(-250 + 30 * t), np.full(n, -300)])   # cm, NED
+    rgb = np.column_stack([np.linspace(0, 255, 18 * n).round(), np.zeros(18 * n), np.full(18 * n, 128)])
+    a = read_xtjz(_xtjz(7, pos, rgb, 1), "x.dat")
+    b = read_xtjz(gzip.compress(_xtjz(7, pos, rgb, 2, signed=True)), "7.dat.gz")
+    assert a.drone_id == 7 and not a.signed and b.drone_id == 7 and b.signed     # signed: ID from the name
+    assert a.rate_hz == 20 and np.allclose(a.pos_ned, pos / 100) and np.array_equal(a.pos_ned, b.pos_ned)
+    assert np.array_equal(a.rgb, rgb) and np.array_equal(b.rgb, rgb) and np.isclose(a.t_rgb[18], a.t[1])
+    for k in (3, 1):
+        (tmp_path / f"{k}.dat.gz").write_bytes(gzip.compress(_xtjz(k, pos + 50 * k, rgb, 2, signed=True)))
+    show = load_show(tmp_path)
+    assert show.fmt == "xtjz" and [d.name for d in show.drones] == ["Drone 1", "Drone 3"]
+    p0 = show.drones[0].sample([0.0])[0]                        # show frame: x East, y North, z up
+    assert np.allclose(p0, [(pos[0, 1] + 50) / 100, (pos[0, 0] + 50) / 100, -(pos[0, 2] + 50) / 100])
+    assert np.allclose(show.drones[1].colour([0.0])[0], rgb[0])
+
+
+def test_check_measures_acceleration_on_sampled_paths():
+    """A sampled path is straight between samples: the check still sees its acceleration."""
+    from idps.show.check import _accel
+    from idps.show.model import track_from_samples
+    t = np.arange(0, 4, 0.05)
+    tr = track_from_samples("d", t, np.column_stack([np.zeros_like(t), np.zeros_like(t), 0.5 * 3.0 * t ** 2]))
+    a = _accel(tr, np.array([1.0, 2.0, 3.0]))
+    assert np.allclose(a[:, 2], 3.0, atol=1e-6)

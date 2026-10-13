@@ -53,6 +53,10 @@ The drones carry **no companion computer** (D20).
    * **CSV (ZIP)**: one CSV per drone (time in ms, x, y, z, RGB). Use this if the .skyc export
      is unavailable, or for the LED colours (IDPS reads colours from the CSV; .skyc light
      programmes are kept as-is).
+   * **XTJZ per-drone files** (what some show conversion software uploads to each drone, e.g.
+     `1.dat`, `2.dat.gz`): a folder or ZIP of them. Positions are in cm, North-East-Down from
+     the show origin, 20 per second; colours 18 per position. Plain and compressed (signed)
+     files are both read. The file has no take-off or landing: it starts and ends in the air.
 
 ## 2. Check
 
