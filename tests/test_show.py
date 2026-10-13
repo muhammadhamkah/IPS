@@ -366,13 +366,13 @@ def test_xtjz_reader_raw_and_run_length(tmp_path):
     from idps.show.readers import load_show
     from idps.show.xtjz import read_xtjz
     n = 41
-    t = np.arange(n) / 20.0
+    t = np.arange(n) / 10.0
     pos = np.column_stack([np.round(100 * np.sin(t)), np.round(-250 + 30 * t), np.full(n, -300)])   # cm, NED
     rgb = np.column_stack([np.linspace(0, 255, 18 * n).round(), np.zeros(18 * n), np.full(18 * n, 128)])
     a = read_xtjz(_xtjz(7, pos, rgb, 1), "x.dat")
     b = read_xtjz(gzip.compress(_xtjz(7, pos, rgb, 2, signed=True)), "7.dat.gz")
     assert a.drone_id == 7 and not a.signed and b.drone_id == 7 and b.signed     # signed: ID from the name
-    assert a.rate_hz == 20 and np.allclose(a.pos_ned, pos / 100) and np.array_equal(a.pos_ned, b.pos_ned)
+    assert a.rate_hz == b.rate_hz == 10 and np.allclose(a.pos_ned, pos / 100) and np.array_equal(a.pos_ned, b.pos_ned)
     assert np.array_equal(a.rgb, rgb) and np.array_equal(b.rgb, rgb) and np.isclose(a.t_rgb[18], a.t[1])
     for k in (3, 1):
         (tmp_path / f"{k}.dat.gz").write_bytes(gzip.compress(_xtjz(k, pos + 50 * k, rgb, 2, signed=True)))
@@ -388,6 +388,12 @@ def test_check_measures_acceleration_on_sampled_paths():
     from idps.show.check import _accel
     from idps.show.model import track_from_samples
     t = np.arange(0, 4, 0.05)
-    tr = track_from_samples("d", t, np.column_stack([np.zeros_like(t), np.zeros_like(t), 0.5 * 3.0 * t ** 2]))
+    P = np.column_stack([np.zeros_like(t), np.zeros_like(t), 0.5 * 3.0 * t ** 2])
+    tr = track_from_samples("d", t, P, smooth=False)
     a = _accel(tr, np.array([1.0, 2.0, 3.0]))
     assert np.allclose(a[:, 2], 3.0, atol=1e-6)
+    # the default spline through the same samples carries velocity and acceleration itself
+    sm = track_from_samples("d", t, P)
+    q = np.array([1.03, 2.0, 2.97])
+    assert np.allclose(sm.sample(q), P[0] * 0 + np.c_[0 * q, 0 * q, 1.5 * q ** 2], atol=1e-3)
+    assert np.allclose(sm.sample(q, 1)[:, 2], 3.0 * q, atol=0.02) and np.allclose(sm.sample(q, 2)[:, 2], 3.0, atol=0.2)

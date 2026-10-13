@@ -124,10 +124,25 @@ def track_from_points(name: str, points, **kw) -> DroneTrack:
     return DroneTrack(name, segs, **kw)
 
 
-def track_from_samples(name: str, t, pos, **kw) -> DroneTrack:
-    """Piecewise-linear track through sampled positions (e.g. a CSV export)."""
+def track_from_samples(name: str, t, pos, smooth: bool = True, **kw) -> DroneTrack:
+    """Track through sampled positions (a CSV export, a per-drone show file).
+
+    smooth: a Catmull-Rom spline through the samples (cubic Bezier segments, velocity continuous),
+    so velocity and acceleration are available, e.g. as the drone's feed-forward. Otherwise
+    straight lines between samples, whose acceleration is zero inside every segment."""
     t = np.asarray(t, float)
     pos = np.asarray(pos, float)
+    if smooth and len(t) > 2:
+        m = np.empty_like(pos)
+        m[1:-1] = (pos[2:] - pos[:-2]) / (t[2:] - t[:-2])[:, None]
+        m[0] = (pos[1] - pos[0]) / (t[1] - t[0])
+        m[-1] = (pos[-1] - pos[-2]) / (t[-1] - t[-2])
+        segs = []
+        for k in range(len(t) - 1):
+            h = (t[k + 1] - t[k]) / 3
+            segs.append(Segment(t[k], t[k + 1], np.array([pos[k], pos[k] + m[k] * h, pos[k + 1] - m[k + 1] * h,
+                                                          pos[k + 1]])))
+        return DroneTrack(name, segs, **kw)
     segs = [Segment(t[k], t[k + 1], np.array([pos[k], pos[k + 1]])) for k in range(len(t) - 1)]
     if not segs and len(t):
         segs.append(Segment(t[0], t[0] + 1e-3, np.array([pos[0], pos[0]])))

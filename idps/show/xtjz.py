@@ -7,12 +7,12 @@ The layout was worked out from sample files; fields not listed are not needed he
       0  "XTJZ"
       4  u16  header size (140)        6  u16  1
       8  u32  body size (file size - 140)
-      plain files:  12 u32 drone ID, 16 u16 position rate (Hz; read as the rate, but unconfirmed:
-                    see read_xtjz's rate_hz), 18 u16 position samples
+      plain files:  12 u32 drone ID, 16 u16 20 (meaning unknown; not the rate), 18 u16 position samples
       signed files: 12..139 is an opaque 128-byte block (the ID then comes from the file name)
     body: sections, each [u32 length][u8 channel][u8 encoding][u16 8][data]
-      channels 1, 2, 3: x, y, z in cm, NED (z negative = above the floor), int16
-      channels 5, 6, 7: red, green, blue 0..255, 18 samples per position sample
+      channels 1, 2, 3: x, y, z in cm, NED (z negative = above the floor), int16, 10 per second
+                        (confirmed by the length of a show as flown)
+      channels 5, 6, 7: red, green, blue 0..255, 18 samples per position sample (180 per second)
       encoding 1: raw values (int16 for positions, uint8 for colours)
       encoding 2: run-length deltas from 0: [u8 repeats - 1][delta] with an int16 delta for
                   positions and an int8 delta for colours (byte arithmetic: a colour change of
@@ -32,7 +32,7 @@ import numpy as np
 MAGIC = b"XTJZ"
 HEADER = 140
 COLOURS_PER_SAMPLE = 18
-DEFAULT_RATE_HZ = 20.0
+RATE_HZ = 10.0                  # position samples per second
 
 
 @dataclass
@@ -73,7 +73,7 @@ def _channel(enc: int, data: bytes, wide: bool) -> np.ndarray:
 
 
 def read_xtjz(data: bytes, name: str = "", rate_hz: float | None = None) -> XtjzDrone:
-    """rate_hz: position samples per second, overriding the header's (and the 20 assumed for signed files)."""
+    """rate_hz: position samples per second, if a file is known to differ from RATE_HZ."""
     if data[:2] == b"\x1f\x8b":
         data = gzip.decompress(data)
     if data[:4] != MAGIC or len(data) < HEADER:
@@ -97,13 +97,13 @@ def read_xtjz(data: bytes, name: str = "", rate_hz: float | None = None) -> Xtjz
     pos = np.stack([_channel(*sec[c], True) for c in (1, 2, 3)], 1) / 100.0
     rgb = (np.stack([_channel(*sec[c], False) for c in (5, 6, 7)], 1) if all(c in sec for c in (5, 6, 7))
            else np.full((len(pos), 3), 255))
-    did, rate = struct.unpack_from("<IH", data, 12)
+    did = struct.unpack_from("<I", data, 12)[0]
     n_hdr = struct.unpack_from("<H", data, 18)[0]
-    plain = 0 < did < 1000 and 1 <= rate <= 100 and n_hdr == len(pos)
+    plain = 0 < did < 1000 and n_hdr == len(pos)
     if not plain:                                          # signed header: ID from the name ("3.dat")
         m = re.search(r"(\d+)(?:\.\w+)*$", name)
-        did, rate = (int(m.group(1)) if m else None), DEFAULT_RATE_HZ
-    return XtjzDrone(did, float(rate_hz or rate), pos, np.clip(rgb, 0, 255), not plain)
+        did = int(m.group(1)) if m else None
+    return XtjzDrone(did, float(rate_hz or RATE_HZ), pos, np.clip(rgb, 0, 255), not plain)
 
 
 def show_from_xtjz(files: dict[str, bytes], source: str):
