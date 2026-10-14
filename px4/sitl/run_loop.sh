@@ -9,6 +9,7 @@
 # and the engine's "exposure to send" (out/loop/engine.log): EV_DELAY_MS should match the latter.
 # Env: N (drones, 1-5), OUT (default out/loop), EV_DELAY_MS (default 28), PX4_BUILD,
 #      IMU_NOISE (default 0.1, needs sih_noise_scale.patch), WORKERS (camera processes, default 3).
+#      DROP_LATE=1 (cameras: the engine does not send positions over 30 ms later than EV_DELAY_MS).
 set -e
 MODE=${1:-cameras}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -111,7 +112,7 @@ else
   PIDS+=($!); disown $!
   while [ ! -s "$OUT/calibration.yaml" ]; do sleep 0.5; done; sleep 1
   "$PY" -m idps.engine.cli live --port 5600 --calib "$OUT/calibration.yaml" --site examples/sites/show_8x8.yaml \
-      $L14 --ev-delay-ms "$EV_DELAY_MS" -o "$OUT/positions.csv" > "$OUT/engine.log" 2>&1 &
+      $L14 ${DROP_LATE:+--ev-delay-ms "$EV_DELAY_MS"} -o "$OUT/positions.csv" > "$OUT/engine.log" 2>&1 &
   PIDS+=($!); disown $!; TRACK=$OUT/track.csv
   echo "   waiting 30 s for the cameras to identify every drone"; sleep 30 & wait $!
   tail -1 "$OUT/cams.log"; tail -1 "$OUT/engine.log"

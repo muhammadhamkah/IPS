@@ -279,7 +279,8 @@ engine):
   1 m/s. With `idps-engine live --ev-delay-ms` (the drones' `EKF2_EV_DELAY`) a position more than
   30 ms older than that is not sent: a short gap does no harm (EKF2 predicts with the IMU). Moving
   late positions along the engine's velocity instead made it worse (that velocity is too noisy:
-  p95 rose from 11–12 to 13–18 mm). Use it on real drones too.
+  p95 rose from 11–12 to 13–18 mm). Not proven in SITL yet (`DROP_LATE=1 run_loop.sh cameras`
+  turns it on): 0 of 3 runs within 30 mm with it, on a 4-core machine whose stalls vary a lot.
 * **The default take-off ramp was the worst error.** Each drone sat on the ground for 1.5 s
   while the file climbed, then lurched up to 24 cm sideways: up to 64 cm off in height. With
   `MPC_TKO_RAMP_T` = 0.5 s it lifts off with the file.
