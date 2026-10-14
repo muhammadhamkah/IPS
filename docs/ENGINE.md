@@ -105,8 +105,8 @@ The delay is mostly fixed by design:
 
 PX4 is told this delay with `EKF2_EV_DELAY`. It stamps each position on arrival, so one that
 arrives later than that (a busy PC, a held-up frame) would look newer than it is: with
-`--ev-delay-ms` set to the drones' `EKF2_EV_DELAY`, `live` moves each position along its velocity
-to the age PX4 assumes, and does not send one over 100 ms late.
+`--ev-delay-ms` set to the drones' `EKF2_EV_DELAY`, `live` does not send a position more than
+30 ms older than that (a short gap does no harm: EKF2 predicts with the IMU).
 
 **Two things made the difference beyond C++:**
 * Each dot is read from the packet straight into arrays.

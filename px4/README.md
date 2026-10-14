@@ -276,9 +276,10 @@ engine):
   30 mm before, 4 of 5 after (worst 16.6–18.8 mm).
 * **A position that reaches PX4 late pulls a moving drone back.** PX4 takes every position as
   filmed `EKF2_EV_DELAY` before it arrived; one held up 50 ms by a busy PC is 5 cm behind at
-  1 m/s. `idps-engine live --ev-delay-ms` (the drones' `EKF2_EV_DELAY`) moves each position along
-  its velocity to the age PX4 assumes, and does not send one over 100 ms late (a short gap does no
-  harm: EKF2 predicts with the IMU). Use it on real drones too.
+  1 m/s. With `idps-engine live --ev-delay-ms` (the drones' `EKF2_EV_DELAY`) a position more than
+  30 ms older than that is not sent: a short gap does no harm (EKF2 predicts with the IMU). Moving
+  late positions along the engine's velocity instead made it worse (that velocity is too noisy:
+  p95 rose from 11–12 to 13–18 mm). Use it on real drones too.
 * **The default take-off ramp was the worst error.** Each drone sat on the ground for 1.5 s
   while the file climbed, then lurched up to 24 cm sideways: up to 64 cm off in height. With
   `MPC_TKO_RAMP_T` = 0.5 s it lifts off with the file.

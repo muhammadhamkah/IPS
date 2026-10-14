@@ -178,14 +178,8 @@ def test_bearing_update_has_no_velocity_feedback():
     assert np.linalg.norm(tr.kf.vel - v_true) < 0.02
 
 
-def test_live_moves_a_position_to_the_age_px4_assumes():
-    from idps.engine.cli import sent_position
-    ned, vel = [1.0, 2.0, -3.0], [1.0, 0.0, 0.0]
-    p, late = sent_position(ned, vel, 0.078, None)                  # no EKF2_EV_DELAY given: as it is
-    assert not late and np.allclose(p, ned)
-    p, late = sent_position(ned, vel, 0.078, 28.0)                  # 50 ms later than PX4 takes it
-    assert not late and np.allclose(p, [1.05, 2.0, -3.0])
-    p, late = sent_position(ned, vel, 0.020, 28.0)                  # 8 ms sooner
-    assert not late and np.allclose(p, [0.992, 2.0, -3.0])
-    _, late = sent_position(ned, vel, 0.140, 28.0)                  # over 100 ms late: not sent
-    assert late
+def test_live_does_not_send_a_stale_position():
+    from idps.engine.cli import too_late
+    assert not too_late(0.5, None)              # no EKF2_EV_DELAY given: everything is sent
+    assert not too_late(0.050, 28.0)
+    assert too_late(0.070, 28.0)                # 42 ms later than PX4 takes it

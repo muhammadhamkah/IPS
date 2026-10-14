@@ -62,21 +62,15 @@ def vel_ned(frame, v) -> list:
     return [float(v[:2] @ frame.n_hat), float(v[:2] @ frame.e_hat), -float(v[2])]
 
 
-MAX_LATE_S = 0.1    # a position this much later than EKF2_EV_DELAY says is not sent: a short gap does
-                    # no harm (EKF2 predicts with the IMU), a stale position pulls the drone away
+MAX_LATE_S = 0.03   # a position this much later than EKF2_EV_DELAY says is not sent: a short gap does no
+                    # harm (EKF2 predicts with the IMU), a stale one pulls a moving drone back
 
 
-def sent_position(ned, vel, age_s: float, ev_delay_ms: float | None):
-    """The position to send for a fix filmed age_s ago -> (NED, too late?). PX4 takes every position
-    as filmed EKF2_EV_DELAY before it arrived; a fix sent sooner or later than that (a busy PC, a
-    camera frame held up) is moved along its velocity to that moment, so a moving drone is not pulled
-    back or forward by the difference. ev_delay_ms None: sent as it is."""
-    if ev_delay_ms is None:
-        return np.asarray(ned, float), False
-    lag = age_s - ev_delay_ms / 1000
-    if lag > MAX_LATE_S:
-        return None, True
-    return np.asarray(ned, float) + np.asarray(vel, float) * max(lag, -MAX_LATE_S), False
+def too_late(age_s: float, ev_delay_ms: float | None) -> bool:
+    """PX4 takes every position as filmed EKF2_EV_DELAY before it arrived; one held up longer (a
+    busy PC, a frame held up) would look newer than it is: 5 cm behind at 1 m/s if 50 ms late.
+    (Moving it along the engine's velocity instead made things worse: that velocity is too noisy.)"""
+    return ev_delay_ms is not None and age_s - ev_delay_ms / 1000 > MAX_LATE_S
 
 
 def cmd_live(a) -> int:
@@ -129,11 +123,10 @@ def cmd_live(a) -> int:
                     # time, so the status line reports the part of it spent up to here
                     age = (now_ns - o.t_ns) * 1e-9
                     ages.append(age)
-                    ned, late = sent_position(o.ned, v, age, a.ev_delay_ms)
-                    if late:
+                    if too_late(age, a.ev_delay_ms):
                         dropped += 1
                     else:
-                        mav.mav.odometry_send(**odometry_fields(ned, int(now * 1e6), 0.0, v))
+                        mav.mav.odometry_send(**odometry_fields(o.ned, int(now * 1e6), 0.0, v))
                         sent += 1
                 if w:
                     w.writerow([o.t_ns, o.marker_id, *(f"{x:.4f}" for x in o.ned), *(f"{x:.3f}" for x in v),
@@ -176,8 +169,8 @@ def main(argv=None) -> int:
     lv.add_argument("--link", action="append", help="DRONE_ID=DEVICE: send that drone its position (MAVLink ODOMETRY)")
     lv.add_argument("-o", "--out", help="also log positions to this CSV")
     lv.add_argument("--reorder-ms", type=float, default=8.0, help="wait for late packets (Wi-Fi stations: ~25)")
-    lv.add_argument("--ev-delay-ms", type=float, help="the drones' EKF2_EV_DELAY: each position is moved along "
-                    "its velocity to that age when sent, and not sent if over 100 ms later than that")
+    lv.add_argument("--ev-delay-ms", type=float, help="the drones' EKF2_EV_DELAY: a position more than 30 ms "
+                    "older than that when it would be sent is not sent")
     a = ap.parse_args(argv)
     return {"replay": cmd_replay, "live": cmd_live}[a.cmd](a)
 
