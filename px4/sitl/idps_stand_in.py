@@ -38,10 +38,16 @@ def stand_in(instance: int, home, noise_m: float = 0.0005, log=None, send=True, 
     m = mavutil.mavlink_connection(f"udpin:127.0.0.1:{14800 + instance}", source_system=254, source_component=197)
     rng = np.random.default_rng(instance)
     origin, R, exact, px4_us = None, np.eye(3), 0.0, 0
+    last, warned = time.monotonic(), False
     while True:
         msg = m.recv_match(type=["HIL_STATE_QUATERNION", "DEBUG_VECT", "DEBUG_FLOAT_ARRAY"], blocking=True, timeout=1.0)
         if msg is None:
+            if not warned and time.monotonic() - last > 15:
+                print(f"drone {instance + 1}: nothing on udp {14800 + instance} for 15 s. Is another program "
+                      "using that port (a leftover idps-sim px4 or stand-in)?", flush=True)
+                warned = True
             continue
+        last = time.monotonic()
         now = time.monotonic()
         if msg.get_type() == "DEBUG_FLOAT_ARRAY":            # idps_show: drone minus file, at its show time
             if track is not None and msg.name.startswith("track"):

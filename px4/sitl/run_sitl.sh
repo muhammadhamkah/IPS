@@ -1,6 +1,6 @@
 #!/bin/bash
 # Start N headless PX4 SITL quadcopters (SIH, no Gazebo) set up like IDPS show drones:
-# position, height and heading only from external vision (IDPS), no GPS, compass or baro.
+# position, height and heading only from external vision (IDPS), no GPS, compass, baro or rangefinder.
 # Instance i has MAV_SYS_ID i+1 (= drone ID), MAVLink on udp 14540+i, and a ground-truth link
 # on 14800+i for the IDPS stand-in (idps_stand_in.py) or the simulated cameras (idps-sim px4).
 # The engine reaches each drone on PX4's onboard payload link (udp 14030+i).
@@ -23,7 +23,7 @@ N=${1:-1}
 [ -x "$B/bin/px4" ] || { echo "build first: make -C $PX4_DIR ${PX4_BUILD:-px4_sitl_default} EXTERNAL_MODULES_LOCATION=$(cd "$(dirname "$0")/.." && pwd)"; exit 1; }
 echo "idps_show start" > "$B/etc/init.d-posix/airframes/10040_sihsim_quadx.post"
 pkill -x px4 2>/dev/null || true; sleep 1
-export PX4_PARAM_EKF2_EV_CTRL=11 PX4_PARAM_EKF2_HGT_REF=3 PX4_PARAM_EKF2_GPS_CTRL=0 PX4_PARAM_EKF2_BARO_CTRL=0 \
+export PX4_PARAM_EKF2_EV_CTRL=11 PX4_PARAM_EKF2_HGT_REF=3 PX4_PARAM_EKF2_GPS_CTRL=0 PX4_PARAM_EKF2_BARO_CTRL=0 PX4_PARAM_EKF2_RNG_CTRL=0 \
        PX4_PARAM_EKF2_MAG_TYPE=5 PX4_PARAM_SYS_HAS_MAG=0 PX4_PARAM_EKF2_EVP_NOISE=0.01 PX4_PARAM_EKF2_EVA_NOISE=0.05 \
        PX4_PARAM_EKF2_EV_POS_Z=-0.08 PX4_PARAM_EKF2_EV_DELAY=${EV_DELAY_MS:-0} \
        PX4_PARAM_EKF2_ASP_DELAY=0 PX4_PARAM_EKF2_OF_DELAY=0 PX4_PARAM_EKF2_RNG_DELAY=0 PX4_PARAM_EKF2_AVEL_DELAY=0 \

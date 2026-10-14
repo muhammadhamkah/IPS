@@ -340,9 +340,14 @@ def run_px4_loop(a) -> int:
     --workers K the stations are shared out over K processes (a real install has one computer
     per camera)."""
     import multiprocessing as mp
+    import signal
 
     from idps.sim.runner import write_calibration
     from idps.sim.scenario import load_scenario
+
+    def _stop(*_):                    # SIGTERM: run the cleanup below, or the worker and truth
+        raise SystemExit(143)         # processes outlive us and keep the drones' truth ports
+    signal.signal(signal.SIGTERM, _stop)
     man = json.loads(Path(a.manifest).read_text())
     sc = load_scenario(a.scenario)
     sc.duration_s = a.duration

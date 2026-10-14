@@ -17,10 +17,26 @@ N=${N:-5}; OUT=${OUT:-out/loop}; export EV_DELAY_MS=${EV_DELAY_MS:-28}
 PX4_DIR=${PX4_DIR:-$HOME/PX4-Autopilot}; B=$PX4_DIR/build/${PX4_BUILD:-px4_sitl_default}
 rm -rf "$OUT"; mkdir -p "$OUT"
 PIDS=()
-cleanup() { for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done; pkill -x px4 || true; }
+cleanup() { for p in "${PIDS[@]}"; do pkill -P "$p" 2>/dev/null || true; kill "$p" 2>/dev/null || true; done; pkill -x px4 || true; }
 trap cleanup EXIT
 trap 'exit 143' TERM INT           # stopped (e.g. from the dashboard): clean up too
 
+# the drones' truth links (udp 14800+i) must be free: a leftover run would take their messages
+python - "$N" <<'PY' || exit 1
+import socket, sys
+busy = []
+for i in range(int(sys.argv[1])):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.bind(("127.0.0.1", 14800 + i))
+    except OSError:
+        busy.append(14800 + i)
+    s.close()
+if busy:
+    print(f"udp port(s) {busy} are in use, probably by an earlier run still going. Stop it first, e.g.:\n"
+          "  pkill -f 'idps.sim px4'; pkill -f idps_stand_in; pkill -f 'idps.engine.cli live'; pkill -x px4")
+    sys.exit(1)
+PY
 echo "== show"
 python examples/shows/five_drones_sphere_square.py "$OUT/five.zip" > "$OUT/show.txt"
 python -m idps.show.cli export "$OUT/five.zip" --site examples/sites/show_8x8.yaml \
@@ -46,7 +62,7 @@ done
 if [ "$MODE" = vision ]; then
   echo "== positions inside PX4: 2 mm noise, 120 Hz, $EV_DELAY_MS ms late"
   python px4/sitl/idps_stand_in.py "$OUT/show/manifest.json" "$N" "$OUT/truth.csv" log-only > "$OUT/standin.log" 2>&1 &
-  PIDS+=($!); disown $!; TRACK=$OUT/truth.track.csv; sleep 8
+  PIDS+=($!); disown $!; TRACK=$OUT/truth.track.csv; sleep 8 & wait $!
 else
   echo "== cameras and engine"
   python -m idps.sim px4 examples/scenarios/show_8x8_micro60.yaml --manifest "$OUT/show/manifest.json" \
@@ -56,13 +72,16 @@ else
   python -m idps.engine.cli live --port 5600 --calib "$OUT/calibration.yaml" --site examples/sites/show_8x8.yaml \
       $L14 -o "$OUT/positions.csv" > "$OUT/engine.log" 2>&1 &
   PIDS+=($!); disown $!; TRACK=$OUT/track.csv
-  echo "   waiting 30 s for the cameras to identify every drone"; sleep 30
+  echo "   waiting 30 s for the cameras to identify every drone"; sleep 30 & wait $!
   tail -1 "$OUT/cams.log"; tail -1 "$OUT/engine.log"
 fi
 
 echo "== upload and fly (about 80 s)"
 python -m idps.show.cli upload "$OUT/show/manifest.json" $L --sitl | grep -c OK | sed 's/$/ drone(s) uploaded/'
-python -m idps.show.cli start "$OUT/show/manifest.json" $L --lead 15 > "$OUT/start.txt" 2>&1 || true
+# in the background and waited for, so a stop (TERM) is handled at once: the trap aborts the
+# show and stops every helper (a foreground command would delay it to the end of the show)
+python -m idps.show.cli start "$OUT/show/manifest.json" $L --lead 15 > "$OUT/start.txt" 2>&1 &
+PIDS+=($!); wait $! || true
 grep -E "denied|refused|Not started" "$OUT/start.txt" || true
 for ((i=0;i<N;i++)); do
   f=$(grep -hE "Failsafe|stopped" "$B/rootfs/$i/out.log" | head -1 || true)
@@ -70,5 +89,6 @@ for ((i=0;i<N;i++)); do
 done
 [ "$MODE" = cameras ] && { grep "behind the clock" "$OUT/cams.log" | tail -1; grep "exposure" "$OUT/engine.log" | tail -1; }
 
+grep -h "nothing on udp" "$OUT/standin.log" 2>/dev/null || true
 echo "== result (distance from the show file)"
 python px4/sitl/score_track.py "$TRACK"
