@@ -161,6 +161,8 @@ private:
 	float _sitl_noise{0.f};                    // m, 1 sigma per axis
 	hrt_abstime _sitl_period{0};
 	hrt_abstime _sitl_last{0};
+	float _kick[3] {};                         // sitl_vision kick: offset added to the positions (m)
+	hrt_abstime _kick_until{0};
 	float _ev_pos[3] {};
 	uORB::Subscription _attitude_gt_sub{ORB_ID(vehicle_attitude_groundtruth)};
 	vehicle_attitude_s _att_gt{};

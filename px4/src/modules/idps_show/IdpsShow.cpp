@@ -641,7 +641,8 @@ void IdpsShow::sitl_vision(const vehicle_local_position_s &gt)
 			for (int i = 0; i < 3; i++) {             // Gaussian noise (Box-Muller)
 				const float u1 = ((float)rand() + 1.f) / ((float)RAND_MAX + 2.f);
 				const float u2 = (float)rand() / (float)RAND_MAX;
-				o.position[i] = s.p[i] + _sitl_noise * sqrtf(-2.f * logf(u1)) * cosf(2.f * M_PI_F * u2);
+				o.position[i] = s.p[i] + _sitl_noise * sqrtf(-2.f * logf(u1)) * cosf(2.f * M_PI_F * u2)
+						+ (now < _kick_until ? _kick[i] : 0.f);
 			}
 
 			o.q[0] = 1.f;                        // heading 0 = North (D20)
@@ -665,6 +666,18 @@ void IdpsShow::sitl_vision(const vehicle_local_position_s &gt)
 
 int IdpsShow::custom_command(int argc, char *argv[])
 {
+	if (argc >= 5 && strcmp(argv[0], "sitl_vision") == 0 && strcmp(argv[1], "kick") == 0 && is_running()) {
+		// a step in the positions for a while (default 1 s): how the drone settles after a jolt
+		IdpsShow *s = get_instance();
+
+		for (int i = 0; i < 3; i++) {
+			s->_kick[i] = (float)atof(argv[2 + i]) * 1e-3f;
+		}
+
+		s->_kick_until = hrt_absolute_time() + (hrt_abstime)((argc >= 6 ? atof(argv[5]) : 1000.0) * 1000.0);
+		return 0;
+	}
+
 	if (argc >= 2 && strcmp(argv[0], "sitl_vision") == 0 && is_running()) {
 		get_instance()->set_sitl_vision(strcmp(argv[1], "on") == 0, argc >= 3 ? (float)atof(argv[2]) : 0.f,
 						argc >= 4 ? (float)atof(argv[3]) : 0.f, argc >= 5 ? (float)atof(argv[4]) : 0.f);
@@ -689,7 +702,8 @@ time by the IDPS PC with a MAVLink command. See the IDPS repository, docs/SHOW.m
 
 	PRINT_MODULE_USAGE_NAME("idps_show", "system");
 	PRINT_MODULE_USAGE_COMMAND("start");
-	PRINT_MODULE_USAGE_COMMAND_DESCR("sitl_vision", "simulator only: on [delay_ms [noise_mm [rate_hz]]] | off: true positions to EKF2");
+	PRINT_MODULE_USAGE_COMMAND_DESCR("sitl_vision", "simulator only: on [delay_ms [noise_mm [rate_hz]]] | off: true positions to EKF2; "
+					 "kick N E D (mm) [ms]: offset them for a while");
 	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
 	return 0;
 }
