@@ -32,7 +32,16 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM INT           # stopped (e.g. from the dashboard): clean up too
 
-# the drones' links must be free: a leftover run would take their messages
+# a new flight replaces any earlier one: stop what an earlier run left behind (it would hold the
+# drones' links and take their messages), then check the links are free
+leftovers() { pgrep -f "idps.sim px4|idps_stand_in.py|idps.engine.cli live|idps.show.cli (start|upload)"; pgrep -x px4; }
+if [ -n "$(leftovers)" ]; then
+  echo "stopping what an earlier run left running (pids: $(leftovers | tr '\n' ' '))"
+  leftovers | xargs kill 2>/dev/null || true
+  for _ in $(seq 40); do [ -z "$(leftovers)" ] && break; sleep 0.25; done
+  leftovers | xargs kill -9 2>/dev/null || true
+  sleep 0.5
+fi
 "$PY" - "$N" <<'PY' || exit 1
 import socket, sys
 busy = []
