@@ -149,6 +149,13 @@ PX4_DIR=~/PX4-Autopilot px4/sitl/run_loop.sh cameras   # the closed loop: simula
 
 `N=3` flies 3 of the 5 drones; results and logs go to `out/loop`.
 
+**Or in the dashboard** (`idps-dashboard`), **PX4 flight** tab: pick quick check or full loop,
+the number of drones and your PX4-Autopilot folder, and press **Fly the show**. The flight
+shows live in 3D, each drone coloured by its distance from its file (within 30 mm green), with a
+per-drone table (median, p95, worst; double-click a drone to jump to its worst moment) and the
+distance over the whole show. **Open run…** replays any finished run folder (`out/loop`,
+`out/px4_runs/...`).
+
 To measure tracking, the module reports how far the drone is from its file at its own show time
 (`DEBUG_FLOAT_ARRAY "track"`, logged by the stand-in as `truth.track.csv` and by `idps-sim px4`
 as `track.csv`). Comparing the PC's clock with the simulator's would add the simulator's clock

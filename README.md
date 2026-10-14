@@ -73,6 +73,10 @@ bash packaging/macos/build_app.sh                # optional: build a double-clic
   * picking a drone shows the lines of sight from every camera that has it in frame, and that
     camera's 1280 × 800 image with the blinking dots.
 
+**PX4 flight tab:** fly the 5-drone show with PX4 simulator drones (60 g quads, `px4/README.md`)
+and watch how closely each follows its file: live in 3D, coloured by distance (within 30 mm
+green), with per-drone median, p95 and worst, and **Open run…** to replay a finished flight.
+
 **Install measurements:** the **Dimensions** overlay (⌘D) and the **Measure** tool (M); export
 adds `measurements.csv`.
 

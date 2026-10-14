@@ -733,3 +733,53 @@ def test_plan_needs_origin_and_origin_from_v0(win, app):
     n_spin.setValue(3)
     n_spin.editingFinished.emit()
     assert win.doc.data["origin"]["xy"] == pytest.approx([0, -2])           # North = up: 3 m up from V0
+
+
+def test_px4_flight_tab_replays_a_run(win, app, tmp_path):
+    """PX4 flight tab: a run folder (show files + idps_show's tracking log) is replayed with each
+    drone's distance from its file."""
+    import json
+
+    import numpy as np
+
+    from idps.show.trj import Trj, write_trj
+    from idps.sim.px4run import load_run
+    show = tmp_path / "show"
+    show.mkdir()
+    n = 201                                                      # 10 s at 20 Hz: drone 1 climbs, drone 2 hovers
+    rows = []
+    for did, east in ((1, -1.0), (2, 1.0)):
+        pos = np.zeros((n, 3))
+        pos[:, 1] = east
+        pos[:, 2] = -np.linspace(0, 2, n) if did == 1 else -1.0
+        write_trj(show / f"drone_{did:03d}.trj", Trj(did, 20.0, 0.0, np.array([0, east, 0.0]), 0.0, pos,
+                                                       np.zeros((n, 3)), np.zeros((n, 3)), np.zeros((n, 3))))
+        rows.append({"drone_id": did, "trj": f"drone_{did:03d}.trj", "home_ned": [0, east, 0]})
+    (show / "manifest.json").write_text(json.dumps({"venue": {"origin": {"xy": [0, 0], "north_deg": 90}},
+                                                    "drones": rows}))
+    lines = ["drone_id,show_t,dn,de,dd"]
+    for k in range(1000):                                        # 100 Hz; drone 2 is 40 mm off at 6 s
+        t = k * 0.01
+        lines.append(f"1,{t:.2f},0.005,0,0")
+        lines.append(f"2,{t:.2f},{0.04 if 5.95 < t < 6.05 else 0.003},0,0")
+    (tmp_path / "track.csv").write_text("\n".join(lines) + "\n")
+
+    run = load_run(tmp_path)
+    assert run.mode == "cameras" and run.drone_ids == [1, 2]
+    d1, d2 = run.drones
+    assert abs(d1.median_mm - 5) < 0.01 and abs(d2.worst_mm - 40) < 0.01 and abs(d2.worst_at_s - 6) < 0.06
+    k = int(np.searchsorted(run.t, 5.0))
+    assert np.allclose(run.actual[0, k], run.plan[0, k] + [0.005, 0, 0])   # the file + the logged distance
+    assert np.isnan(run.error_mm[0, -1])                                    # no samples after 10 s
+
+    tab = win.px4
+    win.tabs.setCurrentWidget(tab)
+    assert tab.open_run(tmp_path)
+    assert tab.t_worst.v.text() == "40.0 mm" and tab.t_within.v.text() == "1/2"
+    assert "1 of 2 drones stayed within 30 mm" in tab.status.text()
+    tab.table.selectRow(1)
+    tab._jump_to_worst(1, 0)
+    assert abs(run.t[tab.slider.value()] - 6.0) < 0.06 and tab.view.selected == 1
+    tab.toggle_play()
+    assert tab.timer.isActive()
+    tab.toggle_play()

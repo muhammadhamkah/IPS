@@ -77,6 +77,9 @@ class MainWindow(QMainWindow):
         from idps.ui.sim.tab import SimTab
         self.sim = SimTab(self)
         self.tabs.addTab(self.sim, "Simulate")
+        from idps.ui.px4.tab import Px4Tab
+        self.px4 = Px4Tab(self)
+        self.tabs.addTab(self.px4, "PX4 flight")
         from idps.ui.live.tab import LiveTab
         self.live = LiveTab(self)
         self.tabs.addTab(self.live, "Live tracking")
@@ -649,6 +652,7 @@ class MainWindow(QMainWindow):
             return
         self.live.shutdown()
         self.sim.shutdown()
+        self.px4.shutdown()
         for thread, worker in list(self._running):
             worker.stop()
             thread.quit()

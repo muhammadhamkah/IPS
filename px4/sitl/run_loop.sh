@@ -19,6 +19,7 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 PIDS=()
 cleanup() { for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done; pkill -x px4 || true; }
 trap cleanup EXIT
+trap 'exit 143' TERM INT           # stopped (e.g. from the dashboard): clean up too
 
 echo "== show"
 python examples/shows/five_drones_sphere_square.py "$OUT/five.zip" > "$OUT/show.txt"
