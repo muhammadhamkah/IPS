@@ -32,7 +32,20 @@ LIMIT_MM = 30.0
 LIVE_LAG_S = 0.6               # live view: this far behind the newest sample, so every drone has data there
 PLAY_MS = 40
 MODES = [("Positions inside PX4 (quick check)", "vision", "px4_sitl_default"),
-         ("Simulated cameras + engine (full loop)", "cameras", "px4_sitl_nolockstep")]
+         ("Simulated cameras + engine (full loop)", "cameras", None)]      # None: camera_build()
+SIH_SOURCE = Path("src/modules/simulation/simulator_sih/sih.cpp")
+
+
+def camera_build(px4_dir) -> str:
+    """The PX4 build for the camera loop. The cameras run on the real clock, so the drones' clocks
+    must keep real time: the default (lockstep) build does when px4/sitl/sih_realtime_pacing.patch
+    is applied (and is consistent through a host stall); without it, the real-clock build
+    (px4_sitl_nolockstep), where a stall jolts the physics instead."""
+    try:
+        paced = "next_wall_time_us" in (Path(px4_dir) / SIH_SOURCE).read_text(errors="replace")
+    except OSError:
+        paced = False
+    return "px4_sitl_default" if paced else "px4_sitl_nolockstep"
 
 
 STAGES = [("== show", "building the show files"), ("PX4 drones", "starting the PX4 drones"),
@@ -246,6 +259,7 @@ class Px4Tab(QWidget):
             self.status.setText(f"{SCRIPT} is missing: this IDPS checkout has no PX4 flight script.")
             return False
         _, mode, build = MODES[self.mode.currentIndex()]
+        build = build or camera_build(self.px4_dir)
         if not (Path(self.px4_dir) / "build" / build / "bin" / "px4").exists():
             self.status.setText(f"PX4 is not built in {self.px4_dir} (no build/{build}): build it as px4/README.md "
                                 "says, or pick your PX4-Autopilot folder.")
@@ -303,7 +317,10 @@ class Px4Tab(QWidget):
             NSProcessInfo.processInfo().endActivity_(act)
             self._activity = None
 
-    def _signal_group(self, sig):
+    def _signal_group(self, sig, proc=None):
+        """Signal the flight script's process group; with proc, only if that run is still the current one."""
+        if proc is not None and proc is not self.proc:
+            return
         if self.proc is not None and self.proc.processId():
             try:
                 os.killpg(self.proc.processId(), sig)
@@ -316,7 +333,8 @@ class Px4Tab(QWidget):
         self._stopping = True
         self.status.setText("Stopping: the drones land and the simulators are shut down…")
         self._signal_group(signal.SIGTERM)               # the script's cleanup runs; helpers get it too
-        QTimer.singleShot(12000, lambda: self._signal_group(signal.SIGKILL))
+        proc = self.proc                                 # only this run: a new one may have started by then
+        QTimer.singleShot(12000, lambda: self._signal_group(signal.SIGKILL, proc))
 
     def _read_output(self):
         text = bytes(self.proc.readAllStandardOutput()).decode(errors="replace").rstrip()

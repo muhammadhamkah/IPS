@@ -272,7 +272,10 @@ engine):
   jumps when the host was busy, exactly when several drones were pushed at once. The positions
   the engine sent were right (within 4 mm); those queued while PX4 stood still reached it together
   and looked fresh. `sih_realtime_pacing.patch` paces SIH on the wall clock and catches up after a
-  stall (the clocks then stay within 4 ms). 5 drones, 11 cameras, 4 cores: 0 of 3 runs within
+  stall (the clocks then stay within 4 ms, and the physics stays consistent through a stall, which
+  `px4_sitl_nolockstep` does not: there a stall is a jolt in the physics). The dashboard's camera
+  loop uses `px4_sitl_default` when the patch is in the PX4 source, `px4_sitl_nolockstep` if not.
+  5 drones, 11 cameras, 4 cores: 0 of 3 runs within
   30 mm before; after, 8 of 10 (worst 15.5–21.8 mm). Of the other two, one had a 12 cm push
   after a 76 ms hold-up on the PC side, and in one three drones lifted off 3.5 s late.
 * **A position that reaches PX4 late pulls a moving drone back.** PX4 takes every position as

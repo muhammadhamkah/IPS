@@ -805,3 +805,32 @@ def test_px4_flight_tab_explains_a_failed_run():
     _, reason, _ = diagnose("PX4 drone 1 (instance 0): PX4 stopped while starting. The end of its log (x):\n"
                             "INFO  [px4] PX4 server already running for instance 0")
     assert reason.startswith("A PX4 from an earlier flight was still running (instance 0)")
+
+
+def test_px4_camera_loop_uses_the_paced_build_when_patched(tmp_path):
+    from idps.ui.px4.tab import SIH_SOURCE, camera_build
+    assert camera_build(tmp_path) == "px4_sitl_nolockstep"             # no PX4 source: the real-clock build
+    src = tmp_path / SIH_SOURCE
+    src.parent.mkdir(parents=True)
+    src.write_text("void Sih::lockstep_loop() {}")
+    assert camera_build(tmp_path) == "px4_sitl_nolockstep"             # unpatched
+    src.write_text("uint64_t next_wall_time_us = 0;")
+    assert camera_build(tmp_path) == "px4_sitl_default"                # sih_realtime_pacing.patch applied
+
+
+def test_px4_stop_kill_does_not_reach_a_newer_run(monkeypatch):
+    import signal
+    from idps.ui.px4 import tab as px4tab
+    t = px4tab.Px4Tab.__new__(px4tab.Px4Tab)
+    sent = []
+    monkeypatch.setattr(px4tab.os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+
+    class P:
+        def __init__(self, pid): self.pid = pid
+        def processId(self): return self.pid
+    old, new = P(11), P(22)
+    t.proc = new                                           # the stopped run (old) ended, a new one started
+    t._signal_group(signal.SIGKILL, old)
+    assert sent == []
+    t._signal_group(signal.SIGKILL, new)
+    assert sent == [(22, signal.SIGKILL)]
