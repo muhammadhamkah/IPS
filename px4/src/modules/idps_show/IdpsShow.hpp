@@ -83,7 +83,8 @@ private:
 	void finish();
 	void ack(const vehicle_command_s &cmd, uint8_t result);
 	void send_vehicle_command(uint32_t command, float param1 = NAN, float param2 = NAN);
-	void publish_setpoint(hrt_abstime now, float show_t);
+	void publish_setpoint(hrt_abstime now, float show_t, bool running = false);
+	void read_params();
 	bool evaluate(float show_t, trajectory_setpoint_s &sp);
 	static bool pc_time_us(const vehicle_command_s &cmd, int64_t &t_us);
 	void sync_add(hrt_abstime local, int64_t pc_us);
@@ -121,6 +122,8 @@ private:
 	int64_t _start_pc{0};             // show start in the PC's clock (µs)
 	int64_t _show_pc{0};              // the PC's clock as the show plays it: slewed, never stepped
 	hrt_abstime _show_pc_at{0};
+	float _acc_lead{0.f};            // IDPS_ACC_LEAD (s)
+	float _vel_d_xy{0.f}, _vel_d_z{0.f};   // MPC_XY/Z_VEL_D_ACC: their D term acts on the measured acceleration
 	bool _mode_sent{false};
 	bool _arm_sent{false};
 	uint8_t _rgb[3] {};

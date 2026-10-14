@@ -137,8 +137,17 @@ on micro60. What it took to get within 3 cm:
 |---|---|
 | EKF2 fused vision 200 ms in the past (`EKF2_DELAY_MAX`, raised by unused sensors' delays) and integrated the noisy IMU over the rest: 2–4 cm of estimate error | `EKF2_DELAY_MAX` = vision delay + 10 ms; other sensors' delays 0; `EKF2_TAU_POS/VEL` 0.1; `EKF2_ACC_NOISE` 1.5 |
 | SIH adds a fixed-wing's in-flight IMU noise (accelerometer 0.5/1.7/1.4 m/s², gyro 8°/s, white): the drone wanders 2–3 cm RMS even hovering | `px4/sitl/sih_noise_scale.patch` lets `IMU_NOISE` scale it; micro60 uses 0.1 (see below) |
-| Velocity loop with D and a large I term; drag carried by the vertical P term alone | `MPC_XY_VEL_D_ACC` 0, `MPC_XY_VEL_I_ACC` 0.5, `MPC_XY_P` 5, `MPC_Z_P` 4, `MPC_Z_VEL_P_ACC` 12, `MPC_Z_VEL_I_ACC` 4 |
+| Slow attitude and rate loops: with `MC_ROLL_P` 10 the attitude followed its setpoint ~110 ms late (rate loop ~4 Hz, a real 60 g quad has 10–20 Hz). The position loop had ~6° phase margin at 1.2 Hz: after any jolt it rang and **circled** (error direction swept 1600–1800°, 3 s to settle), and velocity P 9 flew away | `MC_ROLL_P`/`MC_PITCH_P` 20, `MC_*RATE_K` 0.25, `MC_*RATE_D` 0.0015, `IMU_DGYRO_CUTOFF` 50; outer loops `MPC_XY_P` 4, `MPC_XY_VEL_P_ACC` 8, `MPC_XY_VEL_D_ACC` 0.15, I 0.5. Same jolt: settles in 0.7–1.1 s with 2 swings, no orbit |
+| The rest of the lag delays the acceleration feed-forward; PX4's velocity D term (on measured acceleration) takes back D × the feed-forward | Module: acceleration taken `IDPS_ACC_LEAD` ahead (micro60: 0.1 s) and scaled by 1 + D |
+| Feed-forwards were per show second, but the show runs on the PC's clock (in SITL 4–5 % off PX4's) | Module scales velocity by the clock rate and acceleration by its square (no effect on hardware) |
+| Drag carried by the vertical P term alone | `MPC_Z_P` 4, `MPC_Z_VEL_P_ACC` 12, `MPC_Z_VEL_I_ACC` 4 |
 | A new clock-sync point moved show time by up to 10 ms at once: a 1 cm setpoint jump at 1 m/s | The module plays the show on a slewed clock (catches up at 5 ms/s, never steps) |
+
+Ruled out on the way (logs and models of each link): the show file and the 200 Hz setpoints
+(~1 mm), EKF2 on real motion (8–12 ms, ~4° at 1.2 Hz; it does overshoot a sudden jump in the
+positions by ~50 %), PX4's use of the feed-forwards (correct, nothing saturates), SIH's ×10
+inertia/arm scaling (exact) and host load (a flight with 4 CPU burners was clean).
+`sitl_vision kick N E D [ms]` jolts a drone's positions to measure how it settles.
 
 **One command** builds the show, starts the drones, flies and scores it:
 
@@ -165,16 +174,18 @@ slips (it runs a few % off real time and stalls under load) to the error.
 
 | Positions | Median | Worst (all drones) |
 |---|---|---|
-| Exact, no delay | 3–4 mm | 20 mm |
+| **Like the engine, current tuning** (`run_loop.sh vision`), 3 runs | **3 mm** (p95 5–8) | **13–15 mm** |
+| Exact, no delay (before the retune, as the rows below) | 3–4 mm | 20 mm |
 | Exact, 20 ms late (`EV_DELAY_MS=20`) | 3 mm | 15 mm |
-| Like the engine: 2 mm noise, 120 Hz, 28 ms late (`SITL_VISION="28 2 120" EV_DELAY_MS=28`) | 4–5 mm | **22 mm** |
+| Like the engine: 2 mm noise, 120 Hz, 28 ms late (`SITL_VISION="28 2 120" EV_DELAY_MS=28`), before the attitude retune | 4–5 mm | 22 mm |
 | Exact, but `IMU_NOISE` 0.25 | 6–8 mm | 31 mm |
 | Exact, 40 ms late and not compensated (`EV_DELAY_MS=0`) | 5–8 mm | 51 mm |
 
-* **Repeat runs vary.** Most runs stay within 2.2 cm, but some show one smooth 4–10 cm sag on
-  one or two drones at once (3-drone runs: 5 of 6 within 3 cm; 5-drone runs on a 4-core machine:
-  1 of 4). That the sags hit separate simulated drones at the same instant points to the host
-  starving the simulators rather than the flight code; confirm on a faster machine.
+* **Repeat runs.** Before the attitude retune, some runs showed one smooth 4–10 cm excursion
+  (on 5-drone runs, often at show time ~45 s on the drones flying the turning square); a run under
+  4 CPU burners was clean, so host load is not the cause. Since the retune and the
+  acceleration lead, 5 of 5 runs stayed within 16 mm. If one reappears, fly with
+  `PX4_PARAM_SDLOG_MODE=0` and look at that moment in the PX4 logs.
 * **The IMU's vibration decides it.** At SIH's full noise the drones wander 2 cm RMS whatever the
   tuning (worst 7–10 cm); at 0.1 they stay within 2.2 cm, at 0.25 just over 3 cm. 0.1 is still
   several times a bare MEMS IMU's noise; on a real 60 g quad it means balanced props and a

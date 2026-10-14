@@ -344,13 +344,44 @@ void IdpsShow::handle_command(const vehicle_command_s &cmd)
 	}
 }
 
-void IdpsShow::publish_setpoint(hrt_abstime now, float show_t)
+void IdpsShow::read_params()
+{
+	const char *names[3] = {"IDPS_ACC_LEAD", "MPC_XY_VEL_D_ACC", "MPC_Z_VEL_D_ACC"};
+	float *dest[3] = {&_acc_lead, &_vel_d_xy, &_vel_d_z};
+
+	for (int i = 0; i < 3; i++) {
+		param_t p = param_find(names[i]);
+		*dest[i] = 0.f;
+
+		if (p != PARAM_INVALID) {
+			param_get(p, dest[i]);
+		}
+	}
+}
+
+void IdpsShow::publish_setpoint(hrt_abstime now, float show_t, bool running)
 {
 	trajectory_setpoint_s sp{};
 
 	if (!evaluate(show_t, sp)) {
 		abort("show file read error");
 		return;
+	}
+
+	if (running) {
+		// The show runs on the PC's clock: ds/dt = r show seconds per local second (1 on real
+		// hardware to a few ppm; a few % in the simulator). Feed-forwards are per local second.
+		const float r = (float)math::constrain(1.0 - _sync_b, 0.9, 1.1);
+		trajectory_setpoint_s ahead{};
+		const bool lead = _acc_lead > 0.f && evaluate(show_t + _acc_lead * r, ahead);
+
+		for (int i = 0; i < 3; i++) {
+			sp.velocity[i] *= r;
+			// taken ahead by the airframe's lag; PX4's velocity D term acts on the measured
+			// acceleration and so takes back D x the acceleration it was asked for
+			const float acc = lead ? ahead.acceleration[i] : sp.acceleration[i];
+			sp.acceleration[i] = acc * r * r * (1.f + (i < 2 ? _vel_d_xy : _vel_d_z));
+		}
 	}
 
 	sp.timestamp = now;
@@ -493,6 +524,7 @@ void IdpsShow::Run()
 				return;
 			}
 
+			read_params();
 			_state = State::Running;
 		}
 
@@ -510,7 +542,7 @@ void IdpsShow::Run()
 	const idps::TrjHeader &h = _file.header();
 	// evaluated half a period ahead: the controller uses each setpoint until the next one
 	const float show_t = h.t0 + (float)((double)(-to_start + (int64_t)SETPOINT_PERIOD / 2) * 1e-6);
-	publish_setpoint(now, show_t);
+	publish_setpoint(now, show_t, true);
 
 	if (_have_gt) {
 		// simulator only: how far the drone is from the file at its own show time, unaffected by
