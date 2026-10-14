@@ -43,16 +43,16 @@ done
 if [ "$MODE" = vision ]; then
   echo "== positions inside PX4: 2 mm noise, 120 Hz, $EV_DELAY_MS ms late"
   python px4/sitl/idps_stand_in.py "$OUT/show/manifest.json" "$N" "$OUT/truth.csv" log-only > "$OUT/standin.log" 2>&1 &
-  PIDS+=($!); TRACK=$OUT/truth.track.csv; sleep 8
+  PIDS+=($!); disown $!; TRACK=$OUT/truth.track.csv; sleep 8
 else
   echo "== cameras and engine"
   python -m idps.sim px4 examples/scenarios/show_8x8_micro60.yaml --manifest "$OUT/show/manifest.json" \
       --duration 600 --workers "${WORKERS:-3}" -o "$OUT" > "$OUT/cams.log" 2>&1 &
-  PIDS+=($!)
+  PIDS+=($!); disown $!
   while [ ! -s "$OUT/calibration.yaml" ]; do sleep 0.5; done; sleep 1
   python -m idps.engine.cli live --port 5600 --calib "$OUT/calibration.yaml" --site examples/sites/show_8x8.yaml \
       $L14 -o "$OUT/positions.csv" > "$OUT/engine.log" 2>&1 &
-  PIDS+=($!); TRACK=$OUT/track.csv
+  PIDS+=($!); disown $!; TRACK=$OUT/track.csv
   echo "   waiting 30 s for the cameras to identify every drone"; sleep 30
   tail -1 "$OUT/cams.log"; tail -1 "$OUT/engine.log"
 fi
