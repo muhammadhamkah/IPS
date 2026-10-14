@@ -17,20 +17,30 @@ N=${N:-5}; OUT=${OUT:-out/loop}; export EV_DELAY_MS=${EV_DELAY_MS:-28}
 PX4_DIR=${PX4_DIR:-$HOME/PX4-Autopilot}; B=$PX4_DIR/build/${PX4_BUILD:-px4_sitl_default}
 rm -rf "$OUT"; mkdir -p "$OUT"
 PIDS=()
-cleanup() { for p in "${PIDS[@]}"; do pkill -P "$p" 2>/dev/null || true; kill "$p" 2>/dev/null || true; done; pkill -x px4 || true; }
+cleanup() {
+  for p in "${PIDS[@]}"; do pkill -P "$p" 2>/dev/null || true; kill "$p" 2>/dev/null || true; done
+  # a stopped show start first aborts every drone: give it up to 5 s while PX4 still answers
+  for ((t=0;t<20;t++)); do
+    alive=0; for p in "${PIDS[@]}"; do kill -0 "$p" 2>/dev/null && alive=1; done
+    [ $alive = 0 ] && break; sleep 0.25
+  done
+  for p in "${PIDS[@]}"; do kill -9 "$p" 2>/dev/null || true; done
+  pkill -x px4 || true
+}
 trap cleanup EXIT
 trap 'exit 143' TERM INT           # stopped (e.g. from the dashboard): clean up too
 
-# the drones' truth links (udp 14800+i) must be free: a leftover run would take their messages
+# the drones' links must be free: a leftover run would take their messages
 python - "$N" <<'PY' || exit 1
 import socket, sys
 busy = []
-for i in range(int(sys.argv[1])):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+n = int(sys.argv[1])
+for port in [14800 + i for i in range(n)] + [14540 + i for i in range(n)] + [14030 + i for i in range(n)] + [5600]:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)   # truth links, drone links, engine links, engine
     try:
-        s.bind(("127.0.0.1", 14800 + i))
+        s.bind(("127.0.0.1" if port != 5600 else "0.0.0.0", port))
     except OSError:
-        busy.append(14800 + i)
+        busy.append(port)
     s.close()
 if busy:
     print(f"udp port(s) {busy} are in use, probably by an earlier run still going. Stop it first, e.g.:\n"
