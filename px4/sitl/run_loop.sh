@@ -34,8 +34,10 @@ PY
 
 echo "== $N PX4 drones (micro60)"
 if [ "$MODE" = vision ]; then export SITL_VISION="${SITL_VISION:-$EV_DELAY_MS 2 120}"; fi
-DRONE=micro60 PX4_DIR=$PX4_DIR PX4_PARAM_SDLOG_MODE=${PX4_PARAM_SDLOG_MODE:--1} \
-    bash px4/sitl/run_sitl.sh "$N" > "$OUT/sitl.log" 2>&1
+if ! DRONE=micro60 PX4_DIR=$PX4_DIR PX4_PARAM_SDLOG_MODE=${PX4_PARAM_SDLOG_MODE:--1} \
+    bash px4/sitl/run_sitl.sh "$N" > "$OUT/sitl.log" 2>&1; then
+  echo "Starting the PX4 drones failed:"; tail -30 "$OUT/sitl.log"; exit 1
+fi
 L=""; L14=""
 for ((i=0;i<N;i++)); do
   L="$L --link $((i+1))=udpin:127.0.0.1:$((14540+i))"; L14="$L14 --link $((i+1))=udpin:127.0.0.1:$((14030+i))"

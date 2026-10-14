@@ -69,8 +69,21 @@ for ((i=0;i<N;i++)); do
   mkdir -p "$B/rootfs/$i"; cd "$B/rootfs/$i"
   rm -f parameters*.bson dataman
   PX4_SYS_AUTOSTART=10040 PX4_SIM_MODEL=sihsim_quadx nohup "$B/bin/px4" -i $i -d "$B/etc" > out.log 2>&1 &
+  PIDS[$i]=$!
 done
-sleep 10
+# wait until every instance answers (a slow or busy machine takes longer than a fixed pause)
+for ((i=0;i<N;i++)); do
+  for ((t=0;t<120;t++)); do
+    "$B/bin/px4-param" --instance $i show SYS_AUTOSTART >/dev/null 2>&1 && break
+    if ! kill -0 "${PIDS[$i]}" 2>/dev/null || [ $t -eq 119 ]; then
+      echo "PX4 drone $((i+1)) (instance $i) did not start. The end of its log ($B/rootfs/$i/out.log):" >&2
+      tail -25 "$B/rootfs/$i/out.log" >&2
+      exit 1
+    fi
+    sleep 0.5
+  done
+done
+sleep 3                                  # let the startup script finish (EKF2, mavlink, idps_show)
 for ((i=0;i<N;i++)); do
   "$B/bin/px4-mavlink" --instance $i start -u $((14700+i)) -o $((14800+i)) -m custom -r 400000 >/dev/null 2>&1
   "$B/bin/px4-mavlink" --instance $i stream -u $((14700+i)) -s HIL_STATE_QUATERNION -r 100 >/dev/null 2>&1
