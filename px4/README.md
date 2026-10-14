@@ -273,7 +273,8 @@ engine):
   the engine sent were right (within 4 mm); those queued while PX4 stood still reached it together
   and looked fresh. `sih_realtime_pacing.patch` paces SIH on the wall clock and catches up after a
   stall (the clocks then stay within 4 ms). 5 drones, 11 cameras, 4 cores: 0 of 3 runs within
-  30 mm before, 4 of 5 after (worst 16.6–18.8 mm).
+  30 mm before; after, 8 of 10 (worst 15.5–21.8 mm). Of the other two, one had a 12 cm push
+  after a 76 ms hold-up on the PC side, and in one three drones lifted off 3.5 s late.
 * **A position that reaches PX4 late pulls a moving drone back.** PX4 takes every position as
   filmed `EKF2_EV_DELAY` before it arrived; one held up 50 ms by a busy PC is 5 cm behind at
   1 m/s. With `idps-engine live --ev-delay-ms` (the drones' `EKF2_EV_DELAY`) a position more than
