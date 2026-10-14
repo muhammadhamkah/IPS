@@ -13,6 +13,8 @@ set -e
 MODE=${1:-cameras}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
+PY=${PYTHON:-python}                    # the IDPS python (the dashboard passes its own)
+"$PY" -c "import idps" 2>/dev/null || { echo "$PY cannot import idps: activate the IDPS venv (pip install -e .)"; exit 1; }
 N=${N:-5}; OUT=${OUT:-out/loop}; export EV_DELAY_MS=${EV_DELAY_MS:-28}
 PX4_DIR=${PX4_DIR:-$HOME/PX4-Autopilot}; B=$PX4_DIR/build/${PX4_BUILD:-px4_sitl_default}
 rm -rf "$OUT"; mkdir -p "$OUT"
@@ -31,7 +33,7 @@ trap cleanup EXIT
 trap 'exit 143' TERM INT           # stopped (e.g. from the dashboard): clean up too
 
 # the drones' links must be free: a leftover run would take their messages
-python - "$N" <<'PY' || exit 1
+"$PY" - "$N" <<'PY' || exit 1
 import socket, sys
 busy = []
 n = int(sys.argv[1])
@@ -48,10 +50,10 @@ if busy:
     sys.exit(1)
 PY
 echo "== show"
-python examples/shows/five_drones_sphere_square.py "$OUT/five.zip" > "$OUT/show.txt"
-python -m idps.show.cli export "$OUT/five.zip" --site examples/sites/show_8x8.yaml \
+"$PY" examples/shows/five_drones_sphere_square.py "$OUT/five.zip" > "$OUT/show.txt"
+"$PY" -m idps.show.cli export "$OUT/five.zip" --site examples/sites/show_8x8.yaml \
     --plan examples/plans/show_8x8.yaml --min-sep 0.9 -o "$OUT/show" | tail -1
-python - "$OUT/show/manifest.json" "$N" <<'PY'
+"$PY" - "$OUT/show/manifest.json" "$N" <<'PY'
 import json, sys
 p, n = sys.argv[1], int(sys.argv[2])
 m = json.load(open(p)); m["drones"] = [d for d in m["drones"] if d["drone_id"] <= n]
@@ -71,11 +73,11 @@ done
 
 if [ "$MODE" = vision ]; then
   echo "== positions inside PX4: 2 mm noise, 120 Hz, $EV_DELAY_MS ms late"
-  python px4/sitl/idps_stand_in.py "$OUT/show/manifest.json" "$N" "$OUT/truth.csv" log-only > "$OUT/standin.log" 2>&1 &
+  "$PY" px4/sitl/idps_stand_in.py "$OUT/show/manifest.json" "$N" "$OUT/truth.csv" log-only > "$OUT/standin.log" 2>&1 &
   PIDS+=($!); disown $!; TRACK=$OUT/truth.track.csv
   # every drone's truth link must reach the logger before the show (else no tracking for it)
   for ((t=0;;t++)); do
-    missing=$(python - "$OUT/truth.csv" "$N" <<'PY'
+    missing=$("$PY" - "$OUT/truth.csv" "$N" <<'PY'
 import sys
 seen = set()
 try:
@@ -95,11 +97,11 @@ PY
   done
 else
   echo "== cameras and engine"
-  python -m idps.sim px4 examples/scenarios/show_8x8_micro60.yaml --manifest "$OUT/show/manifest.json" \
+  "$PY" -m idps.sim px4 examples/scenarios/show_8x8_micro60.yaml --manifest "$OUT/show/manifest.json" \
       --duration 600 --workers "${WORKERS:-3}" -o "$OUT" > "$OUT/cams.log" 2>&1 &
   PIDS+=($!); disown $!
   while [ ! -s "$OUT/calibration.yaml" ]; do sleep 0.5; done; sleep 1
-  python -m idps.engine.cli live --port 5600 --calib "$OUT/calibration.yaml" --site examples/sites/show_8x8.yaml \
+  "$PY" -m idps.engine.cli live --port 5600 --calib "$OUT/calibration.yaml" --site examples/sites/show_8x8.yaml \
       $L14 -o "$OUT/positions.csv" > "$OUT/engine.log" 2>&1 &
   PIDS+=($!); disown $!; TRACK=$OUT/track.csv
   echo "   waiting 30 s for the cameras to identify every drone"; sleep 30 & wait $!
@@ -107,10 +109,10 @@ else
 fi
 
 echo "== upload and fly (about 80 s)"
-python -m idps.show.cli upload "$OUT/show/manifest.json" $L --sitl | grep -c OK | sed 's/$/ drone(s) uploaded/'
+"$PY" -m idps.show.cli upload "$OUT/show/manifest.json" $L --sitl | grep -c OK | sed 's/$/ drone(s) uploaded/'
 # in the background and waited for, so a stop (TERM) is handled at once: the trap aborts the
 # show and stops every helper (a foreground command would delay it to the end of the show)
-python -m idps.show.cli start "$OUT/show/manifest.json" $L --lead 15 > "$OUT/start.txt" 2>&1 &
+"$PY" -m idps.show.cli start "$OUT/show/manifest.json" $L --lead 15 > "$OUT/start.txt" 2>&1 &
 PIDS+=($!); wait $! || true
 grep -E "denied|refused|Not started" "$OUT/start.txt" || true
 for ((i=0;i<N;i++)); do
@@ -121,4 +123,4 @@ done
 
 grep -h "nothing on udp" "$OUT/standin.log" 2>/dev/null || true
 echo "== result (distance from the show file)"
-python px4/sitl/score_track.py "$TRACK"
+"$PY" px4/sitl/score_track.py "$TRACK"

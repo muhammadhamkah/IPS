@@ -41,6 +41,10 @@ STAGES = [("== show", "building the show files"), ("PX4 drones", "starting the P
 FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still going (ports {0} busy). Quit it, or "
              "run: pkill -f 'idps.sim px4'; pkill -f idps_stand_in; pkill -x px4"),
             (r"build first:", "PX4 is not built in the chosen folder (see px4/README.md)."),
+            (r"(\S+) cannot import idps", "The flight script's Python ({0}) cannot import IDPS: start the dashboard "
+             "from the IDPS venv."),
+            (r"ModuleNotFoundError: No module named '([\w.]+)'", "A Python package is missing: {0} (pip install it in "
+             "the IDPS venv)."),
             (r"PX4 drone (\d+) \(instance \d+\): (.*?)\. The end of its log", "PX4 drone {0}: {1} (its log is "
              "in the Log pane)."),
             (r"No data from drone\(s\) ([\d ]+) on their truth links", "No data from drone(s) {0}: their links never "
@@ -72,14 +76,17 @@ def diagnose(text: str):
 
 
 def _python_shim() -> str:
-    """A folder whose `python` is this interpreter: the flight script calls `python`, and a dashboard
-    started from Finder or the Dock has no activated venv (macOS has no /usr/bin/python)."""
+    """A folder whose `python` runs this interpreter: the flight script calls `python`, and a dashboard
+    started from Finder or the Dock has no activated venv (macOS has no /usr/bin/python). A wrapper
+    script, not a symlink: a venv's python reached through a link elsewhere loses its venv."""
     d = Path(tempfile.gettempdir()) / f"idps-python-{os.getuid()}"
     d.mkdir(exist_ok=True)
-    link = d / "python"
-    if not (link.is_symlink() and os.readlink(link) == sys.executable):
-        link.unlink(missing_ok=True)
-        link.symlink_to(sys.executable)
+    shim = d / "python"
+    text = f'#!/bin/sh\nexec "{sys.executable}" "$@"\n'
+    if shim.is_symlink() or not shim.exists() or shim.read_text() != text:
+        shim.unlink(missing_ok=True)
+        shim.write_text(text)
+        shim.chmod(0o755)
     return str(d)
 
 
@@ -236,6 +243,7 @@ class Px4Tab(QWidget):
         self.out_dir = ROOT / "out" / "px4_runs" / time.strftime("%Y%m%d-%H%M%S")
         env = QProcessEnvironment.systemEnvironment()
         env.insert("PATH", _python_shim() + os.pathsep + env.value("PATH"))
+        env.insert("PYTHON", sys.executable)
         env.insert("PX4_DIR", self.px4_dir)
         env.insert("PX4_BUILD", build)
         env.insert("N", str(self.n_drones.value()))
@@ -308,7 +316,7 @@ class Px4Tab(QWidget):
         if reason:
             self.status.setText(reason)
         elif stage and (self.run_data is None or not np.isfinite(self.run_data.last_t)):
-            self.status.setText(f"{stage.capitalize()}…")
+            self.status.setText(f"{stage[0].upper()}{stage[1:]}…")
 
     def _finished(self, code, _status):
         self.poll.stop()
