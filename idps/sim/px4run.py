@@ -35,6 +35,7 @@ class DroneFlight:
     p95_mm: float
     worst_mm: float
     worst_at_s: float           # show time of the worst moment
+    last_s: float = float("nan")  # show time of its newest sample (data that stops early: lost link)
 
 
 @dataclass
@@ -119,7 +120,7 @@ def load_run(folder) -> Px4Run:
         if len(S):
             e = 1000 * np.linalg.norm(S[:, 2:5], axis=1)
             drones.append(DroneFlight(did, len(S), float(np.median(e)), float(np.percentile(e, 95)),
-                                      float(e.max()), float(S[e.argmax(), 1])))
+                                      float(e.max()), float(S[e.argmax(), 1]), float(R[-1, 1])))
         else:
             drones.append(DroneFlight(did, 0, *[float("nan")] * 4))
     last = float(T[:, 1].max()) if len(T) else float("nan")

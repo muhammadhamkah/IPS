@@ -33,7 +33,8 @@ export PX4_PARAM_EKF2_EV_CTRL=11 PX4_PARAM_EKF2_HGT_REF=3 PX4_PARAM_EKF2_GPS_CTR
 # default, while the show file climbs from its first second).
 export PX4_PARAM_SIH_KDV=0.2 PX4_PARAM_MPC_XY_P=1.8 PX4_PARAM_MPC_XY_VEL_P_ACC=4.0 PX4_PARAM_MPC_XY_VEL_I_ACC=1.5 \
        PX4_PARAM_MPC_Z_P=1.5 PX4_PARAM_MPC_Z_VEL_P_ACC=6.0 \
-       PX4_PARAM_MPC_TKO_RAMP_T=0.5 PX4_PARAM_SIM_BAT_MIN_PCT=100   # simulated battery never drains (no low-battery failsafe)
+       PX4_PARAM_MPC_TKO_RAMP_T=0.5 PX4_PARAM_SIM_BAT_MIN_PCT=100 PX4_PARAM_COM_LOW_BAT_ACT=0 \
+       PX4_PARAM_SYS_HAS_BARO=0   # simulated battery never drains or warns into a failsafe; baro off (IDPS height)
 # DRONE=micro60: a 60 g indoor show quad (65 mm frame: motors 2.3 cm from the axes, thrust/weight
 # 3.5, 20 ms motors, inertia 3e-5 / 3e-5 / 5e-5 kg m^2) instead of SIH's 1 kg default, with
 # show-drone limits (5 m/s up, 4 m/s down, 60 degree tilt) and rate gains scaled down for its
@@ -71,25 +72,46 @@ for ((i=0;i<N;i++)); do
   PX4_SYS_AUTOSTART=10040 PX4_SIM_MODEL=sihsim_quadx nohup "$B/bin/px4" -i $i -d "$B/etc" > out.log 2>&1 &
   PIDS[$i]=$!
 done
-# wait until every instance answers (a slow or busy machine takes longer than a fixed pause)
+# Configure each drone only once its whole startup script has run (the airframe's .post file,
+# which starts idps_show, comes last), and check each setting took: on a slower machine (a Mac)
+# a command sent too early reaches nothing and, before, failed silently.
+fail() {   # drone index, message
+  echo "PX4 drone $(($1+1)) (instance $1): $2. The end of its log ($B/rootfs/$1/out.log):" >&2
+  tail -25 "$B/rootfs/$1/out.log" >&2
+  exit 1
+}
 for ((i=0;i<N;i++)); do
-  for ((t=0;t<120;t++)); do
-    "$B/bin/px4-param" --instance $i show SYS_AUTOSTART >/dev/null 2>&1 && break
-    if ! kill -0 "${PIDS[$i]}" 2>/dev/null || [ $t -eq 119 ]; then
-      echo "PX4 drone $((i+1)) (instance $i) did not start. The end of its log ($B/rootfs/$i/out.log):" >&2
-      tail -25 "$B/rootfs/$i/out.log" >&2
-      exit 1
-    fi
+  for ((t=0;;t++)); do
+    grep -q "Startup script returned" "$B/rootfs/$i/out.log" 2>/dev/null && break
+    kill -0 "${PIDS[$i]}" 2>/dev/null || fail $i "PX4 stopped while starting"
+    [ $t -ge 240 ] && fail $i "did not finish starting within 120 s"
+    sleep 0.5
+  done
+  for ((t=0;;t++)); do
+    "$B/bin/px4-idps_show" --instance $i status 2>/dev/null | grep -q "state:" && break
+    [ $t -ge 20 ] && fail $i "the idps_show module is not running (is PX4 built with EXTERNAL_MODULES_LOCATION=.../IPS/px4?)"
     sleep 0.5
   done
 done
-sleep 3                                  # let the startup script finish (EKF2, mavlink, idps_show)
 for ((i=0;i<N;i++)); do
-  "$B/bin/px4-mavlink" --instance $i start -u $((14700+i)) -o $((14800+i)) -m custom -r 400000 >/dev/null 2>&1
-  "$B/bin/px4-mavlink" --instance $i stream -u $((14700+i)) -s HIL_STATE_QUATERNION -r 100 >/dev/null 2>&1
-  "$B/bin/px4-mavlink" --instance $i stream -u $((14700+i)) -s DEBUG_VECT -r 200 >/dev/null 2>&1   # exact truth (idps_show)
-  "$B/bin/px4-mavlink" --instance $i stream -u $((14700+i)) -s DEBUG_FLOAT_ARRAY -r 100 >/dev/null 2>&1   # tracking error
+  "$B/bin/px4-mavlink" --instance $i start -u $((14700+i)) -o $((14800+i)) -m custom -r 400000 >/dev/null 2>&1 \
+    || fail $i "could not open its truth link (MAVLink on udp $((14700+i)))"
+  for s in "HIL_STATE_QUATERNION 100" "DEBUG_VECT 200" "DEBUG_FLOAT_ARRAY 100"; do   # truth; tracking error
+    set -- $s
+    for ((t=0;;t++)); do
+      "$B/bin/px4-mavlink" --instance $i stream -u $((14700+i)) -s $1 -r $2 >/dev/null 2>&1 && break
+      [ $t -ge 10 ] && fail $i "could not stream $1 on its truth link"
+      sleep 0.5
+    done
+  done
   # SITL_VISION="<delay ms> [noise mm [rate Hz]]": IDPS inside PX4 (idps_show sitl_vision) instead of over MAVLink
-  [ -n "${SITL_VISION:-}" ] && "$B/bin/px4-idps_show" --instance $i sitl_vision on $SITL_VISION >/dev/null 2>&1
+  if [ -n "${SITL_VISION:-}" ]; then
+    for ((t=0;;t++)); do
+      "$B/bin/px4-idps_show" --instance $i sitl_vision on $SITL_VISION >/dev/null 2>&1
+      "$B/bin/px4-listener" --instance $i vehicle_visual_odometry -n 1 2>/dev/null | grep -q "position" && break
+      [ $t -ge 10 ] && fail $i "positions (sitl_vision) did not start"
+      sleep 0.5
+    done
+  fi
 done
 echo "$N drone(s) up. Links: $(for ((i=0;i<N;i++)); do printf -- '--link %d=udpin:127.0.0.1:%d ' $((i+1)) $((14540+i)); done)"

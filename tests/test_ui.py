@@ -783,3 +783,22 @@ def test_px4_flight_tab_replays_a_run(win, app, tmp_path):
     tab.toggle_play()
     assert tab.timer.isActive()
     tab.toggle_play()
+
+
+def test_px4_flight_tab_explains_a_failed_run():
+    """The flight script's output becomes a plain reason, a stage and a state per drone."""
+    from idps.ui.px4.tab import diagnose
+    out = "\n".join(["== show", "== 5 PX4 drones (micro60)", "== upload and fly (about 80 s)", "5 drone(s) uploaded",
+                     "drone 2: denied (ready) no position (IDPS positions not arriving)",
+                     "Not started: every drone was told to abort. Fix the refused drone(s) and start again.",
+                     "   drone 5: WARN  [failsafe] Failsafe activated",
+                     "drone 3: nothing on udp 14802 for 15 s. Is another program using that port?"])
+    stage, reason, notes = diagnose(out)
+    assert stage == "uploading the show" and reason.startswith("Not started: a drone refused")
+    assert notes == {2: "refused: no position (IDPS positions not arriving)", 5: "Failsafe activated",
+                     3: "no data (udp 14802 silent)"}
+    _, reason, _ = diagnose("udp port(s) [14801, 14803] are in use, probably by an earlier run")
+    assert "ports [14801, 14803] busy" in reason
+    _, reason, _ = diagnose("PX4 drone 4 (instance 3): the idps_show module is not running (is PX4 built with "
+                            "EXTERNAL_MODULES_LOCATION=.../IPS/px4?). The end of its log (x):")
+    assert reason.startswith("PX4 drone 4: the idps_show module is not running")

@@ -77,7 +77,12 @@ def cmd_live(a) -> int:
         from idps.show.cli import _connect
         mavs = _connect(a)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
+    for size in (8 << 20, 4 << 20, 2 << 20, 1 << 20):    # macOS refuses buffers over its limit (Linux caps them)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, size)
+            break
+        except OSError:
+            pass
     sock.bind((a.host, a.port))
     sock.settimeout(0.2)
     out_f = open(a.out, "w", newline="") if a.out else None

@@ -7,7 +7,10 @@ module's own measure: how far each drone was from its file at its own show time.
 from __future__ import annotations
 
 import os
+import re
+import signal
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -29,6 +32,55 @@ LIMIT_MM = 30.0
 PLAY_MS = 40
 MODES = [("Positions inside PX4 (quick check)", "vision", "px4_sitl_default"),
          ("Simulated cameras + engine (full loop)", "cameras", "px4_sitl_nolockstep")]
+
+
+STAGES = [("== show", "building the show files"), ("PX4 drones", "starting the PX4 drones"),
+          ("== positions inside", "checking every drone's link"), ("== cameras", "starting cameras and engine"),
+          ("== upload", "uploading the show"), ("show starts in", "waiting for the start"),
+          ("== result", "scoring")]
+FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still going (ports {0} busy). Quit it, or "
+             "run: pkill -f 'idps.sim px4'; pkill -f idps_stand_in; pkill -x px4"),
+            (r"build first:", "PX4 is not built in the chosen folder (see px4/README.md)."),
+            (r"PX4 drone (\d+) \(instance \d+\): (.*?)\. The end of its log", "PX4 drone {0}: {1} (its log is "
+             "in the Log pane)."),
+            (r"No data from drone\(s\) ([\d ]+) on their truth links", "No data from drone(s) {0}: their links never "
+             "reached the logger."),
+            (r"drone (\d+): no heartbeat on (\S+)", "Drone {0} did not answer on {1}."),
+            (r"Not started: every drone was told to abort", "Not started: a drone refused the start, so every drone "
+             "was told to abort.")]
+DRONE_NOTES = [(r"drone (\d+): (?:denied|temporarily rejected|failed|unsupported) \(\w+\) ?(.*)", "refused: {1}"),
+               (r"drone (\d+): nothing on udp (\d+)", "no data (udp {1} silent)"),
+               (r"^\s+drone (\d+): \S+\s+\[(\w+)\] (Failsafe.*|IDPS show stopped.*)", "{2}")]
+
+
+def diagnose(text: str):
+    """The flight script's output -> (stage, failure reason or None, {drone ID: note})."""
+    stage, reason, notes = "", None, {}
+    for line in text.splitlines():
+        for key, name in STAGES:
+            if key in line:
+                stage = name
+        for pat, msg in FAILURES:
+            m = re.search(pat, line)
+            if m and reason is None:
+                reason = msg.format(*[g.strip() for g in m.groups()])
+        for pat, msg in DRONE_NOTES:
+            m = re.search(pat, line)
+            if m:
+                notes.setdefault(int(m.group(1)), msg.format(*m.groups()).strip())
+    return stage, reason, notes
+
+
+def _python_shim() -> str:
+    """A folder whose `python` is this interpreter: the flight script calls `python`, and a dashboard
+    started from Finder or the Dock has no activated venv (macOS has no /usr/bin/python)."""
+    d = Path(tempfile.gettempdir()) / f"idps-python-{os.getuid()}"
+    d.mkdir(exist_ok=True)
+    link = d / "python"
+    if not (link.is_symlink() and os.readlink(link) == sys.executable):
+        link.unlink(missing_ok=True)
+        link.symlink_to(sys.executable)
+    return str(d)
 
 
 def _mm(v: float) -> str:
@@ -119,8 +171,8 @@ class Px4Tab(QWidget):
             t.setMinimumWidth(130)
             tiles.addWidget(t)
         sl.addWidget(tiles_box)
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Drone", "Median", "p95", "Worst", "Worst at"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Drone", "State", "Median", "p95", "Worst", "Worst at"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -183,12 +235,16 @@ class Px4Tab(QWidget):
             return False
         self.out_dir = ROOT / "out" / "px4_runs" / time.strftime("%Y%m%d-%H%M%S")
         env = QProcessEnvironment.systemEnvironment()
-        env.insert("PATH", str(Path(sys.executable).parent) + os.pathsep + env.value("PATH"))
+        env.insert("PATH", _python_shim() + os.pathsep + env.value("PATH"))
         env.insert("PX4_DIR", self.px4_dir)
         env.insert("PX4_BUILD", build)
         env.insert("N", str(self.n_drones.value()))
         env.insert("OUT", str(self.out_dir))
         self.proc = QProcess(self)
+        pp = QProcess.UnixProcessParameters()            # its own process group: Stop reaches every helper
+        pp.flags = QProcess.UnixProcessFlag.CreateNewSession
+        self.proc.setUnixProcessParameters(pp)
+        self._out, self._notes, self._stopping = "", {}, False
         self.proc.setProcessEnvironment(env)
         self.proc.setWorkingDirectory(str(ROOT))
         self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
@@ -197,7 +253,11 @@ class Px4Tab(QWidget):
         self.log.clear()
         self.log.appendPlainText(f"$ PX4_DIR={self.px4_dir} PX4_BUILD={build} N={self.n_drones.value()} "
                                  f"px4/sitl/run_loop.sh {mode}")
-        self.proc.start("bash", [str(SCRIPT), mode])
+        if sys.platform == "darwin":            # keep the Mac awake and the flight at full speed while it runs
+            self._begin_activity()
+            self.proc.start("/usr/bin/caffeinate", ["-i", "bash", str(SCRIPT), mode])
+        else:
+            self.proc.start("bash", [str(SCRIPT), mode])
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.status.setText(f"Starting {self.n_drones.value()} PX4 drones… (about 2–3 minutes: drones, show upload, "
@@ -205,28 +265,69 @@ class Px4Tab(QWidget):
         self.poll.start()
         return True
 
+    def _begin_activity(self):
+        """macOS: tell the system a latency-critical activity is running, so App Nap does not slow the
+        dashboard (and the simulators it started) while it is in the background. Needs pyobjc; without
+        it, keep the dashboard in front during a flight."""
+        try:
+            from Foundation import NSProcessInfo
+            opts = 0x00FFFFFF | 0xFF00000000                 # NSActivityUserInitiated | NSActivityLatencyCritical
+            self._activity = NSProcessInfo.processInfo().beginActivityWithOptions_reason_(opts, "PX4 flight")
+        except Exception:
+            self._activity = None
+
+    def _end_activity(self):
+        act = getattr(self, "_activity", None)
+        if act is not None:
+            from Foundation import NSProcessInfo
+            NSProcessInfo.processInfo().endActivity_(act)
+            self._activity = None
+
+    def _signal_group(self, sig):
+        if self.proc is not None and self.proc.processId():
+            try:
+                os.killpg(self.proc.processId(), sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+
     def stop(self):
         if self.proc is None:
             return
-        self.status.setText("Stopping: the drones and simulators are shut down…")
-        self.proc.terminate()
-        if not self.proc.waitForFinished(8000):
-            self.proc.kill()
+        self._stopping = True
+        self.status.setText("Stopping: the drones land and the simulators are shut down…")
+        self._signal_group(signal.SIGTERM)               # the script's cleanup runs; helpers get it too
+        QTimer.singleShot(12000, lambda: self._signal_group(signal.SIGKILL))
 
     def _read_output(self):
         text = bytes(self.proc.readAllStandardOutput()).decode(errors="replace").rstrip()
-        if text:
-            self.log.appendPlainText(text)
+        if not text:
+            return
+        self.log.appendPlainText(text)
+        self._out += text + "\n"
+        stage, reason, self._notes = diagnose(self._out)
+        if reason:
+            self.status.setText(reason)
+        elif stage and (self.run_data is None or not np.isfinite(self.run_data.last_t)):
+            self.status.setText(f"{stage.capitalize()}…")
 
     def _finished(self, code, _status):
         self.poll.stop()
+        self._end_activity()
         self._read_output()
         self.proc = None
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         if self.out_dir is not None and (self.out_dir / "show" / "manifest.json").exists():
             self.open_run(self.out_dir, finished=True)
-        if code != 0:
+        _, reason, self._notes = diagnose(self._out)
+        if self.run_data is not None:
+            self._fill_table(self.run_data, live=False)
+        if self._stopping:
+            self.status.setText("Stopped." + (f" {self.status.text()}" if self.run_data is not None
+                                              and np.isfinite(self.run_data.last_t) else ""))
+        elif reason:
+            self.status.setText(reason)
+        elif code != 0:
             self.status.setText(self.status.text() + f"  (The flight script ended with code {code}: see the log.)")
 
     def _poll(self):
@@ -268,20 +369,7 @@ class Px4Tab(QWidget):
         self.t_worst.set(_mm(worst), f"target {LIMIT_MM:g} mm", bool(np.isfinite(worst) and worst <= LIMIT_MM))
         self.t_median.set(_mm(float(np.median(med))) if med else "–", "typical distance from the file")
         self.t_within.set(f"{within}/{n}", f"{flown} flew", within == n)
-        sel = self.view.selected
-        self.table.blockSignals(True)
-        self.table.setRowCount(n)
-        for row, d in enumerate(run.drones):
-            vals = [str(d.drone_id), _mm(d.median_mm), _mm(d.p95_mm), _mm(d.worst_mm),
-                    "–" if not np.isfinite(d.worst_at_s) else f"{d.worst_at_s:.1f} s"]
-            for c, v in enumerate(vals):
-                it = QTableWidgetItem(v)
-                it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter if c else
-                                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                self.table.setItem(row, c, it)
-        if sel is not None and sel < n:
-            self.table.selectRow(sel)
-        self.table.blockSignals(False)
+        self._fill_table(run, live)
         self.slider.blockSignals(True)
         self.slider.setRange(0, len(run.t) - 1)
         self.slider.blockSignals(False)
@@ -303,6 +391,34 @@ class Px4Tab(QWidget):
         how = {"vision": "positions inside PX4", "cameras": "simulated cameras and engine"}.get(run.mode, "")
         self.status.setText(f"{run.folder.name} ({how}): {verdict}; worst moment {_mm(worst)}. Press Play to watch "
                             "it; pick a drone to see its path, double-click it to jump to its worst moment.")
+
+    def _state(self, run, d, live: bool) -> str:
+        note = getattr(self, "_notes", {}).get(d.drone_id)
+        if note:
+            return note
+        if not d.samples:
+            return "waiting" if live else "no data"
+        if np.isfinite(run.last_t) and run.last_t - d.last_s > 2.0:
+            return f"data stopped at {d.last_s:.0f} s"
+        return "flying" if live else "flew"
+
+    def _fill_table(self, run, live: bool):
+        sel = self.view.selected
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(run.drones))
+        for row, d in enumerate(run.drones):
+            vals = [str(d.drone_id), self._state(run, d, live), _mm(d.median_mm), _mm(d.p95_mm), _mm(d.worst_mm),
+                    "–" if not np.isfinite(d.worst_at_s) else f"{d.worst_at_s:.1f} s"]
+            for c, v in enumerate(vals):
+                it = QTableWidgetItem(v)
+                it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter if c > 1 else
+                                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                if c == 1:
+                    it.setToolTip(v)
+                self.table.setItem(row, c, it)
+        if sel is not None and sel < len(run.drones):
+            self.table.selectRow(sel)
+        self.table.blockSignals(False)
 
     def toggle_play(self):
         if self.run_data is None:
@@ -348,8 +464,8 @@ class Px4Tab(QWidget):
     def shutdown(self):
         self.timer.stop()
         self.poll.stop()
-        if self.proc is not None:
+        if self.proc is not None:                         # quitting mid-flight: land and stop everything
             self.proc.finished.disconnect()
-            self.proc.terminate()
-            if not self.proc.waitForFinished(8000):
-                self.proc.kill()
+            self._signal_group(signal.SIGTERM)
+            if not self.proc.waitForFinished(10000):
+                self._signal_group(signal.SIGKILL)
