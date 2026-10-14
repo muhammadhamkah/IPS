@@ -13,7 +13,6 @@ The file may still be growing (the flight is running): load it again for the lat
 from __future__ import annotations
 
 import json
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,7 +20,7 @@ import numpy as np
 
 from idps.core.frames import Frame
 
-REPLAY_HZ = 20.0
+REPLAY_HZ = 50.0                # replay steps (the tracking log has 100 per second)
 TRACK_FILES = ("track.csv", "truth.track.csv")
 GAP_S = 0.25                    # no tracking sample this close: no position shown
 SCORE_FROM_S = 1.0              # as px4/sitl/score_track.py: leave out the first second (on the pad)
@@ -58,8 +57,7 @@ class Px4Run:
 
     def world(self, ned: np.ndarray) -> np.ndarray:
         """NED points (..., 3) -> the dashboard's world frame (drawing x, y, z up)."""
-        ned = np.asarray(ned, float)
-        return np.stack([self.frame.from_ned(p) for p in ned.reshape(-1, 3)]).reshape(ned.shape)
+        return self.frame.from_ned(np.asarray(ned, float))
 
 
 def _plan_at(trj, t: np.ndarray) -> np.ndarray:
@@ -72,6 +70,43 @@ def track_file(folder) -> Path | None:
     """The tracking log of a run folder, the newest if both kinds are there."""
     found = [Path(folder) / f for f in TRACK_FILES if (Path(folder) / f).exists()]
     return max(found, key=lambda p: p.stat().st_mtime) if found else None
+
+
+_TRACK_CACHE: dict = {}          # path -> (bytes read, rows so far): a growing log is read only from where we stopped
+
+
+def read_track(path) -> np.ndarray:
+    """The tracking log's rows (drone_id, show_t, dn, de, dd), reading only what was added since the
+    last call (the flight is running and the log grows); a half-written last line waits for the next."""
+    path = Path(path)
+    key = str(path.resolve())
+    size = path.stat().st_size
+    offset, rows = _TRACK_CACHE.get(key, (0, np.empty((0, 5))))
+    if size < offset:                                    # a new file under the same name
+        offset, rows = 0, np.empty((0, 5))
+    if size > offset:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            chunk = f.read(size - offset)
+        end = chunk.rfind(b"\n") + 1                     # complete lines only
+        text = chunk[:end].decode(errors="replace")
+        if offset == 0:
+            text = text.split("\n", 1)[1] if "\n" in text else ""   # the header
+        new = [ln.split(",") for ln in text.splitlines() if ln.count(",") == 4]
+        if new:
+            try:
+                rows = np.vstack([rows, np.array(new, float)])
+            except ValueError:                           # a garbled line: parse one by one
+                ok = []
+                for ln in new:
+                    try:
+                        ok.append([float(x) for x in ln])
+                    except ValueError:
+                        pass
+                rows = np.vstack([rows, np.array(ok, float).reshape(-1, 5)])
+        offset += end
+        _TRACK_CACHE[key] = (offset, rows)
+    return rows
 
 
 def load_run(folder) -> Px4Run:
@@ -94,15 +129,7 @@ def load_run(folder) -> Px4Run:
     actual = np.full((D, len(t), 3), np.nan)
     err = np.full((D, len(t)), np.nan)
     tf = track_file(folder)
-    T = np.empty((0, 5))
-    if tf is not None:
-        try:
-            with warnings.catch_warnings():               # empty until the show starts
-                warnings.simplefilter("ignore", UserWarning)
-                T = np.loadtxt(tf, delimiter=",", skiprows=1, ndmin=2).reshape(-1, 5)
-        except ValueError:                       # a half-written last line while the flight runs
-            lines = tf.read_text().splitlines()[1:-1]
-            T = np.array([[float(x) for x in ln.split(",")] for ln in lines if ln.count(",") == 4]).reshape(-1, 5)
+    T = read_track(tf) if tf is not None else np.empty((0, 5))
     drones = []
     for i, (did, tr) in enumerate(zip(ids, trjs)):
         R = T[T[:, 0] == did] if len(T) else T

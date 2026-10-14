@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "px4" / "sitl" / "run_loop.sh"
 VENUE = ROOT / "examples" / "sites" / "show_8x8.yaml"   # where run_loop.sh flies the show
 LIMIT_MM = 30.0
+LIVE_LAG_S = 0.6               # live view: this far behind the newest sample, so every drone has data there
 PLAY_MS = 40
 MODES = [("Positions inside PX4 (quick check)", "vision", "px4_sitl_default"),
          ("Simulated cameras + engine (full loop)", "cameras", "px4_sitl_nolockstep")]
@@ -207,7 +208,11 @@ class Px4Tab(QWidget):
         self.timer.timeout.connect(self._tick)
         self._acc = 0.0
         self.poll = QTimer(self)                       # while flying: reload the tracking log
-        self.poll.setInterval(1000)
+        self.poll.setInterval(500)
+        self.live = QTimer(self)                       # while flying: move the view on smoothly between reloads
+        self.live.setInterval(PLAY_MS)
+        self.live.timeout.connect(self._live_tick)
+        self._live_t = None
         self.poll.timeout.connect(self._poll)
 
     # ------------------------------------------------------------ settings
@@ -270,7 +275,9 @@ class Px4Tab(QWidget):
         self.stop_btn.setEnabled(True)
         self.status.setText(f"Starting {self.n_drones.value()} PX4 drones… (about 2–3 minutes: drones, show upload, "
                             "then the 63 s flight, shown live)")
+        self._live_t = None
         self.poll.start()
+        self.live.start()
         return True
 
     def _begin_activity(self):
@@ -320,6 +327,7 @@ class Px4Tab(QWidget):
 
     def _finished(self, code, _status):
         self.poll.stop()
+        self.live.stop()
         self._end_activity()
         self._read_output()
         self.proc = None
@@ -383,10 +391,9 @@ class Px4Tab(QWidget):
         self.slider.blockSignals(False)
         self.slider.setEnabled(True)
         self.play_btn.setEnabled(True)
-        if live:                                        # follow the newest sample
-            k = int(np.clip(np.searchsorted(run.t, run.last_t), 0, len(run.t) - 1))
-            self.slider.setValue(k)
-            self.set_frame(k)
+        if live:                                        # the view follows the flight (_live_tick)
+            if self._live_t is None:
+                self._live_t = run.last_t - LIVE_LAG_S
             how = "positions inside PX4" if run.mode == "vision" else "simulated cameras and engine"
             self.status.setText(f"Flying ({how}): show time {run.last_t:.1f} s. Worst so far {_mm(worst)}, "
                                 f"{within} of {n} drones within {LIMIT_MM:g} mm.")
@@ -440,6 +447,21 @@ class Px4Tab(QWidget):
             self.timer.start()
             self.play_btn.setText("Pause")
 
+    def _live_tick(self):
+        """Advance the live view with the clock, LIVE_LAG_S behind the newest sample (it arrives in
+        bursts every reload); catch up if it falls further behind."""
+        run = self.run_data
+        if run is None or self._live_t is None or not np.isfinite(run.last_t):
+            return
+        target = run.last_t - LIVE_LAG_S
+        step = PLAY_MS / 1000
+        if target - self._live_t > 1.0:
+            step *= 1.5
+        self._live_t = min(self._live_t + step, target)
+        k = int(np.clip(np.searchsorted(run.t, self._live_t, "right") - 1, 0, len(run.t) - 1))
+        if k != self.slider.value():
+            self.slider.setValue(k)
+
     def _tick(self):
         self._acc += PLAY_MS / 1000 * REPLAY_HZ * float(self.speed.currentData())
         step = int(self._acc)
@@ -472,6 +494,7 @@ class Px4Tab(QWidget):
     def shutdown(self):
         self.timer.stop()
         self.poll.stop()
+        self.live.stop()
         if self.proc is not None:                         # quitting mid-flight: land and stop everything
             self.proc.finished.disconnect()
             self._signal_group(signal.SIGTERM)
