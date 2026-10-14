@@ -1,0 +1,30 @@
+diff --git a/src/modules/simulation/simulator_sih/sih.cpp b/src/modules/simulation/simulator_sih/sih.cpp
+--- a/src/modules/simulation/simulator_sih/sih.cpp
++++ b/src/modules/simulation/simulator_sih/sih.cpp
+@@ -122,6 +122,11 @@
+ 	PX4_INFO("Simulation loop with %d Hz (%d us sim time interval)", rate, sim_interval_us);
+ 	PX4_INFO("Simulation with %.1fx speedup. Loop with (%d us wall time interval)", (double)speed_factor, rt_interval_us);
+ 	uint64_t pre_compute_wall_time_us;
++	// IDPS: each step's wall time is kept on an absolute schedule, so time lost to oversleeping or a
++	// busy host is caught up (sim steps run back to back) instead of the simulated clock falling behind
++	// the wall clock for good (~3 % slow, with 50-100 ms jumps when the host stalls). Over a second
++	// behind (a debugger, a suspended laptop): start the schedule again from now.
++	uint64_t next_wall_time_us = 0;
+ 
+ 	while (!should_exit()) {
+ 		pre_compute_wall_time_us = micros();
+@@ -148,7 +153,13 @@
+ 		} else {
+ 			px4_lockstep_wait_for_components();
+ 			current_wall_time_us = micros();
+-			sleep_time = math::max(0, rt_interval_us - (int)(current_wall_time_us - pre_compute_wall_time_us));
++
++			if (next_wall_time_us == 0 || current_wall_time_us > next_wall_time_us + 1000000) {
++				next_wall_time_us = pre_compute_wall_time_us;
++			}
++
++			next_wall_time_us += rt_interval_us;
++			sleep_time = (int)math::max((int64_t)0, (int64_t)(next_wall_time_us - current_wall_time_us));
+ 		}
+ 
+ 		_achieved_speedup = 0.99f * _achieved_speedup + 0.01f * ((float)sim_interval_us / (float)(
