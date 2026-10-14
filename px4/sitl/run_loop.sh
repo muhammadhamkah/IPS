@@ -111,7 +111,7 @@ else
   PIDS+=($!); disown $!
   while [ ! -s "$OUT/calibration.yaml" ]; do sleep 0.5; done; sleep 1
   "$PY" -m idps.engine.cli live --port 5600 --calib "$OUT/calibration.yaml" --site examples/sites/show_8x8.yaml \
-      $L14 -o "$OUT/positions.csv" > "$OUT/engine.log" 2>&1 &
+      $L14 --ev-delay-ms "$EV_DELAY_MS" -o "$OUT/positions.csv" > "$OUT/engine.log" 2>&1 &
   PIDS+=($!); disown $!; TRACK=$OUT/track.csv
   echo "   waiting 30 s for the cameras to identify every drone"; sleep 30 & wait $!
   tail -1 "$OUT/cams.log"; tail -1 "$OUT/engine.log"

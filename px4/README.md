@@ -55,7 +55,10 @@ make px4_sitl_default    EXTERNAL_MODULES_LOCATION=/path/to/IPS/px4   # simulato
 
 For the 60 g simulator profile, also apply `px4/sitl/sih_noise_scale.patch` before building the
 simulator (`git apply /path/to/IPS/px4/sitl/sih_noise_scale.patch`). It only lets SIH's IMU
-noise be scaled from the environment; without it `IMU_NOISE` has no effect.
+noise be scaled from the environment; without it `IMU_NOISE` has no effect. Apply
+`px4/sitl/sih_realtime_pacing.patch` too: it keeps the simulated clock on the wall clock (see
+"The loop needs a machine that runs it in real time" below). Both together:
+`git apply /path/to/IPS/px4/sitl/sih_noise_scale.patch /path/to/IPS/px4/sitl/sih_realtime_pacing.patch`.
 
 The PX4 build needs Python 3.11 or 3.12; its `empy` package fails to build on 3.13. A shallow
 clone also needs a NuttX tag for the version script:
@@ -263,6 +266,19 @@ engine):
   px4_sitl_nolockstep ...`) runs PX4 on the real clock but costs about half a core per drone.
   Use 8+ cores, `PX4_PARAM_SDLOG_MODE=-1` (no PX4 logs), and check the cameras' "behind the
   clock" and the engine's "exposure to send" before trusting a loop result.
+* **Simultaneous 5–40 cm pushes on several drones were the simulator's clock, not the flying.**
+  Lockstep SIH sleeps a fixed time after each physics step, so every oversleep and host stall is
+  lost for good: measured here, the PX4 clocks fell 1.8 s behind over the 63 s show, in 50–70 ms
+  jumps when the host was busy, exactly when several drones were pushed at once. The positions
+  the engine sent were right (within 4 mm); those queued while PX4 stood still reached it together
+  and looked fresh. `sih_realtime_pacing.patch` paces SIH on the wall clock and catches up after a
+  stall (the clocks then stay within 4 ms). 5 drones, 11 cameras, 4 cores: 0 of 3 runs within
+  30 mm before, 4 of 5 after (worst 16.6–18.8 mm).
+* **A position that reaches PX4 late pulls a moving drone back.** PX4 takes every position as
+  filmed `EKF2_EV_DELAY` before it arrived; one held up 50 ms by a busy PC is 5 cm behind at
+  1 m/s. `idps-engine live --ev-delay-ms` (the drones' `EKF2_EV_DELAY`) moves each position along
+  its velocity to the age PX4 assumes, and does not send one over 100 ms late (a short gap does no
+  harm: EKF2 predicts with the IMU). Use it on real drones too.
 * **The default take-off ramp was the worst error.** Each drone sat on the ground for 1.5 s
   while the file climbed, then lurched up to 24 cm sideways: up to 64 cm off in height. With
   `MPC_TKO_RAMP_T` = 0.5 s it lifts off with the file.
