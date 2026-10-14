@@ -46,6 +46,10 @@ FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still goi
              "from the IDPS venv."),
             (r"ModuleNotFoundError: No module named '([\w.]+)'", "A Python package is missing: {0} (pip install it in "
              "the IDPS venv)."),
+            (r"earlier PX4 processes would not stop \(pids: ([\d ]+)\)", "PX4s from an earlier flight would not "
+             "stop (pids {0}): run kill -9 {0} in a terminal, then fly again."),
+            (r"PX4 server already running for instance (\d+)", "A PX4 from an earlier flight was still running "
+             "(instance {0}): fly again; if it repeats, run pkill -9 -x px4 in a terminal."),
             (r"PX4 drone (\d+) \(instance \d+\): (.*?)\. The end of its log", "PX4 drone {0}: {1} (its log is "
              "in the Log pane)."),
             (r"No data from drone\(s\) ([\d ]+) on their truth links", "No data from drone(s) {0}: their links never "
@@ -60,15 +64,16 @@ DRONE_NOTES = [(r"drone (\d+): (?:denied|temporarily rejected|failed|unsupported
 
 def diagnose(text: str):
     """The flight script's output -> (stage, failure reason or None, {drone ID: note})."""
-    stage, reason, notes = "", None, {}
+    stage, reason, rank, notes = "", None, len(FAILURES), {}
     for line in text.splitlines():
         for key, name in STAGES:
             if key in line:
                 stage = name
-        for pat, msg in FAILURES:
+        for r, (pat, msg) in enumerate(FAILURES[:rank]):     # the first match; a more specific one wins
             m = re.search(pat, line)
-            if m and reason is None:
-                reason = msg.format(*[g.strip() for g in m.groups()])
+            if m:
+                reason, rank = msg.format(*[g.strip() for g in m.groups()]), r
+                break
         for pat, msg in DRONE_NOTES:
             m = re.search(pat, line)
             if m:

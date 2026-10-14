@@ -802,3 +802,6 @@ def test_px4_flight_tab_explains_a_failed_run():
     _, reason, _ = diagnose("PX4 drone 4 (instance 3): the idps_show module is not running (is PX4 built with "
                             "EXTERNAL_MODULES_LOCATION=.../IPS/px4?). The end of its log (x):")
     assert reason.startswith("PX4 drone 4: the idps_show module is not running")
+    _, reason, _ = diagnose("PX4 drone 1 (instance 0): PX4 stopped while starting. The end of its log (x):\n"
+                            "INFO  [px4] PX4 server already running for instance 0")
+    assert reason.startswith("A PX4 from an earlier flight was still running (instance 0)")

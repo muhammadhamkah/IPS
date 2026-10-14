@@ -22,7 +22,17 @@ B=$PX4_DIR/build/${PX4_BUILD:-px4_sitl_default}
 N=${1:-1}
 [ -x "$B/bin/px4" ] || { echo "build first: make -C $PX4_DIR ${PX4_BUILD:-px4_sitl_default} EXTERNAL_MODULES_LOCATION=$(cd "$(dirname "$0")/.." && pwd)"; exit 1; }
 echo "idps_show start" > "$B/etc/init.d-posix/airframes/10040_sihsim_quadx.post"
-pkill -x px4 2>/dev/null || true; sleep 1
+# PX4s left from an earlier flight hold /tmp/px4_lock-<i> ("PX4 server already running"): stop them,
+# wait until they are gone (shutting down takes a few seconds), then force the stragglers.
+pkill -x px4 2>/dev/null || true
+for _ in $(seq 50); do pgrep -x px4 >/dev/null || break; sleep 0.2; done
+pkill -9 -x px4 2>/dev/null || true
+for _ in $(seq 25); do pgrep -x px4 >/dev/null || break; sleep 0.2; done
+if pgrep -x px4 >/dev/null; then
+  echo "earlier PX4 processes would not stop (pids: $(pgrep -x px4 | tr '\n' ' ')): stop them first, e.g. kill -9 $(pgrep -x px4 | tr '\n' ' ')" >&2
+  exit 1
+fi
+sleep 0.5
 export PX4_PARAM_EKF2_EV_CTRL=11 PX4_PARAM_EKF2_HGT_REF=3 PX4_PARAM_EKF2_GPS_CTRL=0 PX4_PARAM_EKF2_BARO_CTRL=0 PX4_PARAM_EKF2_RNG_CTRL=0 \
        PX4_PARAM_EKF2_MAG_TYPE=5 PX4_PARAM_SYS_HAS_MAG=0 PX4_PARAM_EKF2_EVP_NOISE=0.01 PX4_PARAM_EKF2_EVA_NOISE=0.05 \
        PX4_PARAM_EKF2_EV_POS_Z=-0.08 PX4_PARAM_EKF2_EV_DELAY=${EV_DELAY_MS:-0} \
