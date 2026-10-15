@@ -1,5 +1,6 @@
 #!/bin/bash
-# The 5-drone choreography flown by PX4 SITL 60 g quads, scored against the show files.
+# A choreography flown by PX4 SITL 60 g quads, scored against the show files: up to 5 drones the
+# 5-drone sphere/square show (63 s), 6-20 the 20-drone rings/wall show (117 s; drones 1..N of it).
 #
 #   PX4_DIR=~/PX4-Autopilot px4/sitl/run_loop.sh cameras   # closed loop: simulated cameras + engine
 #   PX4_DIR=~/PX4-Autopilot px4/sitl/run_loop.sh vision    # engine-like positions inside PX4 instead
@@ -7,7 +8,7 @@
 # cameras: needs a machine that runs 5 PX4 instances, 11 cameras at 60 fps and the engine in real
 # time (8+ cores). Watch the cameras' "behind the clock" (out/loop/cams.log, want p99 < 30 ms)
 # and the engine's "exposure to send" (out/loop/engine.log): EV_DELAY_MS should match the latter.
-# Env: N (drones, 1-5), OUT (default out/loop), EV_DELAY_MS (default 28), PX4_BUILD,
+# Env: N (drones, 1-20), OUT (default out/loop), EV_DELAY_MS (default 28), PX4_BUILD,
 #      IMU_NOISE (default 0.1, needs sih_noise_scale.patch), WORKERS (camera processes, default 3).
 #      DROP_LATE=1 (cameras: the engine does not send positions over 30 ms later than EV_DELAY_MS).
 set -e
@@ -17,6 +18,8 @@ cd "$ROOT"
 PY=${PYTHON:-python}                    # the IDPS python (the dashboard passes its own)
 "$PY" -c "import idps" 2>/dev/null || { echo "$PY cannot import idps: activate the IDPS venv (pip install -e .)"; exit 1; }
 N=${N:-5}; OUT=${OUT:-out/loop}; export EV_DELAY_MS=${EV_DELAY_MS:-28}
+[ "$N" -ge 1 ] && [ "$N" -le 20 ] 2>/dev/null || { echo "N must be 1 to 20 drones (got $N)"; exit 1; }
+if [ "$N" -le 5 ]; then SHOW=examples/shows/five_drones_sphere_square.py; else SHOW=examples/shows/twenty_drones_rings_wall.py; fi
 PX4_DIR=${PX4_DIR:-$HOME/PX4-Autopilot}; B=$PX4_DIR/build/${PX4_BUILD:-px4_sitl_default}
 rm -rf "$OUT"; mkdir -p "$OUT"
 PIDS=()
@@ -60,8 +63,8 @@ if busy:
     sys.exit(1)
 PY
 echo "== show"
-"$PY" examples/shows/five_drones_sphere_square.py "$OUT/five.zip" > "$OUT/show.txt"
-"$PY" -m idps.show.cli export "$OUT/five.zip" --site examples/sites/show_8x8.yaml \
+"$PY" "$SHOW" "$OUT/show.zip" > "$OUT/show.txt"
+"$PY" -m idps.show.cli export "$OUT/show.zip" --site examples/sites/show_8x8.yaml \
     --plan examples/plans/show_8x8.yaml --min-sep 0.9 -o "$OUT/show" | tail -1
 "$PY" - "$OUT/show/manifest.json" "$N" <<'PY'
 import json, sys
@@ -118,7 +121,8 @@ else
   tail -1 "$OUT/cams.log"; tail -1 "$OUT/engine.log"
 fi
 
-echo "== upload and fly (about 80 s)"
+SHOW_S=$(awk '/^duration_s:/ {printf "%.0f", $2}' "$OUT/show.txt")
+echo "== upload and fly (about $((SHOW_S + 20)) s)"
 "$PY" -m idps.show.cli upload "$OUT/show/manifest.json" $L --sitl | grep -c OK | sed 's/$/ drone(s) uploaded/'
 # in the background and waited for, so a stop (TERM) is handled at once: the trap aborts the
 # show and stops every helper (a foreground command would delay it to the end of the show)

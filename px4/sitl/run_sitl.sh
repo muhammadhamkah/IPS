@@ -82,7 +82,7 @@ launch() {   # drone index: start (or restart) that PX4 instance
   PX4_SYS_AUTOSTART=10040 PX4_SIM_MODEL=sihsim_quadx nohup "$B/bin/px4" -i $1 -d "$B/etc" > out.log 2>&1 &
   PIDS[$1]=$!
 }
-for ((i=0;i<N;i++)); do launch $i; done
+for ((i=0;i<N;i++)); do launch $i; sleep 0.3; done      # a moment apart: many booting at once can hang one
 # Configure each drone only once its whole startup script has run (the airframe's .post file,
 # which starts idps_show, comes last), and check each setting took: on a slower machine (a Mac)
 # a command sent too early reaches nothing and, before, failed silently.

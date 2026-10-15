@@ -200,6 +200,21 @@ slips (it runs a few % off real time and stalls under load) to the error.
 path that asks for more than 9.8 m/s² downward (a fast vertical bounce) cannot be followed at
 any weight, however the drone is tuned.
 
+### 20 drones
+
+`examples/shows/twenty_drones_rings_wall.py` (117 s): a 5 × 4 take-off grid 1.5 m apart, two rings
+that turn once (the 14 outer drones at 2 m, the 6 inner ones at 3.5 m), a 5 × 4 vertical wall that
+turns once, every drone back on its own spot; up to 1.16 m/s, closest approach 1.10 m, the 8 × 8 m
+floor's 11 cameras see every drone all the time. Who goes where is safe by construction (drones keep
+their bearing into the rings; each grid row climbs to its own height before sliding into the wall).
+`run_loop.sh` flies it for N = 6–20 (drones 1..N of it); the dashboard's drone count goes to 20.
+
+* The cameras and engine on this show with drones exactly on their files: all 20 identified,
+  median 1.3–1.7 mm, worst 10 mm; filming runs at about 2× real time in one process.
+* **Each flying PX4 drone takes about 30 % of a CPU core** (27–36 % measured): 20 drones about 6–7
+  cores before the cameras and engine. Check the end-of-run report ("why drones left their files")
+  for simulator stalls before trusting a 20-drone result on a laptop.
+
 ## Closed loop: the simulated cameras fly the drones
 
 Here the stand-in is replaced by the real thing. Nothing in the loop knows where a drone is
