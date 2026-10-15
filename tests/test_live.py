@@ -117,3 +117,39 @@ def test_cameras_filming_sitl_drones_feed_the_engine(tmp_path):
     for d in rows:
         want = np.array(d["home_ned"]) + [0, 0, -0.08]                  # the marker, 8 cm above the spot
         assert np.linalg.norm(last[d["drone_id"]].ned - want) < 0.005
+
+
+def test_explain_run_tells_a_simulator_stall_from_late_positions(tmp_path):
+    """A drone off its file after its simulator stood still, another after its positions were held up."""
+    import json
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "px4" / "sitl"))
+    from explain_run import explain
+    show0, t0, epoch = 100.0, 50.0, 1_000_000_000_000
+    (tmp_path / "start.txt").write_text(f"show time 0 = PC clock (time.monotonic) {show0} s\n")
+    (tmp_path / "loop.json").write_text(json.dumps({"t0_monotonic_s": t0, "epoch_ns": epoch, "drones": [1, 2]}))
+    t = np.arange(0, 30, 0.01)
+    rows, clk, pos = [], [], []
+    for d in (1, 2):
+        err = np.zeros_like(t)
+        hit = 10.0 if d == 1 else 20.0                     # drone 1 off at 10 s, drone 2 at 20 s
+        err += 0.06 * np.exp(-((t - hit - 0.3) / 0.15) ** 2)
+        rows += [(d, s, e, 0.0, 0.0) for s, e in zip(t, err)]
+        lag = np.where((d == 1) & (t > hit - 0.2), 0.08, 0.0)   # drone 1's clock stood still 80 ms
+        clk += [(d, show0 + s, show0 + s - 0.5 - g) for s, g in zip(t, lag)]
+        age = np.where((d == 2) & (np.abs(t - (hit - 0.3)) < 0.05), 120.0, 22.0)   # drone 2: held up 100 ms
+        for s, a in zip(t[::2], age[::2]):
+            sent = show0 + s
+            pos.append((int(epoch + (sent - a / 1000 - t0) * 1e9), d, a))
+    np.savetxt(tmp_path / "track.csv", np.array(rows), delimiter=",", header="drone_id,show_t,dn,de,dd", comments="")
+    np.savetxt(tmp_path / "clock.csv", np.array(clk), delimiter=",", header="drone_id,pc_s,px4_s", comments="")
+    with open(tmp_path / "positions.csv", "w") as f:
+        f.write("t_ns,marker_id,n,e,d,vn,ve,vd,n_cams,sigma_mm,age_ms\n")
+        for tn, d, a in pos:
+            f.write(f"{tn},{d},0,0,0,0,0,0,4,1.0,{a:.1f}\n")
+    text = "\n".join(explain(tmp_path))
+    lines = text.splitlines()
+    i1 = next(i for i, ln in enumerate(lines) if "drone(s) 1 " in ln)
+    i2 = next(i for i, ln in enumerate(lines) if "drone(s) 2 " in ln)
+    assert "PX4 simulator stood still: drone 1 80 ms" in lines[i1 + 1]
+    assert "positions late or missing: drone 2 up to 120 ms old" in lines[i2 + 1]

@@ -64,6 +64,7 @@ class SitlDrone:
         self._exact = None            # (PX4 time s, NED position) from DEBUG_VECT "truth"
         self._clock = None            # PC time - PX4 time (s): see _pc_time
         self.track = None             # file: idps_show's tracking error (DEBUG_FLOAT_ARRAY "track")
+        self.clock = None             # file: PX4's clock against the PC's, per "truth" message (explain_run.py)
         self._stop = False
 
     def start(self):
@@ -87,6 +88,8 @@ class SitlDrone:
                 self._on_state(time.monotonic() - self.t0, h)
             elif kind == "DEBUG_VECT" and h.name.startswith("truth"):
                 self._exact = (h.time_usec * 1e-6, self.home + [h.x, h.y, h.z])
+                if self.clock is not None:
+                    self.clock.write(f"{self.drone_id},{time.monotonic():.4f},{h.time_usec * 1e-6:.4f}\n")
             elif kind == "DEBUG_FLOAT_ARRAY" and h.name.startswith("track") and self.track is not None:
                 self.track.write(f"{self.drone_id},{h.data[3]:.4f},{h.data[0]:.5f},{h.data[1]:.5f},{h.data[2]:.5f}\n")
 
@@ -152,14 +155,18 @@ def _receive(buf, specs, t0: float, origin: dict, marker_offset, track_path=None
     sys.setswitchinterval(5e-4)                        # stamp each message as it arrives
     frame = Frame.from_dict(origin)
     arr = np.frombuffer(buf, float).reshape(-1, HISTORY + 1, SNAP)
-    track = None
+    track = clock = None
     if track_path:
         track = open(track_path, "w", buffering=1)
         track.write("drone_id,show_t,dn,de,dd\n")
+        # clock.csv: when each drone's "truth" message arrived (time.monotonic) and its PX4 time: a
+        # simulated clock that stood still while the PC's ran on shows as a jump in the difference
+        clock = open(Path(track_path).with_name("clock.csv"), "w", buffering=1)
+        clock.write("drone_id,pc_s,px4_s\n")
     for k, (instance, drone_id, home) in enumerate(specs):
         d = SitlDrone(instance, drone_id, home, t0, frame, marker_offset)
         d.publish = (lambda k: lambda snap: SitlWorld.write(arr, k, snap))(k)
-        d.track = track
+        d.track, d.clock = track, clock
         d.start()
     while True:
         time.sleep(1.0)

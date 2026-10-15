@@ -126,7 +126,7 @@ echo "== upload and fly (about 80 s)"
 PIDS+=($!); wait $! || true
 grep -E "denied|refused|Not started" "$OUT/start.txt" || true
 for ((i=0;i<N;i++)); do
-  f=$(grep -hE "Failsafe|stopped" "$B/rootfs/$i/out.log" | head -1 || true)
+  f=$(grep -hE -B2 -A2 "Failsafe|stopped" "$B/rootfs/$i/out.log" | head -5 | tr '\n' ' ' || true)
   [ -n "$f" ] && echo "   drone $((i+1)): $f"
 done
 [ "$MODE" = cameras ] && { grep "behind the clock" "$OUT/cams.log" | tail -1; grep "exposure" "$OUT/engine.log" | tail -1; }
@@ -134,3 +134,4 @@ done
 grep -h "nothing on udp" "$OUT/standin.log" 2>/dev/null || true
 echo "== result (distance from the show file)"
 "$PY" px4/sitl/score_track.py "$TRACK"
+if [ "$MODE" = cameras ]; then "$PY" px4/sitl/explain_run.py "$OUT" || true; fi

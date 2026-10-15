@@ -99,7 +99,7 @@ def cmd_live(a) -> int:
     out_f = open(a.out, "w", newline="") if a.out else None
     w = csv.writer(out_f) if out_f else None
     if w:
-        w.writerow(["t_ns", "marker_id", "n", "e", "d", "vn", "ve", "vd", "n_cams", "sigma_mm"])
+        w.writerow(["t_ns", "marker_id", "n", "e", "d", "vn", "ve", "vd", "n_cams", "sigma_mm", "age_ms"])
     print(f"listening on udp {a.host}:{a.port}; positions to drone(s) {sorted(mavs) or 'none'}; Ctrl+C to stop")
     last_print, sent, dropped, seen, ages = time.monotonic(), 0, 0, {}, []
     try:
@@ -130,7 +130,7 @@ def cmd_live(a) -> int:
                         sent += 1
                 if w:
                     w.writerow([o.t_ns, o.marker_id, *(f"{x:.4f}" for x in o.ned), *(f"{x:.3f}" for x in v),
-                                o.n_cams, f"{1000 * (o.cov.trace() / 3) ** 0.5:.2f}"])
+                                o.n_cams, f"{1000 * (o.cov.trace() / 3) ** 0.5:.2f}", f"{(now_ns - o.t_ns) * 1e-6:.1f}"])
             if now - last_print >= 2.0:
                 live = {m: c for m, (t, c) in seen.items() if now - t < 0.5}
                 lat = (f"; exposure to send (ms) median {1000 * np.median(ages):.0f}, max {1000 * max(ages):.0f}"
