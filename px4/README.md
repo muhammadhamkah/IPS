@@ -219,6 +219,8 @@ their bearing into the rings; each grid row climbs to its own height before slid
   every drone before reading any answer (one after the other, the last of 20 got it too late).
 * On a 4-core machine 20 drones start, take the upload and the start, but PX4 then reports sensor
   timeouts (it cannot keep up) and drones fall into failsafes: use 8+ performance cores.
+* On a Mac (dashboard, full camera loop, 10 drones of the 20-drone show): every drone within 30 mm,
+  worst 16.4 mm, median 5.5 mm, the same as with 5 drones.
 
 ## Closed loop: the simulated cameras fly the drones
 
