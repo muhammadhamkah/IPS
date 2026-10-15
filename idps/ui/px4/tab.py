@@ -285,6 +285,7 @@ class Px4Tab(QWidget):
         self.proc.readyReadStandardOutput.connect(self._read_output)
         self.proc.finished.connect(self._finished)
         self.log.clear()
+        self.clear_run()
         self.log.appendPlainText(f"$ PX4_DIR={self.px4_dir} PX4_BUILD={build} N={self.n_drones.value()} "
                                  f"px4/sitl/run_loop.sh {mode}")
         if sys.platform == "darwin":            # keep the Mac awake and the flight at full speed while it runs
@@ -395,6 +396,21 @@ class Px4Tab(QWidget):
             self.status.setText(f"{Path(folder).name}: no flight in this run (the drones did not start). See the log"
                                 + ("" if finished else f" in {folder}") + ".")
         return True
+
+    def clear_run(self):
+        """Forget the run on screen (a new flight is starting: its data replaces it as it comes)."""
+        self.timer.stop()
+        self.play_btn.setText("Play")
+        self.run_data, self._live_t = None, None
+        self.view.set_run(None, LIMIT_MM)
+        self.graph.set_state(None, None, 0, LIMIT_MM)
+        self.t_worst.set("–", f"target {LIMIT_MM:g} mm")
+        self.t_median.set("–", "typical distance from the file")
+        self.t_within.set("–", "")
+        self.table.setRowCount(0)
+        self.slider.setEnabled(False)
+        self.play_btn.setEnabled(False)
+        self.clock.setText("")
 
     def show_run(self, run, live: bool):
         first = self.run_data is None or self.run_data.folder != run.folder
