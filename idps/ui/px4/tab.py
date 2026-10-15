@@ -68,6 +68,8 @@ FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still goi
             (r"No data from drone\(s\) ([\d ]+) on their truth links", "No data from drone(s) {0}: their links never "
              "reached the logger."),
             (r"drone (\d+): no heartbeat on (\S+)", "Drone {0} did not answer on {1}."),
+            (r"Upload failed: those drones have no show file", "The show upload failed for some drones (the "
+             "FAILED lines in the Log pane): fly again."),
             (r"Not started: every drone was told to abort", "Not started: a drone refused the start, so every drone "
              "was told to abort.")]
 DRONE_NOTES = [(r"drone (\d+): (?:denied|temporarily rejected|failed|unsupported) \(\w+\) ?(.*)", "refused: {1}"),

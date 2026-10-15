@@ -130,7 +130,11 @@ fi
 
 SHOW_S=$(awk '/^duration_s:/ {printf "%.0f", $2}' "$OUT/show.txt")
 echo "== upload and fly (about $((SHOW_S + 20)) s)"
-"$PY" -m idps.show.cli upload "$OUT/show/manifest.json" $L --sitl | grep -c OK | sed 's/$/ drone(s) uploaded/'
+"$PY" -m idps.show.cli upload "$OUT/show/manifest.json" $L --sitl > "$OUT/upload.txt" 2>&1 || true
+echo "$(grep -c ": OK " "$OUT/upload.txt") of $N drone(s) uploaded"
+if grep -q "FAILED" "$OUT/upload.txt"; then
+  grep "FAILED" "$OUT/upload.txt"; echo "Upload failed: those drones have no show file (see $OUT/upload.txt)"; exit 1
+fi
 # in the background and waited for, so a stop (TERM) is handled at once: the trap aborts the
 # show and stops every helper (a foreground command would delay it to the end of the show)
 "$PY" -m idps.show.cli start "$OUT/show/manifest.json" $L --lead 15 > "$OUT/start.txt" 2>&1 &

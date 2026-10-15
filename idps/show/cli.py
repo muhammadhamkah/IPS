@@ -133,9 +133,15 @@ def cmd_upload(a) -> int:
     path = "idps_show.trj" if a.sitl else ob.SD_PATH
     bad = 0
     for did, d in sorted(drones.items()):
-        ob.upload(d.mav, d.trj, path)
-        r = ob.command(d.mav, did, ob.LOAD, d.crc)
-        ok = r.ok and r.crc == d.crc
+        for attempt in range(3):            # file transfer over UDP: a busy link can lose some of it
+            try:
+                ob.upload(d.mav, d.trj, path)
+            except Exception as e:          # noqa: BLE001 - reported below as the drone's answer
+                print(f"drone {did}: upload attempt {attempt + 1} failed: {e}")
+            r = ob.command(d.mav, did, ob.LOAD, d.crc)
+            ok = r.ok and r.crc == d.crc
+            if ok:
+                break
         bad += not ok
         print(f"drone {did}: {'OK' if ok else 'FAILED'}  {len(d.trj)} bytes, crc {d.crc:08x}, drone says {r.result} / "
               f"{r.state}, crc {r.crc:08x} {r.text}")
