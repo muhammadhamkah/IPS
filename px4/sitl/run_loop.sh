@@ -50,7 +50,8 @@ fi
 import socket, sys
 busy = []
 n = int(sys.argv[1])
-for port in [14800 + i for i in range(n)] + [14540 + i for i in range(n)] + [14030 + i for i in range(n)] + [5600]:
+links = [14540 + i if i < 10 else 15540 + i for i in range(n)]            # as run_sitl.sh
+for port in [14800 + i for i in range(n)] + links + [14030 + i for i in range(n)] + [5600]:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)   # truth links, drone links, engine links, engine
     try:
         s.bind(("127.0.0.1" if port != 5600 else "0.0.0.0", port))
@@ -81,7 +82,8 @@ if ! DRONE=micro60 PX4_DIR=$PX4_DIR PX4_PARAM_SDLOG_MODE=${PX4_PARAM_SDLOG_MODE:
 fi
 L=""; L14=""
 for ((i=0;i<N;i++)); do
-  L="$L --link $((i+1))=udpin:127.0.0.1:$((14540+i))"; L14="$L14 --link $((i+1))=udpin:127.0.0.1:$((14030+i))"
+  if [ $i -lt 10 ]; then p=$((14540+i)); else p=$((15540+i)); fi                       # as run_sitl.sh
+  L="$L --link $((i+1))=udpin:127.0.0.1:$p"; L14="$L14 --link $((i+1))=udpin:127.0.0.1:$((14030+i))"
 done
 
 if [ "$MODE" = vision ]; then

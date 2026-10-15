@@ -1,7 +1,8 @@
 #!/bin/bash
 # Start N headless PX4 SITL quadcopters (SIH, no Gazebo) set up like IDPS show drones:
 # position, height and heading only from external vision (IDPS), no GPS, compass, baro or rangefinder.
-# Instance i has MAV_SYS_ID i+1 (= drone ID), MAVLink on udp 14540+i, and a ground-truth link
+# Instance i has MAV_SYS_ID i+1 (= drone ID), MAVLink on udp 14540+i (from instance 10: 15540+i,
+# as 14550 is every instance's ground-station port), and a ground-truth link
 # on 14800+i for the IDPS stand-in (idps_stand_in.py) or the simulated cameras (idps-sim px4).
 # The engine reaches each drone on PX4's onboard payload link (udp 14030+i).
 # The IDPS position is the marker's, 8 cm above the drone's centre (EKF2_EV_POS_Z).
@@ -76,6 +77,7 @@ if [ "${DRONE:-}" = micro60 ]; then
          PX4_PARAM_EKF2_EVP_NOISE=${EVP:-0.01} PX4_PARAM_EKF2_ACC_NOISE=1.5 \
          PX4_PARAM_EKF2_TAU_POS=0.1 PX4_PARAM_EKF2_TAU_VEL=0.1 PX4_PARAM_IDPS_ACC_LEAD=${ACC_LEAD:-0.1}
 fi
+link_port() { if [ $1 -lt 10 ]; then echo $((14540+$1)); else echo $((15540+$1)); fi; }   # drone index
 launch() {   # drone index: start (or restart) that PX4 instance
   mkdir -p "$B/rootfs/$1"; cd "$B/rootfs/$1"
   rm -f parameters*.bson dataman
@@ -116,6 +118,17 @@ for ((i=0;i<N;i++)); do
   done
 done
 for ((i=0;i<N;i++)); do
+  if [ $i -ge 10 ]; then
+    # PX4's startup sends the offboard link of every instance from 10 up to the same port (14549);
+    # point it at this drone's own 15540+i (PX4 allows only 6 links, so it is restarted, not added)
+    "$B/bin/px4-mavlink" --instance $i stop -u $((14580+i)) >/dev/null 2>&1 || true
+    for ((t=0;;t++)); do
+      "$B/bin/px4-mavlink" --instance $i start -x -u $((14580+i)) -r 4000000 -f -m onboard -o $((15540+i)) \
+        >/dev/null 2>&1 && break
+      [ $t -ge 10 ] && fail $i "could not move its offboard link to udp $((15540+i))"
+      sleep 0.5
+    done
+  fi
   "$B/bin/px4-mavlink" --instance $i start -u $((14700+i)) -o $((14800+i)) -m custom -r 400000 >/dev/null 2>&1 \
     || fail $i "could not open its truth link (MAVLink on udp $((14700+i)))"
   for s in "HIL_STATE_QUATERNION 100" "DEBUG_VECT 200" "DEBUG_FLOAT_ARRAY 100"; do   # truth; tracking error
@@ -136,4 +149,4 @@ for ((i=0;i<N;i++)); do
     done
   fi
 done
-echo "$N drone(s) up. Links: $(for ((i=0;i<N;i++)); do printf -- '--link %d=udpin:127.0.0.1:%d ' $((i+1)) $((14540+i)); done)"
+echo "$N drone(s) up. Links: $(for ((i=0;i<N;i++)); do printf -- '--link %d=udpin:127.0.0.1:%d ' $((i+1)) $(link_port $i); done)"
