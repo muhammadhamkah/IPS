@@ -214,6 +214,11 @@ their bearing into the rings; each grid row climbs to its own height before slid
 * **Each flying PX4 drone takes about 30 % of a CPU core** (27–36 % measured): 20 drones about 6–7
   cores before the cameras and engine. Check the end-of-run report ("why drones left their files")
   for simulator stalls before trusting a 20-drone result on a laptop.
+* Above 10 drones PX4's own startup sends every instance's offboard link to one port (14549):
+  `run_sitl.sh` moves it to 15540+i for instances 10 and up. `idps-show start` sends the start to
+  every drone before reading any answer (one after the other, the last of 20 got it too late).
+* On a 4-core machine 20 drones start, take the upload and the start, but PX4 then reports sensor
+  timeouts (it cannot keep up) and drones fall into failsafes: use 8+ performance cores.
 
 ## Closed loop: the simulated cameras fly the drones
 
