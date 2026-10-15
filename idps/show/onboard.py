@@ -82,37 +82,49 @@ def send_heartbeat(mav) -> None:
     mav.mav.heartbeat_send(6, 8, 0, 0, 0)            # MAV_TYPE_GCS, MAV_AUTOPILOT_INVALID
 
 
-def command(mav, drone_id: int, action: int, crc: int = 0, start_us: int | None = None,
-            timeout_s: float = 3.0, retries: int = 3) -> Reply:
-    """Send an IDPS show command and wait for the drone's COMMAND_ACK."""
+def send_command(mav, drone_id: int, action: int, crc: int = 0, start_us: int | None = None) -> None:
+    """Send an IDPS show command (no wait for the answer: see await_reply)."""
     send_heartbeat(mav)
     hi, lo = crc_halves(crc)
     x, y = start_time_fields(start_us) if start_us is not None else (0x7FFFFFFF, 0x7FFFFFFF)
+    mav.mav.command_int_send(drone_id, 1, 0, CMD_IDPS_SHOW, 0, 0, float(action), float(drone_id), hi, lo, x, y, 0.0)
+
+
+def await_reply(mav, drone_id: int, timeout_s: float = 3.0) -> Reply | None:
+    """The drone's COMMAND_ACK to an IDPS show command (None: none within timeout_s)."""
+    deadline = time.monotonic() + timeout_s
+    texts = []
+    while time.monotonic() < deadline:
+        m = mav.recv_match(type=["COMMAND_ACK", "STATUSTEXT"], blocking=True,
+                           timeout=max(0.01, deadline - time.monotonic()))
+        if m is None:
+            break
+        if m.get_srcSystem() != drone_id:
+            continue
+        if m.get_type() == "STATUSTEXT":
+            texts.append(m.text)
+            continue
+        if m.command == CMD_IDPS_SHOW:
+            if m.result != 0:                       # the drone says why in a STATUSTEXT
+                until = time.monotonic() + 0.5
+                while time.monotonic() < until:
+                    t = mav.recv_match(type="STATUSTEXT", blocking=True, timeout=0.1)
+                    if t is not None and t.get_srcSystem() == drone_id:
+                        texts.append(t.text)
+            return Reply(m.result == 0, MAV_RESULT.get(m.result, str(m.result)),
+                         STATES.get(m.progress, str(m.progress)), m.result_param2 & 0xFFFFFFFF,
+                         "; ".join(t.replace("IDPS show: ", "") for t in texts if "IDPS" in t))
+    return None
+
+
+def command(mav, drone_id: int, action: int, crc: int = 0, start_us: int | None = None,
+            timeout_s: float = 3.0, retries: int = 3) -> Reply:
+    """Send an IDPS show command and wait for the drone's COMMAND_ACK."""
     for _ in range(retries):
-        mav.mav.command_int_send(drone_id, 1, 0, CMD_IDPS_SHOW, 0, 0, float(action), float(drone_id), hi, lo,
-                                 x, y, 0.0)
-        deadline = time.monotonic() + timeout_s
-        texts = []
-        while time.monotonic() < deadline:
-            m = mav.recv_match(type=["COMMAND_ACK", "STATUSTEXT"], blocking=True,
-                               timeout=max(0.01, deadline - time.monotonic()))
-            if m is None:
-                break
-            if m.get_srcSystem() != drone_id:
-                continue
-            if m.get_type() == "STATUSTEXT":
-                texts.append(m.text)
-                continue
-            if m.command == CMD_IDPS_SHOW:
-                if m.result != 0:                       # the drone says why in a STATUSTEXT
-                    until = time.monotonic() + 0.5
-                    while time.monotonic() < until:
-                        t = mav.recv_match(type="STATUSTEXT", blocking=True, timeout=0.1)
-                        if t is not None and t.get_srcSystem() == drone_id:
-                            texts.append(t.text)
-                return Reply(m.result == 0, MAV_RESULT.get(m.result, str(m.result)),
-                             STATES.get(m.progress, str(m.progress)), m.result_param2 & 0xFFFFFFFF,
-                             "; ".join(t.replace("IDPS show: ", "") for t in texts if "IDPS" in t))
+        send_command(mav, drone_id, action, crc, start_us)
+        r = await_reply(mav, drone_id, timeout_s)
+        if r is not None:
+            return r
     return Reply(False, "no answer", "?", 0)
 
 
@@ -209,13 +221,19 @@ def start_all(drones: dict, lead_s: float = 10.0, clock=time.monotonic_ns) -> tu
     """Start every drone at one instant ``lead_s`` from now, in the PC's clock (``ClockSync``
     must have been running for a few seconds). Returns (show start in the PC clock, µs;
     {drone ID: Reply}). If any drone refuses, all are aborted, so nobody flies a partial show."""
-    from concurrent.futures import ThreadPoolExecutor
     t_pc_us = clock() // 1000 + int(lead_s * 1e6)
-    # all drones at once (each on its own link): one after the other, waiting for each reply, the
-    # last of 20 drones on a busy PC got the start too late to accept it
-    with ThreadPoolExecutor(max_workers=max(1, len(drones))) as pool:
-        replies = dict(zip(drones, pool.map(lambda kv: command(kv[1].mav, kv[0], START, kv[1].crc, t_pc_us),
-                                            drones.items())))
-        if not all(r.ok for r in replies.values()):
-            list(pool.map(lambda kv: command(kv[1].mav, kv[0], ABORT), drones.items()))
+    # The start goes to every drone first, then the answers are collected: sent one after the other
+    # with a wait for each answer, the last of 20 drones on a busy PC got it too late to accept it.
+    for did, d in drones.items():
+        send_command(d.mav, did, START, d.crc, t_pc_us)
+    replies = {}
+    for did, d in drones.items():
+        r = await_reply(d.mav, did)
+        replies[did] = r if r is not None else command(d.mav, did, START, d.crc, t_pc_us, retries=2)
+    if not all(r.ok for r in replies.values()):
+        for did, d in drones.items():
+            send_command(d.mav, did, ABORT)
+        for did, d in drones.items():
+            if await_reply(d.mav, did) is None:
+                command(d.mav, did, ABORT)
     return t_pc_us, replies
