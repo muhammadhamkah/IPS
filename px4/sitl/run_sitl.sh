@@ -91,13 +91,24 @@ for ((i=0;i<N;i++)); do launch $i; sleep 0.3; done      # a moment apart: many b
 # a command sent too early reaches nothing and, before, failed silently.
 # Run a PX4 command-line client, at most 5 s (they answer in ms): a client talking to a PX4 that hangs never returns
 # (macOS has no `timeout`).
+# Starting or stopping a MAVLink link waits on the simulated clock, which with many drones on a
+# busy machine takes seconds: PX4C_S=30 for those.
 px4c() {
   "$@" & local pid=$!
-  ( for _ in $(seq 50); do kill -0 $pid 2>/dev/null || exit 0; sleep 0.1; done; kill -9 $pid 2>/dev/null ) &
+  ( for _ in $(seq $((${PX4C_S:-5} * 10))); do kill -0 $pid 2>/dev/null || exit 0; sleep 0.1; done
+    kill -9 $pid 2>/dev/null ) &
   local watch=$!
   local rc=0; wait $pid || rc=$?
   kill $watch 2>/dev/null || true; wait $watch 2>/dev/null || true
   return $rc
+}
+link_up() {   # drone index, local port, remote port: PX4's log says that link runs (the log is
+  local k      # written in chunks, so the line may come a moment late)
+  for k in $(seq 10); do
+    grep -q "udp port $2 remote port $3" "$B/rootfs/$1/out.log" 2>/dev/null && return 0
+    sleep 0.5
+  done
+  return 1
 }
 fail() {   # drone index, message
   echo "PX4 drone $(($1+1)) (instance $1): $2. The end of its log ($B/rootfs/$1/out.log):" >&2
@@ -133,15 +144,17 @@ for ((i=0;i<N;i++)); do
   if [ $i -ge 10 ]; then
     # PX4's startup sends the offboard link of every instance from 10 up to the same port (14549);
     # point it at this drone's own 15540+i (PX4 allows only 6 links, so it is restarted, not added)
-    px4c "$B/bin/px4-mavlink" --instance $i stop -u $((14580+i)) >/dev/null 2>&1 || true
+    PX4C_S=30 px4c "$B/bin/px4-mavlink" --instance $i stop -u $((14580+i)) >/dev/null 2>&1 || true
     for ((t=0;;t++)); do
-      px4c "$B/bin/px4-mavlink" --instance $i start -x -u $((14580+i)) -r 4000000 -f -m onboard -o $((15540+i)) \
-        >/dev/null 2>&1 && break
+      PX4C_S=30 px4c "$B/bin/px4-mavlink" --instance $i start -x -u $((14580+i)) -r 4000000 -f -m onboard \
+        -o $((15540+i)) >/dev/null 2>&1 && break
+      link_up $i $((14580+i)) $((15540+i)) && break           # it started; the client just took long
       [ $t -ge 10 ] && fail $i "could not move its offboard link to udp $((15540+i))"
       sleep 0.5
     done
   fi
-  px4c "$B/bin/px4-mavlink" --instance $i start -u $((14700+i)) -o $((14800+i)) -m custom -r 400000 >/dev/null 2>&1 \
+  PX4C_S=30 px4c "$B/bin/px4-mavlink" --instance $i start -u $((14700+i)) -o $((14800+i)) -m custom -r 400000 \
+    >/dev/null 2>&1 || link_up $i $((14700+i)) $((14800+i)) \
     || fail $i "could not open its truth link (MAVLink on udp $((14700+i)))"
   for s in "HIL_STATE_QUATERNION 100" "DEBUG_VECT 200" "DEBUG_FLOAT_ARRAY 100"; do   # truth; tracking error
     set -- $s
