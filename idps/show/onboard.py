@@ -209,9 +209,13 @@ def start_all(drones: dict, lead_s: float = 10.0, clock=time.monotonic_ns) -> tu
     """Start every drone at one instant ``lead_s`` from now, in the PC's clock (``ClockSync``
     must have been running for a few seconds). Returns (show start in the PC clock, µs;
     {drone ID: Reply}). If any drone refuses, all are aborted, so nobody flies a partial show."""
+    from concurrent.futures import ThreadPoolExecutor
     t_pc_us = clock() // 1000 + int(lead_s * 1e6)
-    replies = {did: command(d.mav, did, START, d.crc, t_pc_us) for did, d in drones.items()}
-    if not all(r.ok for r in replies.values()):
-        for did, d in drones.items():
-            command(d.mav, did, ABORT)
+    # all drones at once (each on its own link): one after the other, waiting for each reply, the
+    # last of 20 drones on a busy PC got the start too late to accept it
+    with ThreadPoolExecutor(max_workers=max(1, len(drones))) as pool:
+        replies = dict(zip(drones, pool.map(lambda kv: command(kv[1].mav, kv[0], START, kv[1].crc, t_pc_us),
+                                            drones.items())))
+        if not all(r.ok for r in replies.values()):
+            list(pool.map(lambda kv: command(kv[1].mav, kv[0], ABORT), drones.items()))
     return t_pc_us, replies
