@@ -278,6 +278,8 @@ engine):
   5 drones, 11 cameras, 4 cores: 0 of 3 runs within
   30 mm before; after, 8 of 10 (worst 15.5–21.8 mm). Of the other two, one had a 12 cm push
   after a 76 ms hold-up on the PC side, and in one three drones lifted off 3.5 s late.
+  On a Mac (dashboard, camera loop, 5 drones): 382 mm worst before (`px4_sitl_nolockstep`), 16.1 mm
+  worst, 6 mm median, every drone within 30 mm after.
 * **A position that reaches PX4 late pulls a moving drone back.** PX4 takes every position as
   filmed `EKF2_EV_DELAY` before it arrived; one held up 50 ms by a busy PC is 5 cm behind at
   1 m/s. With `idps-engine live --ev-delay-ms` (the drones' `EKF2_EV_DELAY`) a position more than
