@@ -76,12 +76,13 @@ if [ "${DRONE:-}" = micro60 ]; then
          PX4_PARAM_EKF2_EVP_NOISE=${EVP:-0.01} PX4_PARAM_EKF2_ACC_NOISE=1.5 \
          PX4_PARAM_EKF2_TAU_POS=0.1 PX4_PARAM_EKF2_TAU_VEL=0.1 PX4_PARAM_IDPS_ACC_LEAD=${ACC_LEAD:-0.1}
 fi
-for ((i=0;i<N;i++)); do
-  mkdir -p "$B/rootfs/$i"; cd "$B/rootfs/$i"
+launch() {   # drone index: start (or restart) that PX4 instance
+  mkdir -p "$B/rootfs/$1"; cd "$B/rootfs/$1"
   rm -f parameters*.bson dataman
-  PX4_SYS_AUTOSTART=10040 PX4_SIM_MODEL=sihsim_quadx nohup "$B/bin/px4" -i $i -d "$B/etc" > out.log 2>&1 &
-  PIDS[$i]=$!
-done
+  PX4_SYS_AUTOSTART=10040 PX4_SIM_MODEL=sihsim_quadx nohup "$B/bin/px4" -i $1 -d "$B/etc" > out.log 2>&1 &
+  PIDS[$1]=$!
+}
+for ((i=0;i<N;i++)); do launch $i; done
 # Configure each drone only once its whole startup script has run (the airframe's .post file,
 # which starts idps_show, comes last), and check each setting took: on a slower machine (a Mac)
 # a command sent too early reaches nothing and, before, failed silently.
@@ -90,11 +91,22 @@ fail() {   # drone index, message
   tail -25 "$B/rootfs/$1/out.log" >&2
   exit 1
 }
+# All drones start at once; on a busy machine one now and then hangs in PX4's own startup (in
+# lockstep, simulated time only moves once every part is up). Such a drone is started again (up
+# to twice); its stuck log is kept as out.stuck.log.
 for ((i=0;i<N;i++)); do
+  tries=0
   for ((t=0;;t++)); do
     grep -q "Startup script returned" "$B/rootfs/$i/out.log" 2>/dev/null && break
     kill -0 "${PIDS[$i]}" 2>/dev/null || fail $i "PX4 stopped while starting"
-    [ $t -ge 240 ] && fail $i "did not finish starting within 120 s"
+    if [ $t -ge 60 ]; then
+      [ $tries -ge 2 ] && fail $i "did not finish starting within 30 s, 3 times"
+      tries=$((tries+1)); t=0
+      echo "PX4 drone $((i+1)) did not finish starting within 30 s: starting it again ($tries of 2)"
+      kill -9 "${PIDS[$i]}" 2>/dev/null || true; sleep 1
+      cp "$B/rootfs/$i/out.log" "$B/rootfs/$i/out.stuck.log" 2>/dev/null || true
+      launch $i
+    fi
     sleep 0.5
   done
   for ((t=0;;t++)); do
