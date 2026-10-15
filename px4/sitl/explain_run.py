@@ -1,7 +1,8 @@
 """Why did drones leave their files? For each moment in a camera-loop run (px4/sitl/run_loop.sh
 cameras) when a drone was over the limit, what the simulators and the engine did just before:
 
-* a PX4 simulator that stood still: its clock fell behind the PC's (clock.csv, from the truth link);
+* a PX4 simulator that stood still: its clock fell behind the PC's, or it sent nothing for a while
+  (clock.csv, from the truth link);
 * positions that reached the drones late or not at all: their age when sent and gaps between them
   (positions.csv, from idps-engine live: a busy PC, cameras or engine held up);
 * neither: the drone's own flight control.
@@ -68,7 +69,12 @@ def _clock_stall_ms(clock: np.ndarray, did: int, show0: float, a: float, b: floa
         return float("nan")
     bins = np.floor(st[w] / 0.1)
     env = np.array([off[w][bins == x].min() for x in np.unique(bins)])
-    return float(1000 * (np.max(env) - env[0]))
+    behind = 1000 * (np.max(env) - env[0])
+    # with sih_realtime_pacing.patch a simulator catches up within milliseconds, so a stall shows
+    # mostly as a gap in its messages (it sends nothing while it stands still)
+    gaps = np.diff(C[w, 1])
+    silent = 1000 * (gaps.max() - np.median(np.diff(C[:, 1]))) if len(gaps) else 0.0
+    return float(max(behind, silent))
 
 
 def explain(folder, limit_mm: float = 30.0) -> list[str]:
@@ -97,12 +103,12 @@ def explain(folder, limit_mm: float = 30.0) -> list[str]:
     out = [f"== why drones left their files (over {limit_mm:g} mm)"]
     for onset, peak_t, peak, drones in events:
         a, b = onset - LOOK_BACK_S, peak_t
-        stalls = {d: _clock_stall_ms(clock, d, show0, a, onset + 0.2) for d in drones}
+        stalls = {d: _clock_stall_ms(clock, d, show0, a, b) for d in drones}
         stalled = {d: v for d, v in stalls.items() if np.isfinite(v) and v >= CLOCK_STALL_MS}
         late, gaps = {}, {}
         if pos is not None:
             for d in drones:
-                w = (pos[0] == d) & (pos[1] >= a) & (pos[1] <= onset + 0.2)
+                w = (pos[0] == d) & (pos[1] >= a) & (pos[1] <= b)
                 if w.sum():
                     late[d] = float(pos[2][w].max())
                     s = np.sort(pos[1][w])
