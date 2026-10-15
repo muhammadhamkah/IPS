@@ -84,10 +84,21 @@ launch() {   # drone index: start (or restart) that PX4 instance
   PX4_SYS_AUTOSTART=10040 PX4_SIM_MODEL=sihsim_quadx nohup "$B/bin/px4" -i $1 -d "$B/etc" > out.log 2>&1 &
   PIDS[$1]=$!
 }
+T0=$SECONDS
 for ((i=0;i<N;i++)); do launch $i; sleep 0.3; done      # a moment apart: many booting at once can hang one
 # Configure each drone only once its whole startup script has run (the airframe's .post file,
 # which starts idps_show, comes last), and check each setting took: on a slower machine (a Mac)
 # a command sent too early reaches nothing and, before, failed silently.
+# Run a PX4 command-line client, at most 5 s (they answer in ms): a client talking to a PX4 that hangs never returns
+# (macOS has no `timeout`).
+px4c() {
+  "$@" & local pid=$!
+  ( for _ in $(seq 50); do kill -0 $pid 2>/dev/null || exit 0; sleep 0.1; done; kill -9 $pid 2>/dev/null ) &
+  local watch=$!
+  local rc=0; wait $pid || rc=$?
+  kill $watch 2>/dev/null || true; wait $watch 2>/dev/null || true
+  return $rc
+}
 fail() {   # drone index, message
   echo "PX4 drone $(($1+1)) (instance $1): $2. The end of its log ($B/rootfs/$1/out.log):" >&2
   tail -25 "$B/rootfs/$1/out.log" >&2
@@ -112,29 +123,30 @@ for ((i=0;i<N;i++)); do
     sleep 0.5
   done
   for ((t=0;;t++)); do
-    "$B/bin/px4-idps_show" --instance $i status 2>/dev/null | grep -q "state:" && break
+    px4c "$B/bin/px4-idps_show" --instance $i status 2>/dev/null | grep -q "state:" && break
     [ $t -ge 20 ] && fail $i "the idps_show module is not running (is PX4 built with EXTERNAL_MODULES_LOCATION=.../IPS/px4?)"
     sleep 0.5
   done
+  echo "PX4 drone $((i+1)) up after $((SECONDS - T0)) s"
 done
 for ((i=0;i<N;i++)); do
   if [ $i -ge 10 ]; then
     # PX4's startup sends the offboard link of every instance from 10 up to the same port (14549);
     # point it at this drone's own 15540+i (PX4 allows only 6 links, so it is restarted, not added)
-    "$B/bin/px4-mavlink" --instance $i stop -u $((14580+i)) >/dev/null 2>&1 || true
+    px4c "$B/bin/px4-mavlink" --instance $i stop -u $((14580+i)) >/dev/null 2>&1 || true
     for ((t=0;;t++)); do
-      "$B/bin/px4-mavlink" --instance $i start -x -u $((14580+i)) -r 4000000 -f -m onboard -o $((15540+i)) \
+      px4c "$B/bin/px4-mavlink" --instance $i start -x -u $((14580+i)) -r 4000000 -f -m onboard -o $((15540+i)) \
         >/dev/null 2>&1 && break
       [ $t -ge 10 ] && fail $i "could not move its offboard link to udp $((15540+i))"
       sleep 0.5
     done
   fi
-  "$B/bin/px4-mavlink" --instance $i start -u $((14700+i)) -o $((14800+i)) -m custom -r 400000 >/dev/null 2>&1 \
+  px4c "$B/bin/px4-mavlink" --instance $i start -u $((14700+i)) -o $((14800+i)) -m custom -r 400000 >/dev/null 2>&1 \
     || fail $i "could not open its truth link (MAVLink on udp $((14700+i)))"
   for s in "HIL_STATE_QUATERNION 100" "DEBUG_VECT 200" "DEBUG_FLOAT_ARRAY 100"; do   # truth; tracking error
     set -- $s
     for ((t=0;;t++)); do
-      "$B/bin/px4-mavlink" --instance $i stream -u $((14700+i)) -s $1 -r $2 >/dev/null 2>&1 && break
+      px4c "$B/bin/px4-mavlink" --instance $i stream -u $((14700+i)) -s $1 -r $2 >/dev/null 2>&1 && break
       [ $t -ge 10 ] && fail $i "could not stream $1 on its truth link"
       sleep 0.5
     done
@@ -142,8 +154,8 @@ for ((i=0;i<N;i++)); do
   # SITL_VISION="<delay ms> [noise mm [rate Hz]]": IDPS inside PX4 (idps_show sitl_vision) instead of over MAVLink
   if [ -n "${SITL_VISION:-}" ]; then
     for ((t=0;;t++)); do
-      "$B/bin/px4-idps_show" --instance $i sitl_vision on $SITL_VISION >/dev/null 2>&1
-      "$B/bin/px4-listener" --instance $i vehicle_visual_odometry -n 1 2>/dev/null | grep -q "position" && break
+      px4c "$B/bin/px4-idps_show" --instance $i sitl_vision on $SITL_VISION >/dev/null 2>&1
+      px4c "$B/bin/px4-listener" --instance $i vehicle_visual_odometry -n 1 2>/dev/null | grep -q "position" && break
       [ $t -ge 10 ] && fail $i "positions (sitl_vision) did not start"
       sleep 0.5
     done

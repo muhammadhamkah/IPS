@@ -76,8 +76,13 @@ PY
 
 echo "== $N PX4 drones (micro60)"
 if [ "$MODE" = vision ]; then export SITL_VISION="${SITL_VISION:-$EV_DELAY_MS 2 120}"; fi
-if ! DRONE=micro60 PX4_DIR=$PX4_DIR PX4_PARAM_SDLOG_MODE=${PX4_PARAM_SDLOG_MODE:--1} \
-    bash px4/sitl/run_sitl.sh "$N" > "$OUT/sitl.log" 2>&1; then
+# progress (each drone up, or started again) shows here; everything else goes to sitl.log
+set +e
+DRONE=micro60 PX4_DIR=$PX4_DIR PX4_PARAM_SDLOG_MODE=${PX4_PARAM_SDLOG_MODE:--1} \
+    bash px4/sitl/run_sitl.sh "$N" 2>&1 | tee "$OUT/sitl.log" | grep --line-buffered -E "^PX4 drone [0-9]+ (up|did not)"
+rc=${PIPESTATUS[0]}
+set -e
+if [ "$rc" -ne 0 ]; then
   echo "Starting the PX4 drones failed:"; tail -30 "$OUT/sitl.log"; exit 1
 fi
 L=""; L14=""
