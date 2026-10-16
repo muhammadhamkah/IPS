@@ -164,7 +164,9 @@ if [ "$UP" -lt "$N" ]; then
 fi
 # in the background and waited for, so a stop (TERM) is handled at once: the trap aborts the
 # show and stops every helper (a foreground command would delay it to the end of the show)
-"$PY" -m idps.show.cli start "$OUT/show/manifest.json" $L --lead 15 > "$OUT/start.txt" 2>&1 &
+# its progress (launch, holding, show start) also shows here
+( "$PY" -m idps.show.cli start "$OUT/show/manifest.json" $L --lead 15 2>&1 | tee "$OUT/start.txt" \
+    | grep --line-buffered -E "^(launch in|every drone holds|show starts in|Not started)" ) &
 PIDS+=($!); wait $! || true
 grep -E "denied|refused|Not started" "$OUT/start.txt" || true
 for ((i=0;i<N;i++)); do

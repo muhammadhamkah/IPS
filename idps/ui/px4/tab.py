@@ -62,6 +62,7 @@ def camera_build(px4_dir) -> str:
 
 
 STAGES = [("== show", "building the show files"), ("PX4 drones", "starting the PX4 drones"),
+          ("launch in", "taking off from the pads"), ("every drone holds in the grid", "holding in the grid"),
           ("== positions inside", "checking every drone's link"), ("== cameras", "starting cameras and engine"),
           ("== upload", "uploading the show"), ("show starts in", "waiting for the start"),
           ("== result", "scoring")]
@@ -166,8 +167,9 @@ class Px4Tab(QWidget):
         self.n_drones = QSpinBox()
         self.n_drones.setRange(1, 20)             # up to 5: the 5-drone show; 6-20: the 20-drone show
         self.n_drones.setValue(5)
-        self.n_drones.setToolTip("Up to 5: the 5-drone sphere/square show (63 s). 6–20: the 20-drone "
-                                 "rings/wall show (117 s). Each PX4 drone takes about a third of a CPU core.")
+        self.n_drones.setToolTip("The drones take off from charging pads (4 per pad) in batches, hold in a "
+                                 "layered grid, fly the 80 s show and land back on their pads. Each PX4 drone "
+                                 "takes about a third of a CPU core.")
         self.n_drones.setSuffix(" drones")
         bar.addWidget(self.n_drones)
         self.px4_btn = QPushButton()
@@ -317,8 +319,8 @@ class Px4Tab(QWidget):
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         n = self.n_drones.value()
-        self.status.setText(f"Starting {n} PX4 drones… (about {3 if n <= 5 else 4} minutes: drones, show upload, "
-                            f"then the {63 if n <= 5 else 117} s flight, shown live)")
+        self.status.setText(f"Starting {n} PX4 drones… (about 5 minutes: drones, show upload, take-off from the "
+                            "pads, the 80 s show shown live, landing)")
         self._live_t = None
         self.poll.start()
         self.live.start()

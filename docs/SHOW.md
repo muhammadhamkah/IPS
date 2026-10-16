@@ -139,6 +139,53 @@ numbers are numbered 1..N in order. Two drones with the same number stop the exp
 To swap in a spare drone, give the spare the missing drone's ID (set `MAV_SYS_ID` and its
 marker), or rename the drone in the show.
 
+### Charging pads: take-off in batches, the show starts in the air
+
+The drones stand on charging pads, 4 per pad in a 2 × 2 square (0.2 m apart). Drone ID =
+4 × (pad − 1) + slot, and the slot is the drone's **take-off batch**: batch 1 is slot 1 of every
+pad, and so on. Describe the pads in a file (`examples/pads/show_8x8.yaml`):
+
+```yaml
+pads: [[-3.2, -2.0], [-3.2, -1.0], [-3.2, 0.0]]   # pad centres, venue N and E (m), anywhere
+slot_spacing_m: 0.2
+layers_m: [1, 2, 3, 4]       # batch k's height in the initial and final grid
+batch_gap_s: 8
+hold_timeout_s: 60           # no start this long after the last batch took off: land
+climb_speed_mps: 1.0
+transfer_speed_mps: 1.0
+```
+
+The show you design starts and ends in the air: its **first frame is the initial grid** and its
+**last frame the final grid**, with batch k at `layers_m[k]` in both. Check and export with
+`--pads pads.yaml`:
+
+1. **Launch** (`idps-show start`): batch k takes off `batch_gap_s` × (k − 1) after the launch
+   time. It climbs straight up over its pad slot to its layer, then flies level to its place in the
+   initial grid, and holds there.
+2. **Show**: once every drone holds, the PC sends the start, and the show plays from the grid.
+3. **Back to the pads**: after the show (from the final grid), or if no start comes within
+   `hold_timeout_s` after the last batch took off, batch k leaves `batch_gap_s` × (n − k)
+   later: last up, first down, so every drone flies as long. It flies level to above its pad slot,
+   comes down to 0.3 m above it, and PX4 lands it.
+
+Every leg is a minimum-jerk move: T = max(1.5 s, 1.875 × distance / speed). The drone (the PX4
+module) computes the legs itself from its file's header (batch, gap, speeds, timeout), so all
+drones keep to one timeline on the PC's clock. The checks fly the same legs and report:
+* a drone whose first or last frame is not at its batch's layer;
+* drones closer than 0.5 m while taking off or landing;
+* **downwash**: a flying drone within 0.4 m sideways above another (up to 3 m below it), in the
+  take-off, both landings, and the show itself.
+
+**The batch gap must cover the pad.** With slots 0.2 m apart, a batch must have climbed and moved
+aside before the next batch climbs under it. At 0.8 m/s that takes 8.5–9 s, at 1.0 m/s 7.5 s, at
+1.5 m/s 5.5–6 s. When the gap is too short, the check says so and gives the smallest safe one.
+Design the grid so that batch 1 holds the row farthest from the pads and the last batch the
+nearest: no batch then flies over another on its way in or out.
+
+`examples/shows/layers_from_pads.py` is such a show for 1–20 drones (80 s): each batch keeps to its
+own strip along North for the whole show (it waves and closes up within it, and the turns are
+rigid), so it is downwash-free by construction.
+
 ## 4. Upload, start, fly
 
 **On each drone** (D20), there is no companion computer, to save weight:
