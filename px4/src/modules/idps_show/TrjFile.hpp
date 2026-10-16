@@ -23,7 +23,13 @@ struct TrjHeader {
 	float home[3];
 	float yaw;
 	uint32_t samples_crc;
-	uint8_t reserved[12];
+	uint8_t batch;            // take-off batch (1..) from a charging pad; 0: the show starts on the ground
+	uint8_t n_batches;
+	uint16_t batch_gap_ms;
+	uint16_t climb_mm_s;      // leg speeds (peak of a minimum-jerk move = 1.875 x mean)
+	uint16_t transfer_mm_s;
+	uint16_t hold_timeout_s;  // no start this long after the last batch took off: land
+	uint16_t reserved;
 	uint32_t header_crc;
 };
 static_assert(sizeof(TrjHeader) == 64, "TrjHeader must be 64 bytes");

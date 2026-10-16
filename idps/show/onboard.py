@@ -24,9 +24,10 @@ from pathlib import Path
 from idps.show.trj import crc32
 
 CMD_IDPS_SHOW = 0
-LOAD, START, ABORT, STATUS, SYNC = 1, 2, 3, 4, 5
+LOAD, START, ABORT, STATUS, SYNC, LAUNCH = 1, 2, 3, 4, 5, 6
 STATES = {0: "no show file", 1: "ready", 2: "waiting for start", 3: "flying the show", 4: "show finished",
-          5: "aborted"}
+          5: "aborted", 6: "taking off to the grid", 7: "holding in the grid", 8: "returning to its pad"}
+HOLDING = 7
 MAV_RESULT = {0: "accepted", 1: "temporarily rejected", 2: "denied", 3: "unsupported", 4: "failed",
               5: "in progress", 6: "cancelled"}
 SD_PATH = "/fs/microsd/idps_show.trj"      # flight controller; PX4 SITL uses "idps_show.trj"
@@ -39,6 +40,7 @@ class Reply:
     state: str
     crc: int
     text: str = ""
+    progress_code: int = -1          # the drone's state as a number (STATES)
 
 
 def crc_halves(crc: int) -> tuple[float, float]:
@@ -113,7 +115,7 @@ def await_reply(mav, drone_id: int, timeout_s: float = 3.0) -> Reply | None:
                         texts.append(t.text)
             return Reply(m.result == 0, MAV_RESULT.get(m.result, str(m.result)),
                          STATES.get(m.progress, str(m.progress)), m.result_param2 & 0xFFFFFFFF,
-                         "; ".join(t.replace("IDPS show: ", "") for t in texts if "IDPS" in t))
+                         "; ".join(t.replace("IDPS show: ", "") for t in texts if "IDPS" in t), int(m.progress))
     return None
 
 
@@ -217,7 +219,22 @@ def drones_from_manifest(manifest, links: dict) -> dict:
     return out
 
 
-def start_all(drones: dict, lead_s: float = 10.0, clock=time.monotonic_ns) -> tuple[int, dict]:
+def wait_holding(drones: dict, timeout_s: float, poll_s: float = 1.0, clock=time.monotonic) -> dict:
+    """Ask every drone its state until all hold in the air grid (or timeout_s). Returns {drone ID: Reply}."""
+    deadline = clock() + timeout_s
+    states = {}
+    while True:
+        for did, d in drones.items():
+            if did not in states or states[did].progress_code != HOLDING:
+                r = command(d.mav, did, STATUS, retries=1, timeout_s=1.0)
+                states[did] = r
+        if all(r.progress_code == HOLDING for r in states.values()) or clock() > deadline:
+            return states
+        time.sleep(poll_s)
+
+
+def start_all(drones: dict, lead_s: float = 10.0, clock=time.monotonic_ns, action: int = START,
+              abort_on_refusal: bool = True) -> tuple[int, dict]:
     """Start every drone at one instant ``lead_s`` from now, in the PC's clock (``ClockSync``
     must have been running for a few seconds). Returns (show start in the PC clock, µs;
     {drone ID: Reply}). If any drone refuses, all are aborted, so nobody flies a partial show."""
@@ -225,12 +242,12 @@ def start_all(drones: dict, lead_s: float = 10.0, clock=time.monotonic_ns) -> tu
     # The start goes to every drone first, then the answers are collected: sent one after the other
     # with a wait for each answer, the last of 20 drones on a busy PC got it too late to accept it.
     for did, d in drones.items():
-        send_command(d.mav, did, START, d.crc, t_pc_us)
+        send_command(d.mav, did, action, d.crc, t_pc_us)
     replies = {}
     for did, d in drones.items():
         r = await_reply(d.mav, did)
-        replies[did] = r if r is not None else command(d.mav, did, START, d.crc, t_pc_us, retries=2)
-    if not all(r.ok for r in replies.values()):
+        replies[did] = r if r is not None else command(d.mav, did, action, d.crc, t_pc_us, retries=2)
+    if abort_on_refusal and not all(r.ok for r in replies.values()):
         for did, d in drones.items():
             send_command(d.mav, did, ABORT)
         for did, d in drones.items():

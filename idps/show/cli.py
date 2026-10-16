@@ -182,18 +182,51 @@ def cmd_start(a) -> int:
     sync = ob.ClockSync(mavs).start()
     print(f"clock sync to {len(mavs)} drone(s); starting in {ob.ClockSync.WARMUP_S:.0f} s ...")
     time.sleep(ob.ClockSync.WARMUP_S)
-    t_pc, replies = ob.start_all(drones, lead_s=a.lead)
-    for did, r in sorted(replies.items()):
-        print(f"drone {did}: {r.result} ({r.state}) {r.text}")
-    if not all(r.ok for r in replies.values()):
-        print("Not started: every drone was told to abort. Fix the refused drone(s) and start again.")
-        sync.stop()
-        return 1
     import json
-    duration = json.loads(open(a.manifest).read())["duration_s"]
-    end = t_pc / 1e6 + duration + 15.0
-    print(f"show starts in {a.lead:.0f} s and lasts {duration:.0f} s. Keep this running (it keeps the drones' "
-          "clocks); Ctrl+C (or SIGTERM) aborts: every drone lands where it is.")
+    man = json.loads(open(a.manifest).read())
+    duration = man["duration_s"]
+    pads = man.get("pads")
+    if pads:
+        # charging pads: launch (batches take off and fly to the air grid), wait until every drone
+        # holds there, then start the show from the air
+        nb = max(d.get("batch", 1) for d in man["drones"])
+        gap = float(pads["batch_gap_s"])
+        t_launch, replies = ob.start_all(drones, lead_s=a.lead, action=ob.LAUNCH)
+        for did, r in sorted(replies.items()):
+            print(f"drone {did}: launch {r.result} ({r.state}) {r.text}")
+        if not all(r.ok for r in replies.values()):
+            print("Not started: every drone was told to abort. Fix the refused drone(s) and start again.")
+            sync.stop()
+            return 1
+        print(f"launch in {a.lead:.0f} s: {nb} batch(es) {gap:g} s apart, then every drone holds in the grid", flush=True)
+        give_up = t_launch / 1e6 + gap * (nb - 1) + float(pads["hold_timeout_s"]) + gap * nb + 40.0
+        states = ob.wait_holding(drones, timeout_s=a.lead + gap * (nb - 1) + 40.0)
+        late = [did for did, r in states.items() if r.progress_code != ob.HOLDING]
+        if late:
+            print("Not started: drone(s) " + ", ".join(f"{did} ({states[did].state})" for did in sorted(late))
+                  + " not holding in the grid; the others land on their pads when the hold times out.")
+            _wait_until(give_up, sync)
+            return 1
+        print(f"every drone holds in the grid ({len(drones)})", flush=True)
+        t_pc, replies = ob.start_all(drones, lead_s=6.0, action=ob.START, abort_on_refusal=False)
+        for did, r in sorted(replies.items()):
+            print(f"drone {did}: {r.result} ({r.state}) {r.text}")
+        if not all(r.ok for r in replies.values()):
+            print("Not started: a drone refused the start; every drone lands on its pad when the hold times out.")
+            _wait_until(give_up, sync)
+            return 1
+        end = t_pc / 1e6 + duration + gap * nb + 30.0      # the show, then the batches back to their pads
+    else:
+        t_pc, replies = ob.start_all(drones, lead_s=a.lead)
+        for did, r in sorted(replies.items()):
+            print(f"drone {did}: {r.result} ({r.state}) {r.text}")
+        if not all(r.ok for r in replies.values()):
+            print("Not started: every drone was told to abort. Fix the refused drone(s) and start again.")
+            sync.stop()
+            return 1
+        end = t_pc / 1e6 + duration + 15.0
+    print(f"show starts in {t_pc / 1e6 - time.monotonic():.0f} s and lasts {duration:.0f} s. Keep this running "
+          "(it keeps the drones' clocks); Ctrl+C (or SIGTERM) aborts: every drone lands where it is.")
     print(f"show time 0 = PC clock (time.monotonic) {t_pc / 1e6:.3f} s", flush=True)
     import signal
 
@@ -211,6 +244,16 @@ def cmd_start(a) -> int:
     finally:
         sync.stop()
     return 0
+
+
+def _wait_until(t_mono: float, sync) -> None:
+    """Keep the drones' clocks synced until t_mono (time.monotonic), e.g. while they land after a hold timeout."""
+    import time
+    try:
+        while time.monotonic() < t_mono:
+            time.sleep(0.2)
+    finally:
+        sync.stop()
 
 
 def cmd_abort(a) -> int:

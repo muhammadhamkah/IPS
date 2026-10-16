@@ -34,6 +34,12 @@ const char *IdpsShow::state_name() const
 	case State::Done: return "show finished";
 
 	case State::Aborted: return "aborted";
+
+	case State::Launching: return "taking off to the grid";
+
+	case State::Holding: return "holding in the grid";
+
+	case State::Landing: return "returning to its pad";
 	}
 
 	return "?";
@@ -88,12 +94,22 @@ void IdpsShow::send_vehicle_command(uint32_t command, float param1, float param2
 	_vehicle_command_pub.publish(c);
 }
 
+bool IdpsShow::active() const
+{
+	return _state == State::Waiting || _state == State::Running || _state == State::Launching
+	       || _state == State::Holding || _state == State::Landing;
+}
+
 const char *IdpsShow::start(const vehicle_command_s &cmd, hrt_abstime now)
 {
 	int64_t t_pc = 0;
 
 	if (!pc_time_us(cmd, t_pc)) {
 		return "start time missing (send COMMAND_INT)";
+	}
+
+	if (_file.is_open() && _file.header().batch > 0) {
+		return start_in_air(t_pc, cmd, now);
 	}
 
 	if (_state == State::Waiting || _state == State::Running) {
@@ -105,6 +121,28 @@ const char *IdpsShow::start(const vehicle_command_s &cmd, hrt_abstime now)
 		return "no valid show file";
 	}
 
+	if (_file.header().batch > 0) {
+		return "this show starts in the air: launch first";
+	}
+
+	const char *err = ready_on_pad(now, t_pc);
+
+	if (err) {
+		return err;
+	}
+
+	const int64_t ahead = t_pc - pc_now_us(now);
+	_start_pc = t_pc;
+	_pc_system = cmd.source_system;
+	_mode_sent = false;
+	_arm_sent = false;
+	_state = State::Waiting;
+	mavlink_log_info(&_mavlink_log_pub, "IDPS show: starting in %.1f s", (double)(ahead * 1e-6));
+	return nullptr;
+}
+
+const char *IdpsShow::ready_on_pad(hrt_abstime now, int64_t t_pc)
+{
 	if (_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED || !_landed) {
 		return "must be landed and disarmed";
 	}
@@ -132,18 +170,134 @@ const char *IdpsShow::start(const vehicle_command_s &cmd, hrt_abstime now)
 		return "not on its home spot";
 	}
 
-	_start_pc = t_pc;
+	return nullptr;
+}
+
+float IdpsShow::leg_time(float dist, float speed)
+{
+	return fmaxf(1.5f, 1.875f * fabsf(dist) / fmaxf(speed, 0.1f));
+}
+
+bool IdpsShow::show_point(float show_t, float p[3])
+{
+	trajectory_setpoint_s sp{};
+
+	if (!evaluate(show_t, sp)) {
+		return false;
+	}
+
+	for (int i = 0; i < 3; i++) {
+		p[i] = sp.position[i];
+	}
+
+	return true;
+}
+
+const char *IdpsShow::launch(const vehicle_command_s &cmd, hrt_abstime now)
+{
+	int64_t t_pc = 0;
+
+	if (!pc_time_us(cmd, t_pc)) {
+		return "launch time missing (send COMMAND_INT)";
+	}
+
+	if (_state == State::Launching || _state == State::Holding) {
+		return (t_pc == _launch_pc && cmd.source_system == _pc_system) ? nullptr : "already launched";
+	}
+
+	if (!_file.is_open() && load() != nullptr) {
+		return "no valid show file";
+	}
+
+	const idps::TrjHeader &h = _file.header();
+
+	if (h.batch == 0) {
+		return "this show starts on the ground: start, not launch";
+	}
+
+	const char *err = ready_on_pad(now, t_pc);
+
+	if (err) {
+		return err;
+	}
+
+	float grid[3];
+
+	if (!show_point(h.t0, grid)) {
+		return "show file read error";
+	}
+
+	// take-off: straight up over the pad slot to the grid's height, then level to the grid place
+	_legs.t0 = t_pc + (int64_t)h.batch_gap_ms * 1000 * (h.batch - 1);
+	const float top[3] {h.home[0], h.home[1], grid[2]};
+
+	for (int i = 0; i < 3; i++) {
+		_legs.p[0][i] = h.home[i];
+		_legs.p[1][i] = top[i];
+		_legs.p[2][i] = grid[i];
+	}
+
+	const float dn = grid[0] - top[0], de = grid[1] - top[1];
+	_legs.T[0] = leg_time(grid[2] - h.home[2], h.climb_mm_s * 1e-3f);
+	_legs.T[1] = leg_time(sqrtf(dn * dn + de * de), h.transfer_mm_s * 1e-3f);
+
+	_launch_pc = t_pc;
+	_go_pc = _legs.t0;
+	_start_pc = 0;
 	_pc_system = cmd.source_system;
 	_mode_sent = false;
 	_arm_sent = false;
-	_state = State::Waiting;
-	mavlink_log_info(&_mavlink_log_pub, "IDPS show: starting in %.1f s", (double)(ahead * 1e-6));
+	_airborne = false;
+	_land_sent = false;
+	_state = State::Launching;
+	mavlink_log_info(&_mavlink_log_pub, "IDPS show: batch %u of %u, take-off in %.1f s", (unsigned)h.batch,
+			 (unsigned)h.n_batches, (double)((_go_pc - pc_now_us(now)) * 1e-6));
+	return nullptr;
+}
+
+const char *IdpsShow::start_in_air(int64_t t_pc, const vehicle_command_s &cmd, hrt_abstime now)
+{
+	if (_state == State::Running) {
+		return (t_pc == _start_pc && cmd.source_system == _pc_system) ? nullptr : "already started";
+	}
+
+	if (_state != State::Launching && _state != State::Holding) {
+		return "not in the air grid (launch first)";
+	}
+
+	if (cmd.source_system != _pc_system) {
+		return "launched by another PC";
+	}
+
+	if (_start_pc != 0) {
+		return t_pc == _start_pc ? nullptr : "already started";
+	}
+
+	if (!sync_valid(now)) {
+		return "no clock sync from the PC";
+	}
+
+	const idps::TrjHeader &h = _file.header();
+	const int64_t gap = (int64_t)h.batch_gap_ms * 1000;
+	const int64_t leave = _launch_pc + gap * (h.n_batches - 1) + (int64_t)h.hold_timeout_s * 1000000
+			      + gap * (h.n_batches - h.batch);
+
+	if (t_pc < _legs.end() + 1000000) {
+		return "start before this drone reaches the grid";
+	}
+
+	if (t_pc >= leave) {
+		return "start after the hold timeout";
+	}
+
+	_start_pc = t_pc;
+	mavlink_log_info(&_mavlink_log_pub, "IDPS show: show starts in %.1f s", (double)((t_pc - pc_now_us(now)) * 1e-6));
 	return nullptr;
 }
 
 void IdpsShow::abort(const char *why)
 {
-	if (_state == State::Waiting || _state == State::Running) {
+	if (active()) {
 		if (_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
 			send_vehicle_command(vehicle_command_s::VEHICLE_CMD_NAV_LAND);
 		}
@@ -271,9 +425,7 @@ void IdpsShow::handle_command(const vehicle_command_s &cmd)
 
 	if (action == SYNC) {
 		int64_t t_pc = 0;
-		const bool running = _state == State::Waiting || _state == State::Running;
-
-		if (drone_id == _status.system_id && pc_time_us(cmd, t_pc) && (!running || cmd.source_system == _pc_system)) {
+		if (drone_id == _status.system_id && pc_time_us(cmd, t_pc) && (!active() || cmd.source_system == _pc_system)) {
 			sync_add(cmd.timestamp, t_pc);
 		}
 
@@ -301,7 +453,7 @@ void IdpsShow::handle_command(const vehicle_command_s &cmd)
 		return;
 
 	case LOAD:
-		if (_state == State::Waiting || _state == State::Running) {
+		if (active()) {
 			err = "busy";
 
 		} else {
@@ -312,6 +464,10 @@ void IdpsShow::handle_command(const vehicle_command_s &cmd)
 
 	case START:
 		err = start(cmd, now);
+		break;
+
+	case LAUNCH:
+		err = launch(cmd, now);
 		break;
 
 	default:
@@ -330,8 +486,9 @@ void IdpsShow::handle_command(const vehicle_command_s &cmd)
 			err = "show file differs from the PC's (re-upload)";
 		}
 
-		if (err && action == START) {
+		if (err && (action == START || action == LAUNCH) && !_airborne && _state != State::Running) {
 			_state = State::Ready;
+			_start_pc = 0;
 		}
 	}
 
@@ -384,6 +541,12 @@ void IdpsShow::publish_setpoint(hrt_abstime now, float show_t, bool running)
 		}
 	}
 
+	publish(sp, now);
+}
+
+void IdpsShow::publish(const trajectory_setpoint_s &sp_in, hrt_abstime now)
+{
+	trajectory_setpoint_s sp = sp_in;
 	sp.timestamp = now;
 
 	offboard_control_mode_s ocm{};
@@ -393,6 +556,173 @@ void IdpsShow::publish_setpoint(hrt_abstime now, float show_t, bool running)
 	ocm.timestamp = now;
 	_offboard_control_mode_pub.publish(ocm);
 	_trajectory_setpoint_pub.publish(sp);
+}
+
+void IdpsShow::hold_setpoint(const float p[3], trajectory_setpoint_s &sp) const
+{
+	for (int i = 0; i < 3; i++) {
+		sp.position[i] = p[i];
+		sp.velocity[i] = 0.f;
+		sp.acceleration[i] = 0.f;
+		sp.jerk[i] = NAN;
+	}
+
+	sp.yaw = _file.header().yaw;
+	sp.yawspeed = NAN;
+}
+
+void IdpsShow::path_setpoint(const Path &path, int64_t t_pc, trajectory_setpoint_s &sp) const
+{
+	float t = (float)((double)(t_pc - path.t0) * 1e-6);
+	int leg = 0;
+
+	if (t > path.T[0]) {
+		t -= path.T[0];
+		leg = 1;
+	}
+
+	const float T = path.T[leg];
+	const float u = math::constrain(t / T, 0.f, 1.f);
+	// minimum jerk: s = 10u^3 - 15u^4 + 6u^5
+	const float s = u * u * u * (10.f - 15.f * u + 6.f * u * u);
+	const float ds = 30.f * u * u * (1.f - u) * (1.f - u) / T;
+	const float dds = (60.f * u - 180.f * u * u + 120.f * u * u * u) / (T * T);
+
+	for (int i = 0; i < 3; i++) {
+		const float d = path.p[leg + 1][i] - path.p[leg][i];
+		sp.position[i] = path.p[leg][i] + d * s;
+		sp.velocity[i] = d * ds;
+		sp.acceleration[i] = d * dds;
+		sp.jerk[i] = NAN;
+	}
+
+	sp.yaw = _file.header().yaw;
+	sp.yawspeed = NAN;
+}
+
+void IdpsShow::begin_landing(const float from[3], int64_t t_leave)
+{
+	// level to above the pad slot, then down to 0.3 m above it; PX4 lands from there
+	const idps::TrjHeader &h = _file.header();
+	_legs.t0 = t_leave;
+
+	for (int i = 0; i < 3; i++) {
+		_legs.p[0][i] = from[i];
+	}
+
+	_legs.p[1][0] = h.home[0];
+	_legs.p[1][1] = h.home[1];
+	_legs.p[1][2] = from[2];
+	_legs.p[2][0] = h.home[0];
+	_legs.p[2][1] = h.home[1];
+	_legs.p[2][2] = h.home[2] - 0.3f;
+	const float dn = h.home[0] - from[0], de = h.home[1] - from[1];
+	_legs.T[0] = leg_time(sqrtf(dn * dn + de * de), h.transfer_mm_s * 1e-3f);
+	_legs.T[1] = leg_time(_legs.p[2][2] - from[2], h.climb_mm_s * 1e-3f);
+	_land_sent = false;
+	_state = State::Landing;
+}
+
+void IdpsShow::run_pads(hrt_abstime now)
+{
+	const idps::TrjHeader &h = _file.header();
+	const bool armed = _status.arming_state == vehicle_status_s::ARMING_STATE_ARMED;
+	const bool offboard = _status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD;
+	trajectory_setpoint_s sp{};
+
+	if (_state == State::Launching && !_airborne) {
+		// on the pad until this batch's turn: stream the pad setpoint so PX4 accepts OFFBOARD
+		_show_pc_at = 0;
+		const int64_t to_go = _go_pc - pc_now_us(now);
+		hold_setpoint(_legs.p[0], sp);
+		publish(sp, now);
+
+		if (!sync_valid(now)) {
+			abort("lost clock sync with the PC");
+			return;
+		}
+
+		if (!_mode_sent && to_go <= (int64_t)MODE_LEAD) {
+			send_vehicle_command(vehicle_command_s::VEHICLE_CMD_DO_SET_MODE, 1.f, 6.f);   // custom, OFFBOARD
+			_mode_sent = true;
+		}
+
+		if (!_arm_sent && to_go <= (int64_t)ARM_LEAD) {
+			if (!offboard) {
+				abort("OFFBOARD not accepted");
+				return;
+			}
+
+			send_vehicle_command(vehicle_command_s::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.f, 0.f);
+			_arm_sent = true;
+		}
+
+		if (to_go <= 0) {
+			if (!armed || !offboard) {
+				abort(!armed ? "did not arm" : "left OFFBOARD before take-off");
+				return;
+			}
+
+			read_params();
+			_airborne = true;
+		}
+
+		return;
+	}
+
+	if (!offboard || !armed) {
+		_state = State::Aborted;
+		mavlink_log_critical(&_mavlink_log_pub, "IDPS show stopped: left OFFBOARD");
+		return;
+	}
+
+	const int64_t t = show_clock_us(now);
+
+	if (_state == State::Launching) {
+		path_setpoint(_legs, t, sp);
+
+		if (t >= _legs.end()) {
+			_state = State::Holding;
+			mavlink_log_info(&_mavlink_log_pub, "IDPS show: in the grid, holding");
+		}
+
+	} else if (_state == State::Holding) {
+		hold_setpoint(_legs.p[2], sp);
+
+		if (_start_pc != 0 && t >= _start_pc) {
+			read_params();
+			_state = State::Running;          // the show plays from the next cycle
+
+		} else if (_start_pc == 0) {
+			const int64_t gap = (int64_t)h.batch_gap_ms * 1000;
+			const int64_t leave = _launch_pc + gap * (h.n_batches - 1) + (int64_t)h.hold_timeout_s * 1000000
+					      + gap * (h.n_batches - h.batch);
+
+			if (t >= leave) {
+				mavlink_log_info(&_mavlink_log_pub, "IDPS show: no start, back to the pad");
+				const float grid[3] {_legs.p[2][0], _legs.p[2][1], _legs.p[2][2]};
+				begin_landing(grid, leave);
+			}
+		}
+
+	} else if (_state == State::Landing) {
+		if (t < _legs.t0) {
+			hold_setpoint(_legs.p[0], sp);
+
+		} else {
+			path_setpoint(_legs, t, sp);
+		}
+
+		if (t >= _legs.end() && !_land_sent) {
+			send_vehicle_command(vehicle_command_s::VEHICLE_CMD_NAV_LAND);
+			_land_sent = true;
+			_state = State::Done;
+			mavlink_log_info(&_mavlink_log_pub, "IDPS show: over its pad, landing");
+			return;
+		}
+	}
+
+	publish(sp, now);
 }
 
 bool IdpsShow::evaluate(float show_t, trajectory_setpoint_s &sp)
@@ -480,7 +810,12 @@ void IdpsShow::Run()
 
 	const hrt_abstime now = hrt_absolute_time();
 
-	if (_state != State::Waiting && _state != State::Running) {
+	if (!active()) {
+		return;
+	}
+
+	if (_state == State::Launching || _state == State::Holding || _state == State::Landing) {
+		run_pads(now);
 		return;
 	}
 
@@ -565,8 +900,26 @@ void IdpsShow::Run()
 		}
 	}
 
-	if (show_t > h.t0 + (float)(h.count - 1) / h.rate_hz + 0.5f) {
-		finish();
+	const float t_end = h.t0 + (float)(h.count - 1) / h.rate_hz;
+
+	if (show_t > t_end + 0.5f) {
+		if (h.batch > 0) {
+			// back to the pad from the final grid, last up first down
+			float last[3];
+
+			if (!show_point(t_end, last)) {
+				abort("show file read error");
+				return;
+			}
+
+			const int64_t gap = (int64_t)h.batch_gap_ms * 1000;
+			const int64_t end_pc = _start_pc + (int64_t)((t_end - h.t0) * 1e6f);
+			begin_landing(last, end_pc + gap * (h.n_batches - h.batch));
+			mavlink_log_info(&_mavlink_log_pub, "IDPS show: finished, back to the pad");
+
+		} else {
+			finish();
+		}
 	}
 }
 
@@ -589,6 +942,13 @@ int IdpsShow::print_status()
 
 	if (_state == State::Waiting) {
 		PX4_INFO("start in %.4f s", (double)((_start_pc - pc_now_us(now)) * 1e-6));
+	}
+
+	if (_file.is_open() && _file.header().batch > 0) {
+		const idps::TrjHeader &h = _file.header();
+		PX4_INFO("charging pad: batch %u of %u, gap %.1f s, climb %.2f m/s, transfer %.2f m/s, hold %u s",
+			 (unsigned)h.batch, (unsigned)h.n_batches, (double)(h.batch_gap_ms * 1e-3f), (double)(h.climb_mm_s * 1e-3f),
+			 (double)(h.transfer_mm_s * 1e-3f), (unsigned)h.hold_timeout_s);
 	}
 
 	PX4_INFO("light %u %u %u", _rgb[0], _rgb[1], _rgb[2]);

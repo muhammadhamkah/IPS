@@ -27,6 +27,15 @@
  * plays the file at 200 Hz (position, velocity and acceleration, yaw fixed). At the end, or on
  * abort, it commands LAND. If anything else takes the drone out of OFFBOARD (a failsafe, the
  * pilot), it stops and leaves the drone to PX4.
+ *
+ * Charging pads (the file's header has a batch, 1..): the show starts and ends in the air. The
+ * launch command (action 6, x/y = launch time in the PC's clock) starts the take-off: batch k
+ * arms and goes batch_gap x (k - 1) after the launch time, climbs straight up from its pad slot
+ * (home) to the height of the show's first frame, flies level to that place and holds. A start
+ * command then plays the show from there. Afterwards, or with no start hold_timeout after the
+ * last batch went, batch k leaves batch_gap x (n_batches - k) later (last up, first down): level
+ * to above its pad slot, down to 0.3 m above it, and PX4 lands it. Every leg is a minimum-jerk
+ * move, T = max(1.5 s, 1.875 x distance / speed), exactly as idps/show/pads.py checks them.
  */
 #pragma once
 
@@ -59,9 +68,11 @@ static constexpr hrt_abstime SETPOINT_PERIOD = 5_ms;   // 200 Hz: at 1.2 m/s a s
 class IdpsShow : public ModuleBase<IdpsShow>, public px4::ScheduledWorkItem
 {
 public:
-	enum class State : uint8_t { NoFile = 0, Ready = 1, Waiting = 2, Running = 3, Done = 4, Aborted = 5 };
+	enum class State : uint8_t { NoFile = 0, Ready = 1, Waiting = 2, Running = 3, Done = 4, Aborted = 5,
+				     Launching = 6, Holding = 7, Landing = 8
+				   };
 
-	enum Action { LOAD = 1, START = 2, ABORT = 3, STATUS = 4, SYNC = 5 };
+	enum Action { LOAD = 1, START = 2, ABORT = 3, STATUS = 4, SYNC = 5, LAUNCH = 6 };
 
 	IdpsShow();
 	~IdpsShow() override = default;
@@ -79,6 +90,25 @@ private:
 	void handle_command(const vehicle_command_s &cmd);
 	const char *load();
 	const char *start(const vehicle_command_s &cmd, hrt_abstime now);
+	const char *launch(const vehicle_command_s &cmd, hrt_abstime now);
+	const char *start_in_air(int64_t t_pc, const vehicle_command_s &cmd, hrt_abstime now);
+	const char *ready_on_pad(hrt_abstime now, int64_t t_pc);
+	void run_pads(hrt_abstime now);
+	bool active() const;
+
+	// A move of two minimum-jerk legs through three points (NED), starting at t0 (PC clock, µs).
+	struct Path {
+		int64_t t0{0};
+		float p[3][3] {};
+		float T[2] {};
+		int64_t end() const { return t0 + (int64_t)((T[0] + T[1]) * 1e6f); }
+	};
+	static float leg_time(float dist, float speed);
+	void path_setpoint(const Path &path, int64_t t_pc, trajectory_setpoint_s &sp) const;
+	void publish(const trajectory_setpoint_s &sp, hrt_abstime now);
+	void hold_setpoint(const float p[3], trajectory_setpoint_s &sp) const;
+	void begin_landing(const float from[3], int64_t t_leave);
+	bool show_point(float show_t, float p[3]);
 	void abort(const char *why);
 	void finish();
 	void ack(const vehicle_command_s &cmd, uint8_t result);
@@ -126,6 +156,12 @@ private:
 	float _vel_d_xy{0.f}, _vel_d_z{0.f};   // MPC_XY/Z_VEL_D_ACC: their D term acts on the measured acceleration
 	bool _mode_sent{false};
 	bool _arm_sent{false};
+	// charging pads (batch > 0)
+	int64_t _launch_pc{0};            // launch time in the PC's clock (µs)
+	int64_t _go_pc{0};                // this drone's take-off: launch + gap x (batch - 1)
+	Path _legs{};                     // the take-off or landing move
+	bool _airborne{false};            // armed and flying its take-off
+	bool _land_sent{false};
 	uint8_t _rgb[3] {};
 	char _path[64] {};
 	orb_advert_t _mavlink_log_pub{nullptr};
