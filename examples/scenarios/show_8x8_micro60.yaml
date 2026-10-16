@@ -8,5 +8,5 @@ camera_model: {sensor: OV9281, fps: 60, exposure_us: 500, peak_at_10m: 232, thre
 timing: {sync: ptp, jitter_sigma_us: 5, clock_profile: pi5_ptp_hw}
 network: {loss: 0.001, latency_ms: 2, jitter_ms: 1}
 calibration_error: {rot_mrad: 0.05, pos_mm: 1}
-markers: {chip_rate_hz: 30, high: 1.0, low: 0.4}
+markers: {chip_rate_hz: 30, high: 1.0, low: 0.4, body_radius_m: 0.06}   # 60 g quad: 65 mm frame + props
 drones: []
