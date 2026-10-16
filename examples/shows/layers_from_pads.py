@@ -24,7 +24,8 @@ SLOTS = 4                           # drones per pad = batches
 LAYERS = (1.0, 2.0, 3.0, 4.0)       # batch k flies at LAYERS[k-1] (as examples/pads/show_8x8.yaml)
 COL = 1.2                           # drones along East in a row
 CLOSE = 0.95                        # ... closed up
-ROW = 0.9                           # rows (batches) along North: each batch's strip
+ROW = 1.1                           # rows (batches) along North: each batch's strip (far enough apart
+                                    # that each batch lands after the one before is down, at a 5 s gap)
 WAVE = 0.3                          # up and down within the layer (m)
 CENTRE = (0.0, 0.0, 0.0)
 
@@ -60,11 +61,11 @@ def build(n: int = 20) -> Choreography:
     ch.move_to(grid(n, wave=+1), 3.0, rgb=BLUE, what="wave up")
     ch.move_to(g, 3.0, rgb=WHITE, what="level")
     ch.hold(1.0)
-    ch.rotate(360, 28.0, CENTRE, rgb=AMBER)
+    ch.rotate(360, 30.0, CENTRE, rgb=AMBER)
     ch.hold(1.5, rgb=WHITE)
     ch.move_to(grid(n, CLOSE), 4.0, rgb=RED, what="close up")
     ch.hold(1.0)
-    ch.rotate(-360, 24.0, CENTRE, rgb=RED)
+    ch.rotate(-360, 26.0, CENTRE, rgb=RED)
     ch.hold(1.0)
     ch.move_to(g, 4.0, rgb=WHITE, what="open out to the grid")
     ch.hold(2.0)

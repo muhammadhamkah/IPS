@@ -34,7 +34,7 @@
  * (home) to the height of the show's first frame, flies level to that place and holds. A start
  * command then plays the show from there. Afterwards, or with no start hold_timeout after the
  * last batch went, batch k leaves batch_gap x (n_batches - k) later (last up, first down): level
- * to above its pad slot, down to 0.3 m above it, and PX4 lands it. Every leg is a minimum-jerk
+ * to above its pad slot, down onto it, and PX4 lands and disarms it. Every leg is a minimum-jerk
  * move, T = max(1.5 s, 1.875 x distance / speed), exactly as idps/show/pads.py checks them.
  */
 #pragma once

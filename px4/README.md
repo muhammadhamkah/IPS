@@ -207,7 +207,8 @@ any weight, however the drone is tuned.
 batches to a layered air grid (batch k at k m), fly `examples/shows/layers_from_pads.py` (80 s)
 and land back on their pads, last up first down (docs/SHOW.md, "Charging pads"). N = 1–20;
 `PADS=0` flies the old 5-drone show from the ground. 3 drones in PX4: take-offs 8 s apart, held at
-1/2/3 m, show median 2.4–2.7 mm, landed 3–4 mm from their pad slots.
+1/2/3 m, show median 2.4–2.7 mm, landed 3–4 mm from their pad slots. With 1.5 m/s climb and transfer
+and a 5 s gap (the defaults), 5 drones: show median 2.6–3.0 mm, worst 27.6 mm.
 
 * The cameras and engine on the earlier 20-drone show with drones exactly on their files: all 20
   identified, median 1.3–1.7 mm, worst 10 mm; filming runs at about 2× real time in one process.

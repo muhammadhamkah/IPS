@@ -602,7 +602,7 @@ void IdpsShow::path_setpoint(const Path &path, int64_t t_pc, trajectory_setpoint
 
 void IdpsShow::begin_landing(const float from[3], int64_t t_leave)
 {
-	// level to above the pad slot, then down to 0.3 m above it; PX4 lands from there
+	// level to above the pad slot, then down onto it (at zero speed); PX4 then lands and disarms
 	const idps::TrjHeader &h = _file.header();
 	_legs.t0 = t_leave;
 
@@ -615,7 +615,7 @@ void IdpsShow::begin_landing(const float from[3], int64_t t_leave)
 	_legs.p[1][2] = from[2];
 	_legs.p[2][0] = h.home[0];
 	_legs.p[2][1] = h.home[1];
-	_legs.p[2][2] = h.home[2] - 0.3f;
+	_legs.p[2][2] = h.home[2];
 	const float dn = h.home[0] - from[0], de = h.home[1] - from[1];
 	_legs.T[0] = leg_time(sqrtf(dn * dn + de * de), h.transfer_mm_s * 1e-3f);
 	_legs.T[1] = leg_time(_legs.p[2][2] - from[2], h.climb_mm_s * 1e-3f);

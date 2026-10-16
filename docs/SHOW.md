@@ -149,10 +149,10 @@ pad, and so on. Describe the pads in a file (`examples/pads/show_8x8.yaml`):
 pads: [[-3.2, -2.0], [-3.2, -1.0], [-3.2, 0.0]]   # pad centres, venue N and E (m), anywhere
 slot_spacing_m: 0.2
 layers_m: [1, 2, 3, 4]       # batch k's height in the initial and final grid
-batch_gap_s: 8
+batch_gap_s: 5
 hold_timeout_s: 60           # no start this long after the last batch took off: land
-climb_speed_mps: 1.0
-transfer_speed_mps: 1.0
+climb_speed_mps: 1.5         # up from the pad and down onto it (peak speed)
+transfer_speed_mps: 1.5      # level, between the pad and the grid
 ```
 
 The show you design starts and ends in the air: its **first frame is the initial grid** and its
@@ -166,7 +166,7 @@ The show you design starts and ends in the air: its **first frame is the initial
 3. **Back to the pads**: after the show (from the final grid), or if no start comes within
    `hold_timeout_s` after the last batch took off, batch k leaves `batch_gap_s` × (n − k)
    later: last up, first down, so every drone flies as long. It flies level to above its pad slot,
-   comes down to 0.3 m above it, and PX4 lands it.
+   comes straight down onto it (arriving at zero speed), and PX4 lands and disarms it.
 
 Every leg is a minimum-jerk move: T = max(1.5 s, 1.875 × distance / speed). The drone (the PX4
 module) computes the legs itself from its file's header (batch, gap, speeds, timeout), so all
@@ -177,10 +177,16 @@ drones keep to one timeline on the PC's clock. The checks fly the same legs and 
   take-off, both landings, and the show itself.
 
 **The batch gap must cover the pad.** With slots 0.2 m apart, a batch must have climbed and moved
-aside before the next batch climbs under it. At 0.8 m/s that takes 8.5–9 s, at 1.0 m/s 7.5 s, at
-1.5 m/s 5.5–6 s. When the gap is too short, the check says so and gives the smallest safe one.
+aside before the next batch climbs beside it, and on the way back a batch must be down (touchdown
+counted as 0.5 s) before the next one arrives over the pad. With the example show, a 5 s gap
+needs 1.5 m/s climb and transfer; at 1.0 m/s it takes 7.5 s, at 0.8 m/s 8.5–9 s. When the gap
+is too short, the check says so and gives the smallest safe one.
+
 Design the grid so that batch 1 holds the row farthest from the pads and the last batch the
-nearest: no batch then flies over another on its way in or out.
+nearest: no batch then flies over another on its way in or out. The rows' spacing matters too:
+each batch's way back must take long enough that the batch before it is down when it arrives. In
+the example the rows are 1.1 m apart along North; at 0.9 m, 4 to 8 drones failed at a 5 s gap
+(batch 3 arriving over its pad while batch 4 was still touching down next to it).
 
 `examples/shows/layers_from_pads.py` is such a show for 1–20 drones (80 s): each batch keeps to its
 own strip along North for the whole show (it waves and closes up within it, and the turns are

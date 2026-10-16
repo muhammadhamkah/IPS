@@ -13,7 +13,7 @@ On the launch command every drone runs, on the PC's clock, with batch k starting
 
 After the show (or that timeout), batch k leaves the grid ``batch_gap_s`` x (n_batches - k)
 later (last up, first down: every drone flies as long): level to above its pad slot, straight
-down to ``land_hover_m`` above it, then PX4 lands it.
+down onto it, then PX4 lands and disarms it.
 
 Each leg is a minimum-jerk move whose length gives its duration: peak speed = 1.875 x mean, so
 T = max(MIN_LEG_S, 1.875 x distance / speed). The PX4 module (idps_show) computes the very same
@@ -38,7 +38,8 @@ import numpy as np
 
 SLOTS = 4
 MIN_LEG_S = 1.5
-LAND_HOVER_M = 0.3               # the last leg ends this high above the pad; PX4 lands from there
+LAND_HOVER_M = 0.0               # the last leg ends on the pad (at zero speed); PX4 then only disarms
+TOUCHDOWN_S = 0.5                # ... which takes this long: still flying for the checks
 # slot -> (N, E) offset in units of half the slot spacing: 1 front-left, 2 front-right, 3 back-left, 4 back-right
 SLOT_UNITS = {1: (1, -1), 2: (1, 1), 3: (-1, -1), 4: (-1, 1)}
 
@@ -137,7 +138,7 @@ def launch_legs(lay: PadLayout, drone_id: int, grid_ned, t_launch: float = 0.0) 
 
 
 def landing_legs(lay: PadLayout, drone_id: int, from_ned, t_leave0: float, n_batches: int) -> Legs:
-    """Grid place -> level to above the pad -> down to LAND_HOVER_M above it (PX4 lands from there).
+    """Grid place -> level to above the pad -> down onto it (PX4 lands and disarms).
     t_leave0: when the first batch to land (the last to take off) leaves the grid."""
     home = lay.home_ned(drone_id)
     p = np.asarray(from_ned, float)
@@ -205,7 +206,7 @@ def check_sequence(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray, dt:
         if kind == "launch":
             active = np.stack([t >= L.t0 for L in legs])                   # flying from its take-off on
         else:
-            active = np.stack([t <= L.t_end for L in legs])                # flying until it is down
+            active = np.stack([t <= L.t_end + TOUCHDOWN_S for L in legs])  # flying until it is down
         stats[name] = t_end
         N = len(ids)
         worst = np.inf

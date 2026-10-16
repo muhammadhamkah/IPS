@@ -5,8 +5,8 @@ from idps.show.pads import PadLayout, check_sequence, landing_legs, launch_legs,
 from idps.show.trj import Trj, from_bytes, to_bytes
 
 
-def lay(gap=8.0, climb=1.0):
-    return PadLayout(np.array([[-3.2, -1.0], [-3.2, 0.0]]), 0.2, (1, 2, 3, 4), gap, 60, climb, 1.0)
+def lay(gap=8.0, climb=1.0, xfer=1.0):
+    return PadLayout(np.array([[-3.2, -1.0], [-3.2, 0.0]]), 0.2, (1, 2, 3, 4), gap, 60, climb, xfer)
 
 
 def layered_grid(ids):
@@ -35,7 +35,7 @@ def test_launch_climbs_straight_up_then_flies_level():
     assert np.allclose(legs.at([legs.t_end + 5])[0], g)
     land = landing_legs(L, 2, g, t_leave0=100.0, n_batches=4)
     assert land.t0 == 100.0 + 2 * 8.0                            # batch 2 of 4 leaves two gaps after batch 4
-    assert np.allclose(land.at([land.t_end])[0], [-3.1, -0.9, -0.3])
+    assert np.allclose(land.at([land.t_end])[0], [-3.1, -0.9, 0.0])     # down onto its pad slot
 
 
 def test_sequence_passes_with_a_safe_gap_and_names_the_smallest():
