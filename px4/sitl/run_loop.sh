@@ -126,14 +126,23 @@ else
   PIDS+=($!); disown $!; TRACK=$OUT/track.csv
   echo "   waiting 30 s for the cameras to identify every drone"; sleep 30 & wait $!
   tail -1 "$OUT/cams.log"; tail -1 "$OUT/engine.log"
+  # the cameras must keep up with the clock, or the drones fly on stale positions
+  behind=$(grep -o "behind the clock (ms, last 2 s): median [0-9.]*" "$OUT/cams.log" | tail -1 | awk '{print int($NF)}')
+  if [ -n "$behind" ] && [ "$behind" -gt 30 ]; then
+    echo "Too much for this computer: the simulated cameras run ${behind} ms behind the clock (want under 30)"
+    echo "with $N PX4 drones. Fly fewer drones, or 'Positions inside PX4' (no cameras), or use a bigger machine."
+    exit 1
+  fi
 fi
 
 SHOW_S=$(awk '/^duration_s:/ {printf "%.0f", $2}' "$OUT/show.txt")
 echo "== upload and fly (about $((SHOW_S + 20)) s)"
 "$PY" -m idps.show.cli upload "$OUT/show/manifest.json" $L --sitl > "$OUT/upload.txt" 2>&1 || true
-echo "$(grep -c ": OK " "$OUT/upload.txt") of $N drone(s) uploaded"
-if grep -q "FAILED" "$OUT/upload.txt"; then
-  grep "FAILED" "$OUT/upload.txt"; echo "Upload failed: those drones have no show file (see $OUT/upload.txt)"; exit 1
+UP=$(grep -c ": OK " "$OUT/upload.txt" || true)
+echo "$UP of $N drone(s) uploaded"
+if [ "$UP" -lt "$N" ]; then
+  grep -E "FAILED|Error|error" "$OUT/upload.txt" | tail -5
+  echo "Upload failed: those drones have no show file (see $OUT/upload.txt)"; exit 1
 fi
 # in the background and waited for, so a stop (TERM) is handled at once: the trap aborts the
 # show and stops every helper (a foreground command would delay it to the end of the show)

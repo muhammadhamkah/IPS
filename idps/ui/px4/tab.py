@@ -68,6 +68,8 @@ FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still goi
             (r"No data from drone\(s\) ([\d ]+) on their truth links", "No data from drone(s) {0}: their links never "
              "reached the logger."),
             (r"drone (\d+): no heartbeat on (\S+)", "Drone {0} did not answer on {1}."),
+            (r"Too much for this computer: the simulated cameras run (\d+) ms behind", "Too much for this computer: "
+             "the simulated cameras ran {0} ms behind the clock. Fly fewer drones, or 'Positions inside PX4'."),
             (r"Upload failed: those drones have no show file", "The show upload failed for some drones (the "
              "FAILED lines in the Log pane): fly again."),
             (r"Not started: every drone was told to abort", "Not started: a drone refused the start, so every drone "
