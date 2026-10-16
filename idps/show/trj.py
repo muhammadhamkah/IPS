@@ -17,7 +17,12 @@ without parsing:
    28  f32[3]   home N, E, D (m)
    40  f32      yaw (rad), fixed for the whole show (0 = North)
    44  u32      CRC-32 of the sample block
-   48  u8[12]   reserved (0)
+   48  u8       batch: take-off batch (1..) from a charging pad, 0 = the show starts on the ground
+   49  u8       batches in the show
+   50  u16      gap between batches (ms)
+   52  u16      climb speed (mm/s), 54 u16 transfer speed (mm/s): see idps.show.pads
+   56  u16      hold timeout (s): no start this long after the last batch took off: land
+   58  u16      reserved (0)
    60  u32      CRC-32 of bytes 0..59
 
   samples, 40 bytes each, at the sample rate from the first sample's time
@@ -39,7 +44,7 @@ import numpy as np
 
 MAGIC = b"IDPSTRJ1"
 VERSION = 1
-HEADER = struct.Struct("<8sHHHHfIf3ffI12x")          # 60 bytes, then the header CRC
+HEADER = struct.Struct("<8sHHHHfIf3ffIBBHHHHH")      # 60 bytes, then the header CRC
 HEADER_SIZE = HEADER.size + 4
 SAMPLE = np.dtype([("pos", "<f4", 3), ("vel", "<f4", 3), ("acc", "<f4", 3), ("rgb", "u1", 3), ("pad", "u1")])
 assert HEADER_SIZE == 64 and SAMPLE.itemsize == 40
@@ -61,6 +66,12 @@ class Trj:
     vel: np.ndarray
     acc: np.ndarray
     rgb: np.ndarray            # (n, 3) 0..255
+    batch: int = 0             # take-off from a charging pad (idps.show.pads); 0: from the ground
+    n_batches: int = 0
+    batch_gap_s: float = 0.0
+    climb_speed_mps: float = 0.0
+    transfer_speed_mps: float = 0.0
+    hold_timeout_s: float = 0.0
 
     @property
     def duration(self) -> float:
@@ -74,7 +85,9 @@ def to_bytes(t: Trj) -> bytes:
     s["rgb"] = np.clip(np.rint(t.rgb), 0, 255).astype(np.uint8)
     body = s.tobytes()
     head = HEADER.pack(MAGIC, VERSION, HEADER_SIZE, int(t.drone_id), 0, float(t.rate_hz), n, float(t.t0),
-                       *[float(x) for x in t.home], float(t.yaw_rad), crc32(body))
+                       *[float(x) for x in t.home], float(t.yaw_rad), crc32(body), int(t.batch), int(t.n_batches),
+                       int(round(t.batch_gap_s * 1000)), int(round(t.climb_speed_mps * 1000)),
+                       int(round(t.transfer_speed_mps * 1000)), int(round(t.hold_timeout_s)), 0)
     return head + struct.pack("<I", crc32(head)) + body
 
 
@@ -85,7 +98,7 @@ def from_bytes(b: bytes) -> Trj:
     (crc_h,) = struct.unpack_from("<I", b, HEADER.size)
     if crc32(head) != crc_h:
         raise ValueError(".trj header CRC mismatch")
-    _, ver, hsize, did, _, rate, n, t0, hn, he, hd, yaw, crc_s = HEADER.unpack(head)
+    _, ver, hsize, did, _, rate, n, t0, hn, he, hd, yaw, crc_s, batch, nb, gap, climb, xfer, hold, _ = HEADER.unpack(head)
     if ver != VERSION:
         raise ValueError(f".trj version {ver} not supported")
     body = b[hsize:hsize + n * SAMPLE.itemsize]
@@ -93,7 +106,8 @@ def from_bytes(b: bytes) -> Trj:
         raise ValueError(".trj samples truncated or corrupt")
     s = np.frombuffer(body, SAMPLE)
     return Trj(did, rate, t0, np.array([hn, he, hd]), yaw, s["pos"].astype(float), s["vel"].astype(float),
-               s["acc"].astype(float), s["rgb"].astype(float))
+               s["acc"].astype(float), s["rgb"].astype(float), batch, nb, gap / 1000, climb / 1000, xfer / 1000,
+               float(hold))
 
 
 def write_trj(path, t: Trj) -> bytes:

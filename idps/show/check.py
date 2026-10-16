@@ -48,6 +48,7 @@ class ShowReport:
     duration_s: float
     findings: list[Finding] = field(default_factory=list)
     stats: dict = field(default_factory=dict)
+    stats_pads: dict = field(default_factory=dict)     # take-off / landing durations and closest approaches
 
     @property
     def ok(self) -> bool:
@@ -94,8 +95,11 @@ def _accel(track, t):
 
 
 def check_show(show: Show, site, cameras=None, placement: Placement | None = None,
-               limits: Limits | None = None, coverage_dt_s: float = 0.25) -> ShowReport:
-    """site: idps.plan.site.Site (venue, origin, requirements). cameras: planned cameras (optional)."""
+               limits: Limits | None = None, coverage_dt_s: float = 0.25, pads=None) -> ShowReport:
+    """site: idps.plan.site.Site (venue, origin, requirements). cameras: planned cameras (optional).
+    pads: idps.show.pads.PadLayout: the drones take off from charging pads to the show's first frame
+    (the initial grid, in layers by batch) and land back from its last; checks those flights and
+    downwash (no drone hovering above another) through the show too."""
     pl = placement or Placement()
     lim = limits or Limits()
     f = site.frame
@@ -168,7 +172,7 @@ def check_show(show: Show, site, cameras=None, placement: Placement | None = Non
                        f"{names[i]} and {names[j]} come within {D[p, k]:.2f} m of each other "
                        f"(minimum {lim.min_separation_m:g} m).")
         homes = P[:, 0]
-        for i in range(N):
+        for i in range(N if pads is None else 0):     # with pads the show starts in the air
             for j in range(i + 1, N):
                 dist = float(np.linalg.norm(homes[i, :2] - homes[j, :2]))
                 if dist < lim.min_home_spacing_m:
@@ -176,6 +180,32 @@ def check_show(show: Show, site, cameras=None, placement: Placement | None = Non
                                                 tuple(np.round(homes[i], 2)),
                                                 f"{names[i]} and {names[j]} start {dist:.2f} m apart "
                                                 f"(minimum {lim.min_home_spacing_m:g} m)."))
+
+    # --- charging pads: take-off to the initial grid, landing from the final grid; downwash
+    if pads is not None:
+        from idps.show.export import drone_ids
+        from idps.show.pads import DOWNWASH_DEPTH_M, DOWNWASH_RADIUS_M, check_sequence, downwash_pairs
+        ids = drone_ids(show)
+        for i, j, k in downwash_pairs(P, active, DOWNWASH_RADIUS_M, DOWNWASH_DEPTH_M):
+            _merge(rep.findings, "downwash", "error", (names[i], names[j]), t[k], P[i, k],
+                   f"{names[i]} hovers above {names[j]} ({P[j, k, 2] - P[i, k, 2]:.1f} m below, within "
+                   f"{DOWNWASH_RADIUS_M:g} m sideways): {names[j]} flies in its downwash.")
+        first = np.array([P[i, np.flatnonzero(active[i])[0]] for i in range(N)])
+        last = np.array([P[i, np.flatnonzero(active[i])[-1]] for i in range(N)])
+        problems, seq = check_sequence(pads, ids, first, last)
+        if any(kind in ("transit", "downwash") for kind, *_ in problems):
+            from idps.show.pads import smallest_safe_gap
+            safe = smallest_safe_gap(pads, ids, first, last)
+            rep.findings.append(Finding("pads", "error", (), 0.0, 0.0, (0, 0, 0),
+                                        f"Batch gap {pads.batch_gap_s:g} s is too short for take-off and landing at "
+                                        f"{pads.climb_speed_mps:g} m/s climb: drones would fly in each other's "
+                                        "downwash or too close over the pads. "
+                                        + (f"The smallest safe gap at these speeds is {safe:g} s "
+                                           "(batch_gap_s in the pads file), or climb faster."
+                                           if safe else "No gap up to 60 s works: check the pads and grid.")))
+        for kind, who, tk, ned, msg in problems:
+            rep.findings.append(Finding(kind, "error", tuple(f"drone {d}" for d in who), tk, tk, tuple(ned), msg))
+        rep.stats_pads = seq
 
     # --- camera coverage along the flight (the planner's accuracy model)
     covered = None

@@ -60,7 +60,7 @@ def drone_samples(track, placement: Placement, rate_hz: float, t0: float, t1: fl
 
 
 def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz: float = 20.0,
-               report: ShowReport | None = None, venue: dict | None = None) -> Path:
+               report: ShowReport | None = None, venue: dict | None = None, pads=None) -> Path:
     """Write drone_NNN.json and drone_NNN.trj per drone (by drone ID) plus manifest.json.
     Returns the manifest path."""
     pl = placement or Placement()
@@ -68,9 +68,15 @@ def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz:
     out.mkdir(parents=True, exist_ok=True)
     t0, t1 = show.t_start, show.duration
     drones = []
-    for k, d in zip(drone_ids(show), show.drones):
+    ids = drone_ids(show)
+    nb = pads.n_batches(ids) if pads is not None else 0
+    for k, d in zip(ids, show.drones):
         S = drone_samples(d, pl, rate_hz, t0, t1)
-        home = S[0, 1:4]
+        # with charging pads the drone's home is its pad slot (the show starts in the air)
+        home = pads.home_ned(k) if pads is not None else S[0, 1:4]
+        seq = dict(batch=pads.batch(k), n_batches=nb, batch_gap_s=pads.batch_gap_s,
+                   climb_speed_mps=pads.climb_speed_mps, transfer_speed_mps=pads.transfer_speed_mps,
+                   hold_timeout_s=pads.hold_timeout_s) if pads is not None else {}
         doc = {
             "format": FORMAT, "drone_id": k, "name": d.name, "frame": "NED",
             "frame_note": "metres from the venue origin (calibration square corner): N along its long arm, "
@@ -85,14 +91,16 @@ def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz:
         (out / name).write_text(text)
         trj_name = f"drone_{k:03d}.trj"                   # what goes on the drone's SD card (D22)
         b = write_trj(out / trj_name, Trj(k, rate_hz, float(S[0, 0]), home, 0.0, S[:, 1:4], S[:, 4:7],
-                                         S[:, 7:10], S[:, 10:13]))
-        drones.append({"drone_id": k, "name": d.name, "file": name, "home_ned": doc["home_ned"],
+                                         S[:, 7:10], S[:, 10:13], **seq))
+        extra = {"pad": pads.pad_slot(k)[0], "slot": pads.pad_slot(k)[1], "batch": pads.batch(k)} if pads else {}
+        drones.append({"drone_id": k, "name": d.name, "file": name, "home_ned": doc["home_ned"], **extra,
                        "sha256": hashlib.sha256(text.encode()).hexdigest(),
                        "trj": trj_name, "trj_bytes": len(b), "trj_crc32": crc32(b)})
     manifest = {
         "format": "idps-show/1", "source": show.source, "duration_s": float(t1 - t0), "rate_hz": rate_hz,
         "placement": {"axes": pl.axes, "rotate_deg": pl.rotate_deg, "offset_ned": list(pl.offset_ned)},
         "venue": venue or {}, "drones": drones,
+        "pads": pads.to_dict() if pads is not None else None,
         "check": None if report is None else {"ok": report.ok, "summary": report.summary(),
                                               "errors": sum(f.severity == "error" for f in report.findings),
                                               "warnings": sum(f.severity == "warning" for f in report.findings)},

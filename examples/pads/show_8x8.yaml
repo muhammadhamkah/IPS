@@ -1,0 +1,16 @@
+# Charging pads for the 8 x 8 m show floor (examples/sites/show_8x8.yaml): 5 pads in a row along
+# the South edge, 1 m centre to centre, 4 drones each (2 x 2, 0.2 m apart). Drone ID =
+# 4 x (pad - 1) + slot; slot = take-off batch. See idps/show/pads.py.
+pads:              # centres, venue N and E (m)
+  - [-3.2, -2.0]
+  - [-3.2, -1.0]
+  - [-3.2,  0.0]
+  - [-3.2,  1.0]
+  - [-3.2,  2.0]
+slot_spacing_m: 0.2
+layers_m: [1, 2, 3, 4]       # batch 1..4 fly at these heights in the initial and final grid
+batch_gap_s: 8                # 5 s is too short at these speeds: the 0.2 m slots put a climbing
+                             # drone in the downwash of the one above (idps-show check says the smallest safe gap)
+hold_timeout_s: 60
+climb_speed_mps: 1.0
+transfer_speed_mps: 1.0

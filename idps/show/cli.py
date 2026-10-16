@@ -32,6 +32,13 @@ def _placement(a):
     return Placement(a.axes.upper(), a.rotate, off)
 
 
+def _pads(a):
+    if not getattr(a, "pads", None):
+        return None
+    from idps.show.pads import load_pads
+    return load_pads(a.pads)
+
+
 def _limits(a):
     from idps.show.check import Limits
     return Limits(max_speed_h_mps=a.max_speed, max_accel_mps2=a.max_accel, min_separation_m=a.min_sep,
@@ -40,6 +47,13 @@ def _limits(a):
 
 def _print_report(rep, limit=25):
     print(rep.summary())
+    if rep.stats_pads:
+        s = rep.stats_pads
+        print("Charging pads: take-off {:.1f} s (closest {:.2f} m), landing after the show {:.1f} s (closest {:.2f} m), "
+              "after a hold timeout {:.1f} s (closest {:.2f} m).".format(
+                  s["take-off"], s["take-off closest"], s["landing after the show"],
+                  s["landing after the show closest"], s["landing after a hold timeout"],
+                  s["landing after a hold timeout closest"]))
     for f in rep.findings[:limit]:
         span = f"{f.t:6.2f} s" + (f"–{f.t_last:.2f} s" if f.t_last > f.t + 1e-9 else "")
         mark = "ERROR  " if f.severity == "error" else "warning"
@@ -53,7 +67,7 @@ def cmd_check(a) -> int:
     from idps.show.readers import load_show
     site, cams = _site_and_cams(a)
     show = load_show(a.show)
-    rep = check_show(show, site, cams, _placement(a), _limits(a))
+    rep = check_show(show, site, cams, _placement(a), _limits(a), pads=_pads(a))
     if not cams:
         print("(no --plan given: camera coverage along the paths is not checked)")
     _print_report(rep)
@@ -67,12 +81,14 @@ def cmd_export(a) -> int:
     site, cams = _site_and_cams(a)
     show = load_show(a.show)
     pl = _placement(a)
-    rep = check_show(show, site, cams, pl, _limits(a))
+    pads = _pads(a)
+    rep = check_show(show, site, cams, pl, _limits(a), pads=pads)
     _print_report(rep, limit=10)
     if not rep.ok and not a.force:
         print("Not exported: fix the errors above, or pass --force to export anyway (not for flying).")
         return 1
-    path = export_px4(show, a.out, pl, a.rate, rep, venue={"site": str(a.site), "origin": site.frame.to_dict()})
+    path = export_px4(show, a.out, pl, a.rate, rep, venue={"site": str(a.site), "origin": site.frame.to_dict()},
+                      pads=pads)
     print(f"wrote {len(show.drones)} drone files (by drone ID) and {path}")
     return 0
 
@@ -216,6 +232,8 @@ def main(argv=None) -> int:
                        help="show axes: ENU = Blender +X East, +Y North, +Z up (default)")
         p.add_argument("--rotate", type=float, default=0.0, help="turn the show clockwise (degrees)")
         p.add_argument("--offset", help="move the show: N,E,D metres")
+        p.add_argument("--pads", help="charging pads (pads.yaml): the drones take off from them in batches to the "
+                       "show's first frame and land back from its last (see idps/show/pads.py)")
 
     def limit_args(p):
         p.add_argument("--max-speed", type=float, default=3.0, help="horizontal speed limit (m/s)")

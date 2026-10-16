@@ -59,7 +59,8 @@ def square5(side: float, centre, vertical: bool = True) -> np.ndarray:
 def min_distance(P: np.ndarray) -> float:
     """Smallest distance between any two drones over time. P: (N, T, 3)."""
     N = len(P)
-    return min(float(np.linalg.norm(P[i] - P[j], axis=1).min()) for i in range(N) for j in range(i + 1, N))
+    return min((float(np.linalg.norm(P[i] - P[j], axis=1).min()) for i in range(N) for j in range(i + 1, N)),
+               default=float("inf"))
 
 
 class Choreography:
