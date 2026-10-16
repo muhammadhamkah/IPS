@@ -11,7 +11,10 @@
 # and the engine's "exposure to send" (out/loop/engine.log): EV_DELAY_MS should match the latter.
 # Env: N (drones, 1-20), OUT (default out/loop), EV_DELAY_MS (default 28), PX4_BUILD,
 #      IMU_NOISE (default 0.1, needs sih_noise_scale.patch), WORKERS (camera processes, default 3).
-#      DROP_LATE=1 (cameras: the engine does not send positions over 30 ms later than EV_DELAY_MS).
+#      Cameras: the engine stamps positions with their exposure time (idps-engine live --timesync;
+#      the drones' EKF2_EV_DELAY 0, EKF2_DELAY_MAX EV_HORIZON_MS, default 50) and sends none older
+#      than that. ARRIVAL_STAMPS=1: the old way, PX4 stamps on arrival, EKF2_EV_DELAY EV_DELAY_MS
+#      (DROP_LATE=1: no positions over 30 ms later than that).
 set -e
 MODE=${1:-cameras}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -92,7 +95,15 @@ json.dump(m, open(p, "w"), indent=1)
 PY
 
 echo "== $N PX4 drones (micro60)"
-if [ "$MODE" = vision ]; then export SITL_VISION="${SITL_VISION:-$EV_DELAY_MS 2 120}"; fi
+TS_ARGS=""
+if [ "$MODE" = vision ]; then
+  export SITL_VISION="${SITL_VISION:-$EV_DELAY_MS 2 120}"
+elif [ -z "$ARRIVAL_STAMPS" ]; then
+  # cameras: the engine stamps each position with its exposure time and answers the drones' clock
+  # sync, so EKF2 fuses it at that time (no fixed delay) if it is under EV_HORIZON_MS old
+  export EV_DELAY_MS=0 EV_HORIZON_MS=${EV_HORIZON_MS:-50}
+  TS_ARGS="--timesync --horizon-ms $EV_HORIZON_MS"
+fi
 # progress (each drone up, or started again) shows here; everything else goes to sitl.log
 set +e
 DRONE=micro60 PX4_DIR=$PX4_DIR PX4_PARAM_SDLOG_MODE=${PX4_PARAM_SDLOG_MODE:--1} \
@@ -139,7 +150,8 @@ else
   PIDS+=($!); disown $!
   while [ ! -s "$OUT/calibration.yaml" ]; do sleep 0.5; done; sleep 1
   "$PY" -m idps.engine.cli live --port 5600 --calib "$OUT/calibration.yaml" --site examples/sites/show_8x8.yaml \
-      $L14 ${DROP_LATE:+--ev-delay-ms "$EV_DELAY_MS"} -o "$OUT/positions.csv" > "$OUT/engine.log" 2>&1 &
+      $L14 $TS_ARGS ${DROP_LATE:+--ev-delay-ms "$EV_DELAY_MS"} \
+      -o "$OUT/positions.csv" > "$OUT/engine.log" 2>&1 &
   PIDS+=($!); disown $!; TRACK=$OUT/track.csv
   echo "   waiting 30 s for the cameras to identify every drone"; sleep 30 & wait $!
   tail -1 "$OUT/cams.log"; tail -1 "$OUT/engine.log"

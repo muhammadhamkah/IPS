@@ -66,10 +66,14 @@ MAX_LATE_S = 0.03   # a position this much later than EKF2_EV_DELAY says is not 
                     # harm (EKF2 predicts with the IMU), a stale one pulls a moving drone back
 
 
-def too_late(age_s: float, ev_delay_ms: float | None) -> bool:
-    """PX4 takes every position as filmed EKF2_EV_DELAY before it arrived; one held up longer (a
-    busy PC, a frame held up) would look newer than it is: 5 cm behind at 1 m/s if 50 ms late.
-    (Moving it along the engine's velocity instead made things worse: that velocity is too noisy.)"""
+def too_late(age_s: float, ev_delay_ms: float | None, horizon_ms: float | None = None) -> bool:
+    """Arrival stamps (no --timesync): PX4 takes every position as filmed EKF2_EV_DELAY before it
+    arrived; one held up longer (a busy PC, a frame held up) would look newer than it is: 5 cm
+    behind at 1 m/s if 50 ms late. (Moving it along the engine's velocity instead made things
+    worse: that velocity is too noisy.) Exposure stamps (--timesync): EKF2 fuses a position at its
+    own time if it is younger than EKF2_DELAY_MAX (``horizon_ms``), an older one as if that old."""
+    if horizon_ms is not None:
+        return age_s > horizon_ms / 1000
     return ev_delay_ms is not None and age_s - ev_delay_ms / 1000 > MAX_LATE_S
 
 
@@ -83,10 +87,13 @@ def cmd_live(a) -> int:
     frame = load_site(a.site).frame
     eng = Engine(load_calibration(a.calib), EngineConfig(reorder_s=a.reorder_ms / 1000), frame=frame)
     ing = Ingest()
-    mavs = {}
+    mavs, ts = {}, None
     if a.link:
         from idps.show.cli import _connect
         mavs = _connect(a)
+        if a.timesync:
+            from idps.show.fleet import TimesyncResponder
+            ts = TimesyncResponder(mavs).start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     for size in (8 << 20, 4 << 20, 2 << 20, 1 << 20):    # macOS refuses buffers over its limit (Linux caps them)
         try:
@@ -119,14 +126,19 @@ def cmd_live(a) -> int:
                 seen[o.marker_id] = (now, o.n_cams)
                 mav = mavs.get(o.marker_id)                 # drone ID = marker ID (D21)
                 if mav is not None:
-                    # PX4 stamps a position on arrival; EKF2_EV_DELAY is the exposure-to-arrival
+                    # --timesync: stamped with its exposure time, on the clock the drone syncs to;
+                    # else PX4 stamps it on arrival and EKF2_EV_DELAY is the exposure-to-arrival
                     # time, so the status line reports the part of it spent up to here
                     age = (now_ns - o.t_ns) * 1e-9
                     ages.append(age)
-                    if too_late(age, a.ev_delay_ms):
+                    if too_late(age, a.ev_delay_ms, a.horizon_ms if ts else None):
                         dropped += 1
                     else:
-                        mav.mav.odometry_send(**odometry_fields(o.ned, int(now * 1e6), 0.0, v))
+                        f = odometry_fields(o.ned, o.t_ns // 1000 if ts else int(now * 1e6), 0.0, v)
+                        if ts:
+                            ts.send(o.marker_id, lambda m, f=f: m.mav.odometry_send(**f))
+                        else:
+                            mav.mav.odometry_send(**f)
                         sent += 1
                 if w:
                     w.writerow([o.t_ns, o.marker_id, *(f"{x:.4f}" for x in o.ned), *(f"{x:.3f}" for x in v),
@@ -137,11 +149,14 @@ def cmd_live(a) -> int:
                        if ages else "")
                 print(f"{len(ing.stations)} stations, {eng.stats['frames']} frames, {eng.n_live_tracks} tracks; "
                       f"drones with positions: {sorted(live) or 'none'}; sent {sent}{lat}"
-                      + (f"; {dropped} too late, not sent" if dropped else ""), flush=True)
+                      + (f"; {dropped} too late, not sent" if dropped else "")
+                      + (f"; clock sync answers {ts.answered}" if ts else ""), flush=True)
                 last_print, ages = now, []
     except KeyboardInterrupt:
         pass
     finally:
+        if ts:
+            ts.stop()
         if out_f:
             out_f.close()
     return 0
@@ -171,6 +186,11 @@ def main(argv=None) -> int:
     lv.add_argument("--reorder-ms", type=float, default=8.0, help="wait for late packets (Wi-Fi stations: ~25)")
     lv.add_argument("--ev-delay-ms", type=float, help="the drones' EKF2_EV_DELAY: a position more than 30 ms "
                     "older than that when it would be sent is not sent")
+    lv.add_argument("--timesync", action="store_true",
+                    help="answer the drones' TIMESYNC with the cameras' clock and stamp each position with its "
+                         "exposure time (drones: EKF2_EV_DELAY 0, EKF2_DELAY_MAX = --horizon-ms)")
+    lv.add_argument("--horizon-ms", type=float, default=50.0,
+                    help="with --timesync: the drones' EKF2_DELAY_MAX; an older position is not sent")
     a = ap.parse_args(argv)
     return {"replay": cmd_replay, "live": cmd_live}[a.cmd](a)
 

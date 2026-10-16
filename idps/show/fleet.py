@@ -121,6 +121,64 @@ class Fleet:
         return n
 
 
+MAVLINK_MSG_ID_TIMESYNC = 111
+MAV_CMD_SET_MESSAGE_INTERVAL = 511
+TIMESYNC_HZ = 50.0          # PX4's own TIMESYNC requests on the engine's link: its clock offset filter
+                            # trusts the estimate after 500 answers (10 s at this rate)
+
+
+class TimesyncResponder:
+    """Answers each drone's MAVLink TIMESYNC requests with the cameras' clock, so PX4 learns the
+    offset to that clock and takes each ODOMETRY ``time_usec`` (a position's exposure time) as
+    when the position was true. Without it PX4 stamps a position on arrival and EKF2_EV_DELAY
+    has to stand for its age: one held up 50 ms (a busy PC, Wi-Fi) is then fused as newer than
+    it is, centimetres behind a moving drone. A thread of its own answers at once (PX4 drops
+    answers that took over 10 ms)."""
+
+    def __init__(self, mavs: dict, clock_ns=time.time_ns, hz: float = TIMESYNC_HZ):
+        import threading
+        self.mavs, self.clock_ns, self.answered = dict(mavs), clock_ns, 0
+        self.locks = {did: threading.Lock() for did in self.mavs}
+        for did, m in self.mavs.items():
+            with self.locks[did]:
+                m.mav.command_long_send(m.target_system, m.target_component, MAV_CMD_SET_MESSAGE_INTERVAL, 0,
+                                        MAVLINK_MSG_ID_TIMESYNC, int(1e6 / hz), 0, 0, 0, 0, 0)
+        self._stop = False
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+        return self
+
+    def stop(self):
+        self._stop = True
+
+    def send(self, did: int, fn):
+        """Send on drone ``did``'s link from another thread (pymavlink's sender is not thread safe)."""
+        with self.locks[did]:
+            fn(self.mavs[did])
+
+    def _run(self):
+        import select
+        socks = {m.port.fileno(): (did, m) for did, m in self.mavs.items() if hasattr(m, "port")}
+        while not self._stop:
+            ready, _, _ = select.select(list(socks), [], [], 0.2)
+            for fd in ready:
+                did, m = socks[fd]
+                while True:
+                    try:
+                        msg = m.recv_msg()
+                    except OSError:
+                        msg = None
+                    if msg is None:
+                        break
+                    if msg.get_type() == "TIMESYNC" and msg.tc1 == 0:
+                        now = self.clock_ns()
+                        with self.locks[did]:
+                            m.mav.timesync_send(now, msg.ts1)
+                        self.answered += 1
+
+
 def parse_links(specs) -> dict:
     """['7=udpout:192.168.50.107:14550', ...] -> {7: 'udpout:...'} (drone ID = DEVICE)"""
     out = {}

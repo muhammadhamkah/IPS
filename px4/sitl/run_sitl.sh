@@ -155,6 +155,20 @@ for ((i=0;i<N;i++)); do
       sleep 0.5
     done
   fi
+  # The engine's link (onboard payload, udp 14030+i): PX4 starts it at 4000 B/s full of telemetry,
+  # which leaves its clock sync requests (TIMESYNC) under 2 a second. Only those and the heartbeat
+  # here, so idps-engine live --timesync can ask for 50 a second.
+  # (stopping takes a moment: until then the start fails with the port in use, so retry; the log
+  # line to look for is the new link's, as the old one's says the same ports)
+  PX4C_S=30 px4c "$B/bin/px4-mavlink" --instance $i stop -u $((14280+i)) >/dev/null 2>&1 || true
+  for ((t=0;;t++)); do
+    PX4C_S=30 px4c "$B/bin/px4-mavlink" --instance $i start -x -u $((14280+i)) -r 20000 -f -m custom \
+      -o $((14030+i)) >/dev/null 2>&1
+    grep -q "Custom, data rate: 20000 B/s on udp port $((14280+i)) remote port $((14030+i))" \
+      "$B/rootfs/$i/out.log" 2>/dev/null && break
+    [ $t -ge 20 ] && fail $i "could not restart its engine link (udp $((14030+i)))"
+    sleep 0.5
+  done
   PX4C_S=30 px4c "$B/bin/px4-mavlink" --instance $i start -u $((14700+i)) -o $((14800+i)) -m custom -r 400000 \
     >/dev/null 2>&1 || link_up $i $((14700+i)) $((14800+i)) \
     || fail $i "could not open its truth link (MAVLink on udp $((14700+i)))"

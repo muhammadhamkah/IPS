@@ -103,10 +103,14 @@ The delay is mostly fixed by design:
 * the station's own processing (about 3 ms);
 * the network (about 2 ms).
 
-PX4 is told this delay with `EKF2_EV_DELAY`. It stamps each position on arrival, so one that
-arrives later than that (a busy PC, a held-up frame) would look newer than it is: with
-`--ev-delay-ms` set to the drones' `EKF2_EV_DELAY`, `live` does not send a position more than
-30 ms older than that (a short gap does no harm: EKF2 predicts with the IMU).
+With `--timesync` (use it), `live` answers each drone's MAVLink `TIMESYNC` with the cameras'
+clock and stamps every position with its exposure time; PX4 then fuses it at that time,
+however long it took to arrive (`EKF2_EV_DELAY` 0). A position older than `--horizon-ms` (the
+drones' `EKF2_DELAY_MAX`, 50 ms) is not sent: a short gap does no harm, EKF2 predicts with the
+IMU. Without it, PX4 stamps each position on arrival and is told the delay with
+`EKF2_EV_DELAY`, so one that arrives later than that (a busy PC, a held-up frame) looks newer
+than it is: with `--ev-delay-ms` set to the drones' `EKF2_EV_DELAY`, `live` does not send a
+position more than 30 ms older than that.
 
 **Two things made the difference beyond C++:**
 * Each dot is read from the packet straight into arrays.
@@ -127,7 +131,7 @@ idps-sim run examples/scenarios/venue_swarm_50.yaml -o out/sim
 idps-engine replay out/sim/packets.idpsraw --calib out/sim/calibration.yaml --truth out/sim/truth.csv [-o positions.csv]
 
 idps-engine live --port 5600 --calib calibration.yaml --site venue.yaml \
-    --link 1=udpout:192.168.50.101:14550 --link 2=udpout:192.168.50.102:14550 --ev-delay-ms 30 -o positions.csv
+    --link 1=udpout:192.168.50.101:14550 --link 2=udpout:192.168.50.102:14550 --timesync -o positions.csv
 ```
 
 * `--truth` scores the output against the simulator's ground truth.

@@ -273,8 +273,9 @@ Details are in `px4/README.md`.
 **PX4 parameters:**
 * external vision: `EKF2_EV_CTRL` = horizontal position + vertical position + yaw;
   `EKF2_HGT_REF` = vision;
-* `EKF2_EV_DELAY` = the measured latency from the camera exposure to PX4 (positions travel
-  over Wi-Fi, so measure it on the real link);
+* `EKF2_EV_DELAY` = 0 and `EKF2_DELAY_MAX` = 50 ms with `idps-engine live --timesync`
+  (positions carry their exposure time); without it, `EKF2_EV_DELAY` = the measured latency
+  from the camera exposure to PX4 (positions travel over Wi-Fi, so measure it on the real link);
 * `EKF2_MAG_TYPE` = None. PX4's local frame then *is* the venue's NED frame.
 
 **Failsafes:**

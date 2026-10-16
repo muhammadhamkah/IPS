@@ -79,8 +79,8 @@ clone also needs a NuttX tag for the version script:
 | `EKF2_HGT_REF` | 3 (vision) | Height from IDPS |
 | `EKF2_GPS_CTRL`, `EKF2_BARO_CTRL` | 0 | Indoors: IDPS only |
 | `EKF2_MAG_TYPE` | 5 (none), and `SYS_HAS_MAG` 0 | Heading comes from IDPS as 0 = North (D20, R20) |
-| `EKF2_EV_DELAY` | measured | Camera exposure to PX4: what `idps-engine live` reports as "exposure to send", plus Wi-Fi |
-| `EKF2_DELAY_MAX` | `EKF2_EV_DELAY` + 10 ms | EKF2 fuses this far in the past and predicts the rest from the IMU. PX4's 200 ms default leaves centimetres of IMU drift in every position |
+| `EKF2_EV_DELAY` | 0 | With `idps-engine live --timesync` each position carries its exposure time (below). Without it: the measured exposure-to-PX4 delay ("exposure to send", plus Wi-Fi) |
+| `EKF2_DELAY_MAX` | 50 ms (`--horizon-ms`) | EKF2 fuses this far in the past and predicts the rest from the IMU; positions older than this are not sent. PX4's 200 ms default leaves centimetres of IMU drift in every position |
 | `MPC_TKO_RAMP_T` | 0.5 s | PX4 eases into a take-off over 3 s by default, while the show file climbs from its first second |
 | `EKF2_EV_POS_X/Y/Z` | marker offset | If the marker isn't at the reference point (R16) |
 | `COM_OF_LOSS_T`, `COM_OBL_RC_ACT` | e.g. 0.5 s, Land | If the module stops streaming |
@@ -88,6 +88,13 @@ clone also needs a NuttX tag for the version script:
 
 * **IDPS positions** must be sent as `ODOMETRY` with `estimator_type` VISION. PX4 routes MOCAP
   to a topic its estimator (EKF2) doesn't read. `idps.show.fleet` does this.
+* **Exposure stamps (`idps-engine live --timesync`).** The engine answers each drone's MAVLink
+  `TIMESYNC` requests with the cameras' clock (PTP, the PC's system clock) and asks for 50 a
+  second; PX4 trusts its offset after 500 answers (10 s) and then takes each `ODOMETRY`
+  `time_usec` as when the position was true, so a position held up by a busy PC or Wi-Fi is
+  fused at its own time instead of as a fresh one. The engine's MAVLink link to the drone must
+  have room for that (`mavlink start ... -m custom -r 20000` carries only the heartbeat and
+  `TIMESYNC`; PX4's onboard link at 4000 B/s gives under 2 a second).
 
 ## Simulator test (no hardware)
 
@@ -278,8 +285,9 @@ engine):
 * **Flight tracking is about as good as with the perfect-position stand-in** (8–11 cm median,
   about 30 cm p95). It comes from PX4 controlling the simulated quad (it wobbles about ±10 cm
   even on smooth parts of the path), not from the positions. Tune the real airframe.
-* **`idps-engine live` reports "exposure to send" every 2 s** (about 25–30 ms here): set
-  `EKF2_EV_DELAY` to it (`EV_DELAY_MS` for `run_sitl.sh`), plus the Wi-Fi delay on real drones.
+* **`idps-engine live` reports "exposure to send" every 2 s** (about 25–30 ms here). With
+  `--timesync` it only has to stay under `EKF2_DELAY_MAX`; without, set `EKF2_EV_DELAY` to it
+  (`EV_DELAY_MS` for `run_sitl.sh`), plus the Wi-Fi delay on real drones.
 * **The loop needs a machine that runs it in real time.** On a 4-core cloud machine, 5 micro60
   drones and 11 cameras at 60 fps did not fit: with PX4 logging on, the cameras fell seconds
   behind, and PX4's simulated clocks (lockstep: each instance's own, a few % off and stalling
@@ -310,6 +318,19 @@ engine):
   late positions along the engine's velocity instead made it worse (that velocity is too noisy:
   p95 rose from 11–12 to 13–18 mm). Not proven in SITL yet (`DROP_LATE=1 run_loop.sh cameras`
   turns it on): 0 of 3 runs within 30 mm with it, on a 4-core machine whose stalls vary a lot.
+* **Positions stamped with their exposure time; the cameras film PX4's exact state at its own
+  time.** Two faults made every PX4 stall on the PC a push of several centimetres: (1) PX4
+  stamped each position on arrival, so one held up was fused as fresh; (2) the simulated
+  cameras filmed each drone from `HIL_STATE_QUATERNION`, which carries no timestamp, so its
+  states were placed at their arrival time and, after a stall, a burst of them all at once: the
+  cameras filmed the drone up to 3 cm behind where it was, and the engine sent that. (The exact
+  `DEBUG_VECT` "truth" was meant to be used, but only when the state's own time matched it,
+  which never happened.) Now `idps-engine live --timesync` stamps positions with their exposure
+  (`run_loop.sh cameras` does this, with `EKF2_EV_DELAY` 0 and `EKF2_DELAY_MAX` 50 ms), the
+  cameras film the "truth" at PX4's time, and a frame waits for a stalled simulator instead of
+  filming a guess. 5 drones on 4 cores, with every PX4 paused 80 ms (110-130 ms with the
+  catch-up) every 7 s of the show: before, worst 52 mm; after, 11.1 mm worst, 2.3-3.1 mm median,
+  the positions PX4 received 1.0-1.2 mm median from its true state (2.5 mm before).
 * **The default take-off ramp was the worst error.** Each drone sat on the ground for 1.5 s
   while the file climbed, then lurched up to 24 cm sideways: up to 64 cm off in height. With
   `MPC_TKO_RAMP_T` = 0.5 s it lifts off with the file.

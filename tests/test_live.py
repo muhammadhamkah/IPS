@@ -64,6 +64,25 @@ def test_sitl_drone_times_states_by_px4_clock_not_by_arrival():
     assert abs(got - (pc + 0.002)) < 0.003
 
 
+def test_sitl_drone_films_the_exact_truth_at_px4_time_through_a_burst():
+    """Snaps come from idps_show's exact "truth" at PX4's time. A PX4 simulator that stood still
+    sends 100 ms of states in one burst: each is still placed at its own time (HIL_STATE_QUATERNION
+    has no timestamp, and stamping on arrival filmed the drone centimetres behind)."""
+    d = SitlDrone(0, 1, [1.0, 2.0, 0.0], 0.0, Frame())
+    got = []
+    d.publish = got.append
+    d._on_state(0.0, _hil(vel=(1.0, 0, 0)))
+    for k in range(100):                                              # 1 m/s North, 200 Hz, then a stall
+        px4 = 10.0 + k * 0.005
+        arrive = 0.5 + k * 0.005 if k < 60 else 0.5 + 0.55               # states 60-99 arrive together
+        d._on_truth(arrive, px4, [px4 - 10.0, 0.0, -1.0])
+    t = np.array([s[0] for s in got[1:]])                             # (the first: before any truth)
+    assert np.allclose(np.diff(t), 0.005, atol=1e-4)                  # each at its own time
+    assert np.allclose(got[-1][1:4], Frame().from_ned([1.0 + 0.495, 2.0, -1.0]))
+    d._on_state(0.95, _hil(n=5.0, vel=(1.0, 0, 0)))                   # with truth: no snap of its own
+    assert len(got) == 101
+
+
 def test_sitl_world_extrapolates_and_reads_consistently():
     frame = Frame()
     rows = [{"drone_id": 1, "home_ned": [0, 0, 0]}, {"drone_id": 2, "home_ned": [1, 0, 0]}]
@@ -85,7 +104,7 @@ def test_sitl_world_films_a_late_frame_where_the_drone_was():
         SitlWorld.write(w.arr, 0, np.r_[t, t, 0, 1, 1.0, 0, 0, 0, 0, 0.08, 0, 0, 1, 0])
     P, M, _, _ = w.state(1.555)                                       # 0.43 s behind the newest snap
     assert np.allclose(P[0], [1.555, 0, 1]) and np.allclose(M[0], [1.555, 0, 1.08])
-    assert np.allclose(w.state(0.2)[0][0], [1.31, 0, 1])              # older than the ring: from its oldest
+    assert np.allclose(w.state(0.2)[0][0], [0.35, 0, 1])              # older than the ring: from its oldest
 
 
 def test_cameras_filming_sitl_drones_feed_the_engine(tmp_path):
@@ -117,6 +136,42 @@ def test_cameras_filming_sitl_drones_feed_the_engine(tmp_path):
     for d in rows:
         want = np.array(d["home_ned"]) + [0, 0, -0.08]                  # the marker, 8 cm above the spot
         assert np.linalg.norm(last[d["drone_id"]].ned - want) < 0.005
+
+
+def test_live_exposures_are_stamped_on_the_system_clock():
+    """Frames are paced by time.monotonic, but stamped on time.time_ns (as PTP-synced cameras are):
+    the engine's ages and the drones' clock sync use the system clock."""
+    import time
+    from idps.sim.live import LiveSimulation, SitlWorld
+    sc = load_scenario(ROOT / "examples/scenarios/lab_three_drones.yaml")
+    t0 = time.monotonic() - 2.0
+    sim = LiveSimulation(sc, SitlWorld.__new__(SitlWorld), epoch_ns=0, t0=t0)
+    want = time.time_ns() - int((time.monotonic() - t0) * 1e9)
+    assert abs(sim.epoch_ns - want) < 5_000_000                       # 5 ms
+
+
+def test_live_frame_waits_for_a_stalled_simulator():
+    """A frame is held until the drone's state for its time arrives (a PX4 simulator that stood
+    still), not filmed where the drone was guessed to be; a drone silent for long holds nothing."""
+    import threading
+    import time
+    from idps.sim.live import LiveSimulation, SitlWorld
+    man = {"venue": {"origin": Frame().to_dict()},
+           "drones": [{"drone_id": 1, "home_ned": [0.0, 0.0, 0.0]}]}
+    sc, frame, rows = live_scenario(load_scenario(ROOT / "examples/scenarios/lab_three_drones.yaml"), man)
+    w = SitlWorld(rows, 0.0, frame)
+    snap = lambda t: np.r_[t, 0, 0, 1, 0, 0, 0, 0, 0, 0.08, 0, 0, 1, 0]
+    SitlWorld.write(w.arr, 0, snap(1.0))
+    t0 = time.monotonic() - 1.2                                    # the frame at 1.2 s is due now
+    sim = LiveSimulation(sc, w, epoch_ns=0, t0=t0)
+    threading.Timer(0.1, lambda: SitlWorld.write(w.arr, 0, snap(1.2))).start()
+    start = time.monotonic()
+    sim.pace(1.2)
+    assert 0.08 < time.monotonic() - start < 0.3
+    sim.t0 = time.monotonic() - 2.5                               # the frame at 2.5 s is due now, the drone
+    start = time.monotonic()                                       # silent since 1.2 s: stopped
+    sim.pace(2.5)
+    assert time.monotonic() - start < 0.05
 
 
 def test_explain_run_tells_a_simulator_stall_from_late_positions(tmp_path):

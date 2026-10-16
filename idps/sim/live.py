@@ -30,7 +30,8 @@ from idps.sim.scenario import Scenario, SimDrone
 R_EARTH = 6378137.0
 TRUTH_PORT = 14800          # run_sitl.sh: instance i sends its true state to 14800 + i
 SMOOTH_TAU_S = 0.3          # see SitlDrone._on_state
-CLOCK_CREEP = 0.05          # see SitlDrone._pc_time
+CLOCK_CREEP = 0.01          # see SitlDrone._pc_time
+TRUTH_TIMEOUT_S = 0.5       # no DEBUG_VECT "truth" for this long: snaps from HIL_STATE_QUATERNION
 
 
 def quat_to_R(q) -> np.ndarray:
@@ -61,7 +62,8 @@ class SitlDrone:
         self.samples = 0
         self._p = self._v = None      # smoothed NED position and velocity
         self._origin = None
-        self._exact = None            # (PX4 time s, NED position) from DEBUG_VECT "truth"
+        self._att = None              # latest attitude quaternion (HIL_STATE_QUATERNION)
+        self._truth_at = None         # when the latest DEBUG_VECT "truth" arrived (s, PC)
         self._clock = None            # PC time - PX4 time (s): see _pc_time
         self.track = None             # file: idps_show's tracking error (DEBUG_FLOAT_ARRAY "track")
         self.clock = None             # file: PX4's clock against the PC's, per "truth" message (explain_run.py)
@@ -87,7 +89,7 @@ class SitlDrone:
             if kind == "HIL_STATE_QUATERNION":
                 self._on_state(time.monotonic() - self.t0, h)
             elif kind == "DEBUG_VECT" and h.name.startswith("truth"):
-                self._exact = (h.time_usec * 1e-6, self.home + [h.x, h.y, h.z])
+                self._on_truth(time.monotonic() - self.t0, h.time_usec * 1e-6, [h.x, h.y, h.z])
                 if self.clock is not None:
                     self.clock.write(f"{self.drone_id},{time.monotonic():.4f},{h.time_usec * 1e-6:.4f}\n")
             elif kind == "DEBUG_FLOAT_ARRAY" and h.name.startswith("track") and self.track is not None:
@@ -98,7 +100,7 @@ class SitlDrone:
         Stamping states when they are received would add the receiving thread's jitter (tens of
         ms, so centimetres at show speeds) to where the cameras film the drone. The offset follows
         the quickest deliveries: it drops at once to a smaller one and otherwise creeps up by
-        CLOCK_CREEP (the simulator's clock may run a few % off the PC's)."""
+        CLOCK_CREEP (PX4 SITL keeps the PC's clock, with sih_realtime_pacing.patch or nolockstep)."""
         off = received - px4_s
         if self._clock is None:
             self._clock = (off, px4_s)
@@ -107,13 +109,23 @@ class SitlDrone:
             self._clock = (min(off, prev + CLOCK_CREEP * max(px4_s - at, 0.0)), px4_s)
         return px4_s + self._clock[0]
 
+    def _on_truth(self, received: float, px4_s: float, ned_rel):
+        """The exact position (DEBUG_VECT "truth" from idps_show, at PX4's time), with the latest
+        velocity and attitude: a snap timed by PX4's clock (_pc_time). After a PX4 simulator
+        stood still (a busy PC), its states arrive in a burst, each still at its own time."""
+        self._truth_at = received
+        if self._att is None:
+            return
+        self._publish(self._pc_time(received, px4_s), self.home + np.asarray(ned_rel, float), self._v, self._att)
+
     def _on_state(self, t: float, h):
-        """The exact position (DEBUG_VECT "truth", moved on to this message's time) is used when it
-        arrives. Without it: the message carries latitude and longitude in 1e-7 degrees, 1.1 cm
-        steps, far coarser than what the cameras resolve. North and East then integrate the (1 cm/s)
-        velocity and are pulled gently (SMOOTH_TAU_S) to the coarse position, so the drone the
-        cameras film moves smoothly; height comes in mm and is used directly. Every SITL drone starts
-        at its own latitude/longitude origin, which is its home spot."""
+        """Velocity and attitude for the snaps (HIL_STATE_QUATERNION carries no timestamp). Only
+        without "truth" messages (a PX4 without idps_show) is a snap made from it, timed on
+        arrival: latitude and longitude come in 1e-7 degrees, 1.1 cm steps, far coarser than what
+        the cameras resolve. North and East then integrate the (1 cm/s) velocity and are pulled
+        gently (SMOOTH_TAU_S) to the coarse position, so the drone the cameras film moves smoothly;
+        height comes in mm and is used directly. Every SITL drone starts at its own
+        latitude/longitude origin, which is its home spot."""
         lat, lon, alt = h.lat * 1e-7, h.lon * 1e-7, h.alt * 1e-3
         if self._origin is None:
             self._origin = (lat, lon, alt)
@@ -122,30 +134,32 @@ class SitlDrone:
                             math.radians(lon - o[1]) * R_EARTH * math.cos(math.radians(o[0])),
                             -(alt - o[2])]
         v = np.array([h.vx, h.vy, h.vz], float) * 0.01
-        px4_s = getattr(h, "time_usec", 0) * 1e-6
-        if px4_s > 0:
-            t = self._pc_time(t, px4_s)
-        if self._exact is not None and abs(px4_s - self._exact[0]) < 0.05:
-            p = self._exact[1] + v * (px4_s - self._exact[0])
-        elif self._p is None:
+        self._att = h.attitude_quaternion
+        if self._truth_at is not None and t - self._truth_at < TRUTH_TIMEOUT_S:
+            self._v = v
+            return
+        if self._p is None:
             p = meas
         else:
             dt = min(max(t - self._t, 0.0), 0.1)
             p = self._p + 0.5 * (self._v + v) * dt
             p[:2] += min(1.0, dt / SMOOTH_TAU_S) * (meas[:2] - p[:2])
             p[2] = meas[2]
-        self._p, self._v = p, v
-        R = quat_to_R(h.attitude_quaternion)
+        self._v = v
+        self._publish(t, p, v, h.attitude_quaternion)
+
+    def _publish(self, t: float, p, v, q):
+        R = quat_to_R(q)
         up = -R[:, 2]                                       # body up, NED
         tilt = math.degrees(math.acos(min(1.0, max(-1.0, -up[2]))))
-        self._t = t
+        self._t, self._p = t, p
         self.publish(np.concatenate([[t], self.W @ p + self.w0, self.W @ v, self.W @ (R @ self.offset_frd),
                                      self.W @ up, [tilt]]))
         self.samples += 1
 
 
 SNAP = 15                       # per drone: version, then the 14 numbers of a SitlDrone snap
-HISTORY = 64                    # snaps kept per drone (0.64 s at 100 Hz): a frame filmed late is
+HISTORY = 160                   # snaps kept per drone (0.8 s at 200 Hz): a frame filmed late is
                                 # still filmed where the drone was at the frame's time
 
 
@@ -228,6 +242,12 @@ class SitlWorld:
         if self.proc is not None:
             self.proc.terminate()
 
+    def newest(self) -> np.ndarray:
+        """Each drone's newest snap time (s, -inf before its first)."""
+        n = self.arr[:, 0, 0].astype(int)
+        t = self.arr[np.arange(len(n)), 1 + (n - 1) % HISTORY, 1]
+        return np.where(n > 0, t, -np.inf)
+
     def state(self, t: float):
         """Drone centres (D, 3), marker positions (D, 3), body up axes (D, 3), tilt (deg, D), as
         Simulation.state gives them: each drone at time t, interpolated between its stored snaps,
@@ -261,6 +281,10 @@ class SitlWorld:
         return P, P + out[:, 6:9], out[:, 9:12], out[:, 12]
 
 
+FRESH_S = 0.025                 # a frame waits for drone states newer than this before its time ...
+MAX_HOLD_S = 0.5                # ... for at most this long (then it films the guess, as before)
+
+
 class LiveSimulation(Simulation):
     """Simulation whose drones are the SITL drones, run against the wall clock."""
 
@@ -270,17 +294,41 @@ class LiveSimulation(Simulation):
         self.late = 0                                  # frames simulated more than 20 ms late
         self.lag = deque(maxlen=2400)                  # recent lag behind the wall clock (s)
 
+    @property
+    def epoch_ns(self) -> int:
+        """time.time_ns() at t = 0, read again for every frame: the exposures are stamped on the
+        PC's system clock, as PTP-synced cameras are, even where it runs a little off
+        time.monotonic (which paces the frames). The engine's ages and the drones' clock sync
+        (idps-engine live --timesync) are on the system clock."""
+        return time.time_ns() - int((time.monotonic() - self.t0) * 1e9)
+
+    @epoch_ns.setter
+    def epoch_ns(self, _):
+        pass
+
     def state(self, t: float):
         return self.world.state(t)
 
     def pace(self, t: float):
-        """Hold each frame until its exposure time on the wall clock."""
+        """Hold each frame until its exposure time on the wall clock, and until every drone's
+        state is known up to FRESH_S before it. A PX4 simulator that stood still (a busy PC)
+        sends nothing, then catches up in a burst; the frames meanwhile would film where the drone
+        was guessed to be (moved on by its velocity), and the engine would send those guesses.
+        Held, they film where it was, and reach the engine late, as real cameras' frames would
+        if the PC stalled. A drone silent for over a second (stopped) holds nothing up."""
         wait = self.t0 + t - time.monotonic()
         if wait > 0:
             time.sleep(wait)
-        elif wait < -0.02:
+        end = time.monotonic() + MAX_HOLD_S
+        while time.monotonic() < end:
+            newest = self.world.newest()
+            if not ((newest < t - FRESH_S) & (newest > t - 1.0)).any():
+                break
+            time.sleep(0.002)
+        late = time.monotonic() - (self.t0 + t)
+        if late > 0.02:
             self.late += 1
-        self.lag.append(max(0.0, -wait))
+        self.lag.append(max(0.0, late))
 
 
 def live_scenario(sc: Scenario, manifest: dict, n: int | None = None, marker_offset=(0.0, 0.0, 0.08)):

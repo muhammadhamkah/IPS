@@ -183,3 +183,31 @@ def test_live_does_not_send_a_stale_position():
     assert not too_late(0.5, None)              # no EKF2_EV_DELAY given: everything is sent
     assert not too_late(0.050, 28.0)
     assert too_late(0.070, 28.0)                # 42 ms later than PX4 takes it
+    # exposure stamps (--timesync): EKF2 fuses a position at its own time up to EKF2_DELAY_MAX old
+    assert not too_late(0.045, 0.0, horizon_ms=50.0)
+    assert too_late(0.055, 0.0, horizon_ms=50.0)
+
+
+def test_timesync_responder_answers_with_the_camera_clock():
+    """PX4's TIMESYNC request (tc1 0, ts1 its own clock) comes back with tc1 = the cameras' clock
+    and ts1 as sent, so PX4 learns the offset and takes ODOMETRY time_usec as exposure times."""
+    import time
+    from pymavlink import mavutil
+    from idps.show.fleet import TimesyncResponder
+    px4 = mavutil.mavlink_connection("udpin:127.0.0.1:0", source_system=7, source_component=1)
+    port = px4.port.getsockname()[1]
+    eng = mavutil.mavlink_connection(f"udpout:127.0.0.1:{port}", source_system=255, source_component=190)
+    eng.target_system, eng.target_component = 7, 1
+    ts = TimesyncResponder({7: eng}, clock_ns=lambda: 123_456_789_000).start()
+    try:
+        req = px4.recv_match(type="COMMAND_LONG", blocking=True, timeout=2)
+        assert req.command == 511 and req.param1 == 111 and req.param2 == 20000    # TIMESYNC at 50 Hz
+        px4.mav.timesync_send(0, 42_000)
+        rep = px4.recv_match(type="TIMESYNC", blocking=True, timeout=2)
+        assert (rep.tc1, rep.ts1) == (123_456_789_000, 42_000)
+        end = time.monotonic() + 1
+        while ts.answered < 1 and time.monotonic() < end:
+            time.sleep(0.01)
+        assert ts.answered == 1
+    finally:
+        ts.stop()
