@@ -722,7 +722,35 @@ void IdpsShow::run_pads(hrt_abstime now)
 		}
 	}
 
+	const TrackPhase phase = _state == State::Launching ? TRACK_TAKEOFF : _state == State::Landing ? TRACK_LANDING : TRACK_HOLD;
+	track(now, t, phase, sp.position, _start_pc != 0 ? h.t0 + (float)((double)(t - _start_pc) * 1e-6) : NAN);
 	publish(sp, now);
+}
+
+void IdpsShow::track(hrt_abstime now, int64_t t_pc, TrackPhase phase, const float plan[3], float show_t)
+{
+	// each simulated drone's local frame starts at its home spot (h.home in the venue frame)
+	if (!_have_gt) {
+		return;
+	}
+
+	const idps::TrjHeader &h = _file.header();
+	const float gt_pos[3] {_gt.x, _gt.y, _gt.z};
+	debug_array_s v{};
+	strncpy(v.name, "track", sizeof(v.name));
+
+	for (int i = 0; i < 3; i++) {
+		v.data[i] = gt_pos[i] + h.home[i] - plan[i];     // from where it should be, NED m
+		v.data[7 + i] = plan[i];                           // where it should be, venue NED m
+	}
+
+	v.data[3] = show_t;                                    // NaN before the start is known
+	v.data[4] = (float)phase;
+	const int64_t sec = t_pc / 1000000;                    // the PC's clock, in two parts (float32)
+	v.data[5] = (float)sec;
+	v.data[6] = (float)((double)(t_pc - sec * 1000000) * 1e-6);
+	v.timestamp = now;
+	_track_pub.publish(v);
 }
 
 bool IdpsShow::evaluate(float show_t, trajectory_setpoint_s &sp)
@@ -881,28 +909,20 @@ void IdpsShow::Run()
 
 	if (_have_gt) {
 		// simulator only: how far the drone is from the file at its own show time, unaffected by
-		// how the PC and the simulator's clocks run (each simulated drone starts at its home spot)
+		// how the PC and the simulator's clocks run
 		trajectory_setpoint_s plan{};
+		const float at = show_t - (float)SETPOINT_PERIOD * 0.5e-6f;
 
-		if (evaluate(show_t - (float)SETPOINT_PERIOD * 0.5e-6f, plan)) {
-			debug_array_s v{};
-			strncpy(v.name, "track", sizeof(v.name));
-
-			const float gt_pos[3] {_gt.x, _gt.y, _gt.z};
-
-			for (int i = 0; i < 3; i++) {
-				v.data[i] = gt_pos[i] + h.home[i] - plan.position[i];
-			}
-
-			v.data[3] = show_t;
-			v.timestamp = now;
-			_track_pub.publish(v);
+		if (evaluate(at, plan)) {
+			track(now, _start_pc - to_start, TRACK_SHOW, plan.position, at);
 		}
 	}
 
 	const float t_end = h.t0 + (float)(h.count - 1) / h.rate_hz;
 
-	if (show_t > t_end + 0.5f) {
+	// From pads, landing takes over at the end (it holds the final grid until this batch leaves,
+	// the first batch down right away); waiting longer put that batch's path partly behind it.
+	if (show_t > t_end + (h.batch > 0 ? 0.f : 0.5f)) {
 		if (h.batch > 0) {
 			// back to the pad from the final grid, last up first down
 			float last[3];

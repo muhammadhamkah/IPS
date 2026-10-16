@@ -79,7 +79,10 @@ def _clock_stall_ms(clock: np.ndarray, did: int, show0: float, a: float, b: floa
 
 def explain(folder, limit_mm: float = 30.0) -> list[str]:
     folder = Path(folder)
-    track = np.loadtxt(folder / "track.csv", delimiter=",", skiprows=1, ndmin=2)
+    from idps.sim.px4run import phase_times, read_track
+    track = read_track(folder / "track.csv")
+    track = np.column_stack([track[:, 0], phase_times(track), track[:, 2:5]])   # every phase, on show time
+    track = track[np.isfinite(track[:, 1])]
     m = re.search(r"PC clock \(time.monotonic\) ([\d.]+)", (folder / "start.txt").read_text())
     if not len(track) or m is None:
         return ["explain: no flight in this run"]

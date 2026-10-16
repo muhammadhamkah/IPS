@@ -25,6 +25,7 @@ from pymavlink import mavutil
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from idps.show.fleet import odometry_fields  # noqa: E402
 from idps.sim.live import quat_to_R  # noqa: E402
+from idps.sim.px4run import TRACK_HEADER, track_line  # noqa: E402
 
 R_EARTH = 6378137.0
 MARKER_FRD = np.array([0.0, 0.0, -0.08])
@@ -51,7 +52,7 @@ def stand_in(instance: int, home, noise_m: float = 0.0005, log=None, send=True, 
         now = time.monotonic()
         if msg.get_type() == "DEBUG_FLOAT_ARRAY":            # idps_show: drone minus file, at its show time
             if track is not None and msg.name.startswith("track"):
-                track.write(f"{instance + 1},{msg.data[3]:.4f},{msg.data[0]:.5f},{msg.data[1]:.5f},{msg.data[2]:.5f}\n")
+                track.write(track_line(instance + 1, msg.data))
             continue
         if msg.get_type() == "DEBUG_VECT":
             if not msg.name.startswith("truth"):
@@ -85,7 +86,7 @@ def main():
         log.write("t_monotonic,drone_id,n,e,d,px4_time_us\n")
     track = open(Path(sys.argv[3]).with_suffix(".track.csv"), "w", buffering=1) if log else None
     if track:                                      # drone minus file (m, NED) at the drone's own show time
-        track.write("drone_id,show_t,dn,de,dd\n")
+        track.write(TRACK_HEADER)
     send = not (len(sys.argv) > 4 and sys.argv[4] == "log-only")   # log-only: SITL_VISION feeds EKF2
     for i in range(n):
         threading.Thread(target=stand_in, args=(i, homes[i + 1], 0.0005, log, send, track), daemon=True).start()

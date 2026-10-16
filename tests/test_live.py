@@ -208,3 +208,53 @@ def test_explain_run_tells_a_simulator_stall_from_late_positions(tmp_path):
     i2 = next(i for i, ln in enumerate(lines) if "drone(s) 2 " in ln)
     assert "PX4 simulator stood still: drone 1 80 ms" in lines[i1 + 1]
     assert "positions late or missing: drone 2 up to 120 ms old" in lines[i2 + 1]
+
+
+def test_px4_run_covers_take_off_hold_show_and_landing(tmp_path):
+    """From charging pads the tracking log covers the whole flight: take-off, hold, show and
+    landing, each against where the drone should be, on one timeline (show time from the PC's
+    clock); before its take-off and after landing the drone is on its pad."""
+    import json
+    import subprocess
+    import sys
+    from idps.show.trj import Trj, write_trj
+    from idps.sim.px4run import TRACK_HEADER, load_run, phase_times, read_track
+    show = tmp_path / "show"
+    show.mkdir()
+    n, home = 201, np.array([-3.0, 0.0, 0.0])
+    pos = np.tile([0.0, 0.0, -1.0], (n, 1))                          # holds 1 m up over the origin, 10 s
+    write_trj(show / "drone_001.trj", Trj(1, 20.0, 0.0, home, 0.0, pos, *[np.zeros((n, 3))] * 3))
+    (show / "manifest.json").write_text(json.dumps({"venue": {"origin": {"xy": [0, 0], "north_deg": 90}},
+                                                    "drones": [{"drone_id": 1, "trj": "drone_001.trj",
+                                                                "home_ned": list(home)}]}))
+    start_pc = 1000.0                                                 # show time 0 on the PC's clock
+    lines = [TRACK_HEADER.strip()]
+    for k in range(3000):                                             # 100 Hz from 15 s before the show
+        pc = start_pc - 15.0 + k * 0.01
+        st = pc - start_pc
+        if st < -5:
+            ph, plan, err = 1, home + (st + 15) / 10 * (np.array([0, 0, -1.0]) - home), 0.004
+        elif st < 0:
+            ph, plan, err = 2, np.array([0, 0, -1.0]), 0.002
+        elif st <= 10:
+            ph, plan, err = 0, np.array([0, 0, -1.0]), 0.003
+        else:
+            ph, plan, err = 3, np.array([0, 0, -1.0]) + (st - 10) / 5 * (home - [0, 0, -1.0]), 0.02
+        show_t = st if ph == 0 else float("nan")
+        lines.append(f"1,{show_t:.4f},{err},0,0,{ph},{pc:.4f},{plan[0]:.4f},{plan[1]:.4f},{plan[2]:.4f}")
+    (tmp_path / "track.csv").write_text("\n".join(lines) + "\n")
+
+    T = read_track(tmp_path / "track.csv")
+    assert T.shape[1] == 10 and np.allclose(phase_times(T)[[0, -1]], [-15.0, 14.99], atol=1e-3)
+    run = load_run(tmp_path)
+    d = run.drones[0]
+    assert abs(d.median_mm - 3) < 0.01 and abs(d.takeoff_mm - 4) < 0.01 and abs(d.hold_mm - 2) < 0.01
+    assert abs(d.landing_mm - 20) < 0.01
+    assert run.t[0] <= -15.0 + 1e-6 and run.t[-1] >= 14.9
+    k = int(np.searchsorted(run.t, -10.0))
+    assert run.phase[0, k] == 1 and np.allclose(run.plan[0, k], [-1.5, 0, -0.5], atol=0.02)
+    assert np.allclose(run.actual[0, k], run.plan[0, k] + [0.004, 0, 0], atol=1e-6)
+    assert run.phase[0, int(np.searchsorted(run.t, 12.0))] == 3
+    out = subprocess.run([sys.executable, str(ROOT / "px4/sitl/score_track.py"), str(tmp_path / "track.csv")],
+                         capture_output=True, text=True, check=True).stdout
+    assert "worst over all drones: 3.0 mm" in out and "landing: worst 20.0 mm" in out

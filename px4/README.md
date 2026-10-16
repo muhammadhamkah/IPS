@@ -177,7 +177,9 @@ distance over the whole show. **Open run…** replays any finished run folder (`
 
 To measure tracking, the module reports how far the drone is from its file at its own show time
 (`DEBUG_FLOAT_ARRAY "track"`, logged by the stand-in as `truth.track.csv` and by `idps-sim px4`
-as `track.csv`). Comparing the PC's clock with the simulator's would add the simulator's clock
+as `track.csv`), and from charging pads also from its take-off path, its spot in the grid while it
+holds and its landing path, with the phase, the PC's clock and where it should be (the dashboard
+replays the whole flight on one timeline: negative show times are the take-off and the hold). Comparing the PC's clock with the simulator's would add the simulator's clock
 slips (it runs a few % off real time and stalls under load) to the error.
 
 **Results** (5 drones, the whole show, positions inside PX4 via `SITL_VISION`, `IMU_NOISE` 0.1):
@@ -216,6 +218,12 @@ and land back on their pads, last up first down (docs/SHOW.md, "Charging pads").
 `PADS=0` flies the old 5-drone show from the ground. 3 drones in PX4: take-offs 8 s apart, held at
 1/2/3 m, show median 2.4–2.7 mm, landed 3–4 mm from their pad slots. With 1.5 m/s climb and transfer
 and a 5 s gap (the defaults), 5 drones: show median 2.6–3.0 mm, worst 27.6 mm.
+
+The whole flight is scored (`score_track.py`, the dashboard's Take-off and Landing columns). That
+found a lurch: the module held the final grid 0.5 s after the show before handing over to the
+landing, but the first batch down (the last up) leaves at the show's end, so its landing path was
+already 0.5 s along: a 14 cm jump. Landing now takes over at the end. 5 drones, simulated cameras:
+take-off worst 17.0 mm, hold 8.2 mm, show 8.9 mm (median 2.2–3.0 mm), landing 17.4 mm.
 
 * The cameras and engine on the earlier 20-drone show with drones exactly on their files: all 20
   identified, median 1.3–1.7 mm, worst 10 mm; filming runs at about 2× real time in one process.

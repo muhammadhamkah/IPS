@@ -221,8 +221,14 @@ class Px4Tab(QWidget):
             t.setMinimumWidth(130)
             tiles.addWidget(t)
         sl.addWidget(tiles_box)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Drone", "State", "Median", "p95", "Worst", "Worst at"])
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["Drone", "State", "Median", "p95", "Worst", "Worst at",
+                                              "Take-off", "Landing"])
+        for c, tip in ((2, "Show: typical distance from the file"), (4, "Show: worst distance from the file"),
+                       (6, "Worst distance from its path from the charging pad to its spot in the grid, and "
+                           "from that spot while it held for the start"),
+                       (7, "Worst distance from its path from the final grid back down to its pad")):
+            self.table.horizontalHeaderItem(c).setToolTip(tip)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -469,8 +475,15 @@ class Px4Tab(QWidget):
         verdict = (f"every drone stayed within {LIMIT_MM:g} mm of its file" if within == n else
                    f"{within} of {n} drones stayed within {LIMIT_MM:g} mm of their files")
         how = {"vision": "positions inside PX4", "cameras": "simulated cameras and engine"}.get(run.mode, "")
-        self.status.setText(f"{run.folder.name} ({how}): {verdict}; worst moment {_mm(worst)}. Press Play to watch "
-                            "it; pick a drone to see its path, double-click it to jump to its worst moment.")
+        pads = ""
+        up = [max(v for v in (d.takeoff_mm, d.hold_mm) if np.isfinite(v)) for d in run.drones
+              if np.isfinite(d.takeoff_mm) or np.isfinite(d.hold_mm)]
+        down = [d.landing_mm for d in run.drones if np.isfinite(d.landing_mm)]
+        if up or down:
+            pads = (f" Take-off and hold: worst {_mm(max(up)) if up else '–'}; "
+                    f"landing: worst {_mm(max(down)) if down else '–'}.")
+        self.status.setText(f"{run.folder.name} ({how}): {verdict}; worst moment {_mm(worst)}.{pads} Press Play "
+                            "to watch it; pick a drone to see its path, double-click it to jump to its worst moment.")
 
     def _state(self, run, d, live: bool) -> str:
         note = getattr(self, "_notes", {}).get(d.drone_id)
@@ -488,7 +501,9 @@ class Px4Tab(QWidget):
         self.table.setRowCount(len(run.drones))
         for row, d in enumerate(run.drones):
             vals = [str(d.drone_id), self._state(run, d, live), _mm(d.median_mm), _mm(d.p95_mm), _mm(d.worst_mm),
-                    "–" if not np.isfinite(d.worst_at_s) else f"{d.worst_at_s:.1f} s"]
+                    "–" if not np.isfinite(d.worst_at_s) else f"{d.worst_at_s:.1f} s",
+                    _mm(float(np.nanmax([d.takeoff_mm, d.hold_mm]))
+                        if np.isfinite([d.takeoff_mm, d.hold_mm]).any() else float("nan")), _mm(d.landing_mm)]
             for c, v in enumerate(vals):
                 it = QTableWidgetItem(v)
                 it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter if c > 1 else
@@ -541,8 +556,22 @@ class Px4Tab(QWidget):
         if self.run_data is None:
             return
         self.view.set_frame(k)
-        self.clock.setText(f"show {self.run_data.t[min(k, len(self.run_data.t) - 1)]:.1f} s")
+        run = self.run_data
+        k = min(k, len(run.t) - 1)
+        self.clock.setText(f"{self._phase_at(run, k)} {run.t[k]:.1f} s")
         self.graph.set_state(self.run_data, self.view.selected, k, LIMIT_MM)
+
+    def _phase_at(self, run, k: int) -> str:
+        """What the selected drone (else most drones) is doing at step k."""
+        from idps.sim.px4run import PHASES
+        ph = run.phase[:, k] if run.phase is not None else np.array([0])
+        sel = self.view.selected
+        if sel is not None and sel < len(ph) and ph[sel] >= 0:
+            return PHASES.get(int(ph[sel]), "show")
+        ph = ph[ph >= 0]
+        if len(ph):
+            return PHASES.get(int(np.bincount(ph).argmax()), "show")
+        return "on the pads" if not (run.show_span[0] <= run.t[k] <= run.show_span[1]) else "show"
 
     def _drone_selected(self):
         rows = self.table.selectionModel().selectedRows()

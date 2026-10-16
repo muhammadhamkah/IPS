@@ -116,6 +116,9 @@ private:
 	void publish_setpoint(hrt_abstime now, float show_t, bool running = false);
 	void read_params();
 	bool evaluate(float show_t, trajectory_setpoint_s &sp);
+	// simulator only: how far the drone is from where it should be (DEBUG_FLOAT_ARRAY "track")
+	enum TrackPhase : uint8_t { TRACK_SHOW = 0, TRACK_TAKEOFF = 1, TRACK_HOLD = 2, TRACK_LANDING = 3 };
+	void track(hrt_abstime now, int64_t t_pc, TrackPhase phase, const float plan[3], float show_t);
 	static bool pc_time_us(const vehicle_command_s &cmd, int64_t &t_us);
 	void sync_add(hrt_abstime local, int64_t pc_us);
 	bool sync_valid(hrt_abstime now) const;

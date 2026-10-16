@@ -24,6 +24,7 @@ import numpy as np
 
 from idps.core.frames import Frame
 from idps.sim import trajectory as traj
+from idps.sim.px4run import TRACK_HEADER, track_line
 from idps.sim.runner import Simulation
 from idps.sim.scenario import Scenario, SimDrone
 
@@ -93,7 +94,7 @@ class SitlDrone:
                 if self.clock is not None:
                     self.clock.write(f"{self.drone_id},{time.monotonic():.4f},{h.time_usec * 1e-6:.4f}\n")
             elif kind == "DEBUG_FLOAT_ARRAY" and h.name.startswith("track") and self.track is not None:
-                self.track.write(f"{self.drone_id},{h.data[3]:.4f},{h.data[0]:.5f},{h.data[1]:.5f},{h.data[2]:.5f}\n")
+                self.track.write(track_line(self.drone_id, h.data))
 
     def _pc_time(self, received: float, px4_s: float) -> float:
         """A state's time on the PC's clock, from PX4's own timestamp: received - delivery delay.
@@ -172,7 +173,7 @@ def _receive(buf, specs, t0: float, origin: dict, marker_offset, track_path=None
     track = clock = None
     if track_path:
         track = open(track_path, "w", buffering=1)
-        track.write("drone_id,show_t,dn,de,dd\n")
+        track.write(TRACK_HEADER)
         # clock.csv: when each drone's "truth" message arrived (time.monotonic) and its PX4 time: a
         # simulated clock that stood still while the PC's ran on shows as a jump in the difference
         clock = open(Path(track_path).with_name("clock.csv"), "w", buffering=1)
