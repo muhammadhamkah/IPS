@@ -36,6 +36,19 @@ MODES = [("Positions inside PX4 (quick check)", "vision", "px4_sitl_default"),
 SIH_SOURCE = Path("src/modules/simulation/simulator_sih/sih.cpp")
 
 
+KEEP_RUNS = 20                 # the dashboard keeps this many flights in out/px4_runs (10-20 MB each)
+
+
+def prune_runs(folder, keep: int = KEEP_RUNS) -> int:
+    """Delete all but the newest `keep` run folders (named by start time); returns how many went."""
+    import shutil
+    runs = sorted(p for p in Path(folder).glob("[0-9]*-[0-9]*") if p.is_dir())
+    old = runs[:-keep] if keep > 0 else runs
+    for p in old:
+        shutil.rmtree(p, ignore_errors=True)
+    return len(old)
+
+
 def camera_build(px4_dir) -> str:
     """The PX4 build for the camera loop. The cameras run on the real clock, so the drones' clocks
     must keep real time: the default (lockstep) build does when px4/sitl/sih_realtime_pacing.patch
@@ -70,6 +83,9 @@ FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still goi
             (r"drone (\d+): no heartbeat on (\S+)", "Drone {0} did not answer on {1}."),
             (r"Too much for this computer: the simulated cameras run (\d+) ms behind", "Too much for this computer: "
              "the simulated cameras ran {0} ms behind the clock. Fly fewer drones, or 'Positions inside PX4'."),
+            (r"Not enough free disk space", "The disk is nearly full: free some space (see the Log pane) and fly "
+             "again."),
+            (r"No space left on device", "The disk is full: free some space (see the Log pane) and fly again."),
             (r"Upload failed: those drones have no show file", "The show upload failed for some drones (the "
              "FAILED lines in the Log pane): fly again."),
             (r"Not started: every drone was told to abort", "Not started: a drone refused the start, so every drone "
@@ -270,6 +286,7 @@ class Px4Tab(QWidget):
             self.status.setText(f"PX4 is not built in {self.px4_dir} (no build/{build}): build it as px4/README.md "
                                 "says, or pick your PX4-Autopilot folder.")
             return False
+        prune_runs(ROOT / "out" / "px4_runs", keep=KEEP_RUNS)
         self.out_dir = ROOT / "out" / "px4_runs" / time.strftime("%Y%m%d-%H%M%S")
         env = QProcessEnvironment.systemEnvironment()
         env.insert("PATH", _python_shim() + os.pathsep + env.value("PATH"))

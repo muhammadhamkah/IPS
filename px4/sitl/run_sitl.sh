@@ -81,6 +81,8 @@ link_port() { if [ $1 -lt 10 ]; then echo $((14540+$1)); else echo $((15540+$1))
 launch() {   # drone index: start (or restart) that PX4 instance
   mkdir -p "$B/rootfs/$1"; cd "$B/rootfs/$1"
   rm -f parameters*.bson dataman
+  # PX4 logging off (run_loop.sh's default): old flight logs are stale, and 2+ GB per drone fills a disk
+  if [ "${PX4_PARAM_SDLOG_MODE:-}" = "-1" ]; then rm -rf log; fi
   PX4_SYS_AUTOSTART=10040 PX4_SIM_MODEL=sihsim_quadx nohup "$B/bin/px4" -i $1 -d "$B/etc" > out.log 2>&1 &
   PIDS[$1]=$!
 }

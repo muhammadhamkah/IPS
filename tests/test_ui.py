@@ -834,3 +834,12 @@ def test_px4_stop_kill_does_not_reach_a_newer_run(monkeypatch):
     assert sent == []
     t._signal_group(signal.SIGKILL, new)
     assert sent == [(22, signal.SIGKILL)]
+
+
+def test_px4_runs_are_pruned_to_the_newest(tmp_path):
+    from idps.ui.px4.tab import prune_runs
+    for name in ["20261014-101010", "20261015-090000", "20261015-120000", "20261016-080000"]:
+        (tmp_path / name / "show").mkdir(parents=True)
+    (tmp_path / "notes").mkdir()                                       # not a run: left alone
+    assert prune_runs(tmp_path, keep=2) == 2
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["20261015-120000", "20261016-080000", "notes"]

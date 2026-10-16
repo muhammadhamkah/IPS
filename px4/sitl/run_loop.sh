@@ -22,6 +22,12 @@ N=${N:-5}; OUT=${OUT:-out/loop}; export EV_DELAY_MS=${EV_DELAY_MS:-28}
 if [ "$N" -le 5 ]; then SHOW=examples/shows/five_drones_sphere_square.py; else SHOW=examples/shows/twenty_drones_rings_wall.py; fi
 PX4_DIR=${PX4_DIR:-$HOME/PX4-Autopilot}; B=$PX4_DIR/build/${PX4_BUILD:-px4_sitl_default}
 rm -rf "$OUT"; mkdir -p "$OUT"
+FREE_MB=$(df -Pk "$OUT" | awk 'NR==2 {print int($4/1024)}')
+if [ -n "$FREE_MB" ] && [ "$FREE_MB" -lt 1024 ]; then
+  echo "Not enough free disk space: ${FREE_MB} MB (want 1 GB). PX4's own flight logs are the usual culprit:"
+  echo "  du -sh $PX4_DIR/build/*/rootfs/*/log; rm -rf $PX4_DIR/build/*/rootfs/*/log"
+  exit 1
+fi
 PIDS=()
 cleanup() {
   for p in "${PIDS[@]}"; do pkill -P "$p" 2>/dev/null || true; kill "$p" 2>/dev/null || true; done
