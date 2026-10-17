@@ -8,7 +8,7 @@ pads:              # centres, venue N and E (m)
   - [-3.2,  1.0]
   - [-3.2,  2.0]
 slot_spacing_m: 0.2
-layers_m: [1, 2, 3, 4]       # batch 1..4 fly at these heights in the initial and final grid
+layers_m: [4, 3, 2, 1]       # grid heights in the initial and final grid: batch 1 (first up) the highest
 batch_gap_s: 5                # at 1.5 m/s climb and transfer: the smallest safe gap (idps-show check)
 hold_timeout_s: 60
 climb_speed_mps: 1.5

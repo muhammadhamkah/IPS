@@ -150,7 +150,7 @@ reads them from it. Or describe them in a file of their own (`examples/pads/show
 ```yaml
 pads: [[-3.2, -2.0], [-3.2, -1.0], [-3.2, 0.0]]   # pad centres, venue N and E (m), anywhere
 slot_spacing_m: 0.2
-layers_m: [1, 2, 3, 4]       # batch k's height in the initial and final grid
+layers_m: [4, 3, 2, 1]       # grid heights: batch 1 (first up) the highest, the last batch the lowest
 batch_gap_s: 5
 hold_timeout_s: 60           # no start this long after the last batch took off: land
 climb_speed_mps: 1.5         # up from the pad and down onto it (peak speed)
@@ -158,7 +158,10 @@ transfer_speed_mps: 1.5      # level, between the pad and the grid
 ```
 
 The show you design starts and ends in the air: its **first frame is the initial grid** and its
-**last frame the final grid**, with batch k at `layers_m[k]` in both. Check and export with
+**last frame the final grid**, with batch k at the k-th highest of `layers_m` in both. **The
+first batch up always flies highest** and the last one lowest (the heights are sorted, whatever
+order they are written in): a batch taking off never climbs through one already up, and landing
+(last up, first down) starts with the lowest, so no batch comes down through another. Check and export with
 `--pads pads.yaml`:
 
 0. **Tracked on the pads.** No drone takes off before the cameras see every drone on its own

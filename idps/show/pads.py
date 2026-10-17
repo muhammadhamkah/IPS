@@ -3,7 +3,9 @@
 Each pad holds 4 drones in a 2 x 2 square (``slot_spacing_m`` apart, centre to centre). Drone
 ID = 4 x (pad - 1) + slot. The slot is the drone's batch: batch 1 is slot 1 of every pad, and so
 on. The show (designed in Blender) starts and ends in the air: its first frame is the initial
-grid, its last the final grid, and batch k flies at layer k's height (``layers_m``) in both.
+grid, its last the final grid, and batch k flies at the k-th highest of ``layers_m`` in both:
+the first batch up flies highest and the last one lowest, so a batch taking off never climbs
+through one already up, and landing (last up, first down) goes lowest first.
 
 On the launch command every drone runs, on the PC's clock, with batch k starting
 ``batch_gap_s`` x (k - 1) after the launch time:
@@ -23,7 +25,7 @@ legs from the numbers in the drone's .trj header, which the export writes from t
       - [-3.2, -2.0]
       - [-3.2, -1.0]
     slot_spacing_m: 0.2
-    layers_m: [1, 2, 3, 4]    # batch 1..4
+    layers_m: [4, 3, 2, 1]    # grid heights: batch 1 (first up) the highest
     batch_gap_s: 5
     hold_timeout_s: 60
     climb_speed_mps: 0.8
@@ -53,7 +55,7 @@ MIN_PAD_GAP_M = 0.5              # pads stand 0.5-1 m apart, centre to centre
 MARKER_Z_M = 0.08                # a drone's marker standing on its pad
 # The venue (site) file's "pads": centres in the drawing frame like the trusses, plus the
 # sequence settings. idps-show reads it with --pads venue.yaml, as a pads file.
-SITE_DEFAULTS = {"centres": [], "slot_spacing_m": 0.2, "layers_m": [1.0, 2.0, 3.0, 4.0], "batch_gap_s": 5.0,
+SITE_DEFAULTS = {"centres": [], "slot_spacing_m": 0.2, "layers_m": [4.0, 3.0, 2.0, 1.0], "batch_gap_s": 5.0,
                  "hold_timeout_s": 60.0, "climb_speed_mps": 1.5, "transfer_speed_mps": 1.5, "facing": "auto"}
 
 
@@ -69,13 +71,18 @@ def slot_offset_ne(slot: int, spacing_m: float, facing_deg: float = 0.0) -> np.n
 class PadLayout:
     pads_ne: np.ndarray                                  # (P, 2) pad centres, venue N, E
     slot_spacing_m: float = 0.2
-    layers_m: tuple = (1.0, 2.0, 3.0, 4.0)
+    layers_m: tuple = (4.0, 3.0, 2.0, 1.0)              # batch k: the k-th highest (sorted, whatever was given)
     batch_gap_s: float = 5.0
     hold_timeout_s: float = 60.0
     climb_speed_mps: float = 0.8
     transfer_speed_mps: float = 1.0
     facing_deg: float = 0.0                              # the pads' front, degrees from North (clockwise)
     source: str = ""
+
+    def __post_init__(self):
+        # the first batch up flies highest: a later batch never climbs through one already up, and
+        # landing (last up, first down) starts with the lowest
+        self.layers_m = tuple(sorted((float(x) for x in self.layers_m), reverse=True))
 
     def pad_slot(self, drone_id: int) -> tuple[int, int]:
         """(pad 1.., slot 1..4) of a drone ID."""
@@ -206,7 +213,7 @@ def load_pads(path) -> PadLayout:
             raise ValueError(f"{path}: no charging pads placed (Planner: Charging pad tool, C)")
         return lay
     return PadLayout(np.array(d["pads"], float).reshape(-1, 2), float(d.get("slot_spacing_m", 0.2)),
-                     tuple(float(x) for x in d.get("layers_m", (1, 2, 3, 4))), float(d.get("batch_gap_s", 5.0)),
+                     tuple(float(x) for x in d.get("layers_m", (4, 3, 2, 1))), float(d.get("batch_gap_s", 5.0)),
                      float(d.get("hold_timeout_s", 60.0)), float(d.get("climb_speed_mps", 0.8)),
                      float(d.get("transfer_speed_mps", 1.0)), float(d.get("facing_deg", 0.0)), str(path))
 

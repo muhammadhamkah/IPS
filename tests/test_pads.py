@@ -15,18 +15,19 @@ def lay(gap=8.0, climb=1.0, xfer=1.0):
 
 
 def layered_grid(ids):
-    """batch b at b m, rows along North (batch 1 farthest from the pads), 1.2 m along East."""
+    """batch b at (5 - b) m (the first up the highest), rows along North (batch 1 farthest from the
+    pads), 1.2 m along East."""
     P = []
     for d in ids:
         b, col = (d - 1) % 4 + 1, (d - 1) // 4
-        P.append([(2.5 - b) * 0.9, (col - 0.5) * 1.2, -float(b)])
+        P.append([(2.5 - b) * 0.9, (col - 0.5) * 1.2, -float(5 - b)])
     return np.array(P)
 
 
 def test_drone_id_to_pad_slot_batch():
     L = lay()
     assert L.pad_slot(1) == (1, 1) and L.pad_slot(4) == (1, 4) and L.pad_slot(5) == (2, 1)
-    assert L.batch(6) == 2 and L.layer_m(7) == 3
+    assert L.batch(6) == 2 and L.layer_m(7) == 2 and L.layer_m(1) == 4     # first up flies highest
     assert np.allclose(L.home_ned(1), [-3.1, -1.1, 0]) and np.allclose(L.home_ned(8), [-3.3, 0.1, 0])
 
 
@@ -56,7 +57,7 @@ def test_sequence_passes_with_a_safe_gap_and_names_the_smallest():
 def test_wrong_layer_height_is_reported():
     ids = [1, 2]
     g = layered_grid(ids)
-    g[1, 2] = -1.5                                               # batch 2 should be at 2 m
+    g[1, 2] = -2.5                                               # batch 2 should be at 3 m
     problems, _ = check_sequence(lay(), ids, g, g)
     assert problems and problems[0][0] == "layer" and "batch 2" in problems[0][4]
 

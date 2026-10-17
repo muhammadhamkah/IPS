@@ -6,8 +6,8 @@
 The venue (default examples/sites/show_8x8.yaml) gives the performance area and the charging
 pads (placed in the Planner, or a pads section by hand). Show frame: x East, y North, z up
 (metres), origin = the venue origin. The drones take off from their pads in 4 batches, batch k =
-slot k of every pad, and the show starts and ends in the air in the layered grid: batch k at
-k metres, its drones in a row. The rows stand across the line from the pads to the middle of the
+slot k of every pad, and the show starts and ends in the air in the layered grid: batch 1 (the first up) at
+the highest layer and the last batch the lowest, its drones in a row. The rows stand across the line from the pads to the middle of the
 area, batch 1 farthest from the pads and batch 4 the nearest, so no batch flies over another on
 its way in or out; in a row the drones keep their pads' order, so their paths do not cross. The rows
 run along the pads' row (across the way the pads face), so a batch closes in from its 1.2 m

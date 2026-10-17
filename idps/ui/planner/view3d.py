@@ -518,7 +518,7 @@ class View3D(QWidget):
         f = frame_of(self.doc.data)
         facing = site_facing_deg(self.doc.data)
         spacing = float(pads.get("slot_spacing_m", 0.2))
-        layers = pads.get("layers_m", [1, 2, 3, 4])
+        layers = sorted(pads.get("layers_m", [4, 3, 2, 1]), reverse=True)     # batch 1 the highest
         sel = self.canvas.selection
 
         def at(c, ne):

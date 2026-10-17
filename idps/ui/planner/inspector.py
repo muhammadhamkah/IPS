@@ -540,13 +540,15 @@ class Inspector(QTabWidget):
             sp.editingFinished.connect(lambda sp=sp, k=k: self._set_ne(("pads", "centres", i), k, sp.value()))
             row.addWidget(sp)
         form.addRow("Centre", row)
-        layers = pads.get("layers_m", [1, 2, 3, 4])
+        layers = sorted(pads.get("layers_m", [4, 3, 2, 1]), reverse=True)     # batch 1 the highest
         names = ("front-left", "front-right", "back-left", "back-right")
         lines = [f"Drone {4 * i + s + 1}: {names[s]}, batch {s + 1}"
                  + (f", grid at {layers[s]:g} m" if s < len(layers) else "") for s in range(4)]
         who = QLabel("\n".join(lines))
         who.setToolTip("Front = where the pads face (towards the performance area unless set below). Batch k "
-                       "takes off k-th (slot k of every pad together) and lands (n - k + 1)-th: last up, first down")
+                       "takes off k-th (slot k of every pad together) and lands (n - k + 1)-th: last up, first down. "
+                       "The first batch up flies highest, so no batch climbs through one already up, and the "
+                       "lowest lands first")
         form.addRow("Drones", who)
         for a, b, dist in too_close(pads["centres"]):
             if i in (a, b):
@@ -584,8 +586,10 @@ class Inspector(QTabWidget):
                           "After climbing, each drone first steps forward over the pad's empty slots.")
         facing.currentIndexChanged.connect(lambda i: self._set(("pads", "facing"), facing.itemData(i)))
         form.addRow("Pads face", facing)
-        lay_edit = QLineEdit(fmt_floats(p.get("layers_m", [1, 2, 3, 4])))
-        lay_edit.setToolTip("Batch 1, 2, 3, 4's height in the initial and final grid (the show's first and last frame)")
+        lay_edit = QLineEdit(fmt_floats(sorted(p.get("layers_m", [4, 3, 2, 1]), reverse=True)))
+        lay_edit.setToolTip("The 4 batches' heights in the initial and final grid (the show's first and last frame). "
+                            "Batch 1, the first up, always takes the highest and batch 4 the lowest, in any order "
+                            "typed: no batch climbs through one already up, and landing goes lowest first.")
 
         def set_layers():
             try:
@@ -595,9 +599,9 @@ class Inspector(QTabWidget):
             if len(v) != 4 or any(x <= 0 for x in v):
                 lay_edit.setStyleSheet("color: #d03b3b;")
                 return
-            self._set(("pads", "layers_m"), v)
+            self._set(("pads", "layers_m"), sorted(v, reverse=True))
         lay_edit.editingFinished.connect(set_layers)
-        form.addRow("Grid heights, batch 1–4", lay_edit)
+        form.addRow("Grid heights, batch 1–4 (high → low)", lay_edit)
         hint = QLabel("The cameras are planned to see every drone on its pad and on its climb to the grid. The "
                       "show tools read the pads from this venue file: idps-show check / export --pads venue.yaml.")
         hint.setWordWrap(True)
