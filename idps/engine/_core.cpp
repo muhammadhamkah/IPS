@@ -257,16 +257,19 @@ static std::pair<int, int> decode_blink(const std::vector<double> &t, const std:
 
 // ------------------------------------------------------------------ tracks
 struct Votes {
-    std::vector<std::pair<int, int>> v;    // insertion-ordered (id, votes)
-    int get(int id) const {
+    std::vector<std::pair<int, double>> v;    // insertion-ordered (id, votes)
+    double get(int id) const {
         for (auto &e : v)
             if (e.first == id) return e.second;
-        return 0;
+        return 0.0;
     }
-    void add(int id, int n) {
+    void add(int id, double n) {
         for (auto &e : v)
             if (e.first == id) { e.second += n; return; }
         v.push_back({id, n});
+    }
+    void fade(double k) {
+        for (auto &e : v) e.second *= k;
     }
     int best() const {
         if (v.empty()) return -1;
@@ -368,7 +371,7 @@ struct Config {
     double reorder_s = 0.008, sigma_px = 0.15, gate_px = 4.0, max_resid_px = 3.0, init_gap_m = 0.03,
            init_support_px = 2.5, coast_s = 0.5, q_accel = 400.0, innov_gate = 25.0, inherit_radius_m = 0.5,
            inherit_within_s = 1.0, decode_every_s = 0.5, decode_every_named_s = 2.0, decode_window_s = 2.5,
-           ambiguous_px = 3.0;
+           ambiguous_px = 3.0, id_vote_decay = 0.7;
     int min_cams_init = 3, min_cams_update = 2, confirm_hits = 8, confirm_window = 16, innov_max_rejects = 3,
         id_votes_needed = 2, decodes_per_epoch = 2, single_cam_update = 1;
 };
@@ -587,7 +590,7 @@ class Core {
 #define SETI(n) if (key == #n) cfg.n = v.cast<int>();
             SETD(reorder_s) SETD(sigma_px) SETD(gate_px) SETD(max_resid_px) SETD(init_gap_m) SETD(init_support_px)
             SETD(coast_s) SETD(q_accel) SETD(innov_gate) SETD(inherit_radius_m) SETD(inherit_within_s)
-            SETD(decode_every_s) SETD(decode_every_named_s) SETD(decode_window_s) SETD(ambiguous_px)
+            SETD(decode_every_s) SETD(decode_every_named_s) SETD(decode_window_s) SETD(ambiguous_px) SETD(id_vote_decay)
             SETI(min_cams_init) SETI(min_cams_update) SETI(confirm_hits) SETI(confirm_window) SETI(innov_max_rejects)
             SETI(id_votes_needed) SETI(decodes_per_epoch) SETI(single_cam_update)
 #undef SETD
@@ -737,8 +740,12 @@ class Core {
             Track &tr = tracks[ti];
             const Obs &o = obs[0];
             const Cam &c = cams[fcam(o.frame)];
+            if (fl(o.dot) & 4) {                                   // two markers merged: no update
+                used[o.dot] = 0;
+                continue;
+            }
             tr.predict(times[o.frame], cfg.q_accel);
-            if ((fl(o.dot) & 4) || !bearing_update(tr, {c.pos}, {rays[o.dot]}, {0.0}, c.sigma_ang, cfg.innov_gate)) {
+            if (!bearing_update(tr, {c.pos}, {rays[o.dot]}, {0.0}, c.sigma_ang, cfg.innov_gate)) {
                 used[o.dot] = 0;
                 continue;
             }
@@ -1053,6 +1060,7 @@ class Core {
         tr.levels(T - cfg.decode_window_s, t, lv);
         auto r = decode_blink(t, lv);
         if (r.first < 0) return;
+        if (tr.marker_id >= 0) tr.votes.fade(cfg.id_vote_decay);    // engine.py _decode: a swap is undone
         tr.votes.add(r.first, r.second);
         int best = tr.votes.best();
         if (tr.votes.get(best) >= cfg.id_votes_needed && best != tr.marker_id) {

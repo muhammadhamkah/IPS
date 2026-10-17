@@ -207,6 +207,24 @@ def test_a_dot_two_tracks_share_in_one_camera_updates_neither():
     assert used[0][0]                     # A's dot is not free to start a new track either
 
 
+def test_a_swapped_id_is_corrected_by_the_blink_code(monkeypatch):
+    """Two neighbours' tracks traded markers: the track now reads the other drone's code. Its old
+    votes fade, so two consistent reads rename it (~4 s); a single misread does not."""
+    import idps.engine.engine as E
+    from idps.engine.tracker import CONFIRMED, KalmanCV, Track
+    eng = Engine({1: _cam([0.0, 0.0, -5.0])}, backend="python")
+    tr = Track(1, KalmanCV(np.zeros(3), 0.0, np.eye(3) * 1e-6), 0.0)
+    tr.state, tr.marker_id, tr.id_votes = CONFIRMED, 2, {2: 6.0}   # named long ago: steady votes
+    eng.tracks.append(tr)
+    reads = iter([1, 2, 1, 1])
+    monkeypatch.setattr(E, "decode", lambda t, lv: (next(reads), 2, None))
+    names = []
+    for k in range(4):
+        eng._decode(tr, 2.0 * k)
+        names.append(tr.marker_id)
+    assert names == [2, 2, 2, 1]                 # one misread is ignored; two in a row rename it
+
+
 def test_live_does_not_send_a_stale_position():
     from idps.engine.cli import too_late
     assert not too_late(0.5, None)              # no EKF2_EV_DELAY given: everything is sent

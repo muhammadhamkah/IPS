@@ -36,7 +36,7 @@ MODES = [("Positions inside PX4 (quick check)", "vision", "px4_sitl_default"),
 SIH_SOURCE = Path("src/modules/simulation/simulator_sih/sih.cpp")
 
 
-KEEP_RUNS = 20                 # the dashboard keeps this many flights in out/px4_runs (10-20 MB each)
+KEEP_RUNS = 5                  # the dashboard keeps this many flights in out/px4_runs (up to ~50 MB each)
 
 
 def prune_runs(folder, keep: int = KEEP_RUNS) -> int:

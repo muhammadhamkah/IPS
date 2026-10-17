@@ -110,6 +110,7 @@ class EngineConfig:
     decodes_per_epoch: int = 2        # at most this many decodes per 1/120 s slot (spreads the work)
     decode_window_s: float = 2.5
     id_votes_needed: int = 2
+    id_vote_decay: float = 0.7        # a named track's votes fade by this at each read
 
 
 @dataclass
@@ -650,6 +651,10 @@ class Engine:
         mid, n, _ = decode(t, lv)
         if mid is None:
             return
+        if tr.marker_id is not None:
+            # a named track's older reads fade, so a swap (two neighbours' tracks trading markers) is
+            # undone after two consistent reads (~4 s); one misread still cannot rename it
+            tr.id_votes = {k: v * cfg.id_vote_decay for k, v in tr.id_votes.items()}
         tr.id_votes[mid] = tr.id_votes.get(mid, 0) + n
         best = max(tr.id_votes, key=tr.id_votes.get)
         if tr.id_votes[best] >= cfg.id_votes_needed and best != tr.marker_id:

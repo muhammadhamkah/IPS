@@ -5,7 +5,9 @@ cameras) when a drone was over the limit, what the simulators and the engine did
   (clock.csv, from the truth link);
 * positions that reached the drones late or not at all: their age when sent and gaps between them
   (positions.csv, from idps-engine live: a busy PC, cameras or engine held up);
-* neither: the drone's own flight control.
+* positions that were wrong: the engine's position against the simulated marker's true one
+  (positions.csv against truth.csv), and whose marker it was nearest to (an ID mix-up);
+* none of these: the drone's own flight control.
 
     python px4/sitl/explain_run.py out/loop [--limit-mm 30]
 """
@@ -23,6 +25,7 @@ ONSET_MM = 12.0            # an excursion starts where the error last rose past 
 CLOCK_STALL_MS = 20.0      # a simulator clock falling this much further behind: it stood still
 LATE_MS = 30.0             # a position this much older than the median when sent: held up
 GAP_MS = 60.0              # no position for a drone this long
+WRONG_MM = 20.0            # an IDPS position this far from the marker's true place: wrong
 
 
 def _excursions(track: np.ndarray, limit_mm: float):
@@ -77,6 +80,69 @@ def _clock_stall_ms(clock: np.ndarray, did: int, show0: float, a: float, b: floa
     return float(max(behind, silent))
 
 
+def _truth_frame(folder, truth: np.ndarray):
+    """(R, c): venue N, E = R @ (x, y) + c, fitted from where each drone stood at the start (truth)
+    and its home spot (the show manifest), since the run folder does not keep the venue file."""
+    man = json.loads((folder / "show" / "manifest.json").read_text())
+    homes = {d["drone_id"]: np.asarray(d["home_ned"], float)[:2] for d in man["drones"]}
+    A, B = [], []
+    for did, h in homes.items():
+        T = truth[truth[:, 1] == did]
+        if len(T):
+            A.append(T[np.argmin(T[:, 0]), 2:4])
+            B.append(h)
+    if len(A) < 2:
+        return None
+    A, B = np.array(A), np.array(B)
+    a0, b0 = A.mean(0), B.mean(0)
+    U, _, Vt = np.linalg.svd((A - a0).T @ (B - b0))
+    R = (U @ Vt).T                                     # best rotation or reflection (x, y -> N, E: a reflection)
+    c = b0 - R @ a0
+    if np.abs(B - (A @ R.T + c)).max() > 0.05:        # (only 2 drones on one line: no unique fit)
+        return None
+    return R, c
+
+
+def _engine_error(folder, loop, show0):
+    """{drone: (show times, error m, nearest other drone or 0)} of the engine's positions against
+    the simulated markers' true places; None if the run lacks the files."""
+    if not (folder / "truth.csv").exists() or not (folder / "positions.csv").exists():
+        return None
+    with open(folder / "positions.csv") as f:
+        head = f.readline().strip().split(",")
+    P = np.loadtxt(folder / "positions.csv", delimiter=",", skiprows=1, ndmin=2,
+                   usecols=[head.index(k) for k in ("t_ns", "marker_id", "n", "e", "d")])
+    with open(folder / "truth.csv") as f:
+        f.readline()
+        th = f.readline().strip().split(",")
+    T = np.loadtxt(folder / "truth.csv", delimiter=",", skiprows=2, ndmin=2,
+                   usecols=[th.index(k) for k in ("t_s", "marker_id", "marker_x", "marker_y", "marker_z")])
+    fit = _truth_frame(folder, T)
+    if fit is None:
+        return None
+    R, c = fit
+    ned = np.column_stack([T[:, 2:4] @ R.T + c, -T[:, 4]])
+    t_show = T[:, 0] + loop["t0_monotonic_s"] - show0
+    ids = np.unique(T[:, 1]).astype(int)
+    track = {d: (t_show[T[:, 1] == d], ned[T[:, 1] == d]) for d in ids}
+    out = {}
+    pt = loop["t0_monotonic_s"] + (P[:, 0] - loop["epoch_ns"]) * 1e-9 - show0
+    for d in ids:
+        w = P[:, 1] == d
+        if not w.any():
+            continue
+        tp, xp = pt[w], P[w, 2:5]
+        true = {k: np.column_stack([np.interp(tp, tt, X[:, j]) for j in range(3)]) for k, (tt, X) in track.items()}
+        err = np.linalg.norm(xp - true[d], axis=1)
+        near = np.zeros(len(tp), int)
+        for k, X in true.items():
+            if k != d:
+                closer = np.linalg.norm(xp - X, axis=1) < np.minimum(err, 0.05)
+                near[closer] = k
+        out[d] = (tp, err, near)
+    return out
+
+
 def explain(folder, limit_mm: float = 30.0) -> list[str]:
     folder = Path(folder)
     from idps.sim.px4run import phase_times, read_track
@@ -99,6 +165,10 @@ def explain(folder, limit_mm: float = 30.0) -> list[str]:
                            usecols=(0, 1, head.index("age_ms")))
             sent_show = loop["t0_monotonic_s"] + (P[:, 0] - loop["epoch_ns"]) * 1e-9 + P[:, 2] / 1000 - show0
             pos = (P[:, 1].astype(int), sent_show, P[:, 2])
+    try:
+        wrong = _engine_error(folder, loop, show0)
+    except (ValueError, KeyError, OSError):
+        wrong = None
     events = _excursions(track, limit_mm)
     if not events:
         return [f"explain: every drone stayed within {limit_mm:g} mm"]
@@ -126,9 +196,23 @@ def explain(folder, limit_mm: float = 30.0) -> list[str]:
             out.append("   positions late or missing: " + ", ".join(
                 f"drone {d} up to {late.get(d, float('nan')):.0f} ms old, gap {gaps.get(d, float('nan')):.0f} ms"
                 for d in sorted(held)) + f" (typical {typical:.0f} ms; cameras or engine held up)")
-        if not stalled and not held:
+        bad = {}
+        if wrong is not None:
+            for d in drones:
+                if d in wrong:
+                    tp, err, near = wrong[d]
+                    w = (tp >= a) & (tp <= b)
+                    if w.any() and err[w].max() * 1000 > WRONG_MM:
+                        k = int(np.argmax(np.where(w, err, -1)))
+                        bad[d] = (1000 * err[k], tp[k], int(near[w].max()))
+        if bad:
+            out.append("   IDPS positions wrong: " + ", ".join(
+                f"drone {d} off by {e:.0f} mm at {t:.1f} s" + (f" (on drone {n}'s marker: an ID mix-up)" if n else "")
+                for d, (e, t, n) in sorted(bad.items())) + " (the cameras or the engine)")
+        if not stalled and not held and not bad:
             known = [d for d in drones if np.isfinite(stalls[d])]
-            out.append("   no stall seen in the simulators or the positions: the drone's own flight"
+            ok = " (IDPS positions right)" if wrong is not None else ""
+            out.append("   no stall seen in the simulators or the positions" + ok + ": the drone's own flight"
                        + ("" if known and pos is not None else " (clock.csv or ages missing: older run?)"))
     return out
 
