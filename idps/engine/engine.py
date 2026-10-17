@@ -74,6 +74,15 @@ class StaticMask:
         return static
 
 
+def core_is_stale(core) -> bool:
+    """The compiled core was built before its source last changed (a git pull without rebuilding):
+    it would run the old tracking rules."""
+    from pathlib import Path
+    src = Path(__file__).with_name("_core.cpp")
+    lib = Path(getattr(core, "__file__", "") or "")
+    return src.exists() and lib.exists() and lib.stat().st_mtime < src.stat().st_mtime
+
+
 @dataclass
 class EngineConfig:
     epoch_hz: float = 120.0
@@ -146,7 +155,15 @@ class Engine:
                 if backend == "cpp":
                     raise ImportError("the C++ engine core is not built: pip install -e . (needs a C++ compiler)")
             else:
-                self._core = self._make_core(_core)
+                if core_is_stale(_core):
+                    import sys
+                    msg = ("the compiled engine core is older than idps/engine/_core.cpp (pulled new code without "
+                           "rebuilding): run  pip install -e .  in the IDPS folder")
+                    if backend == "cpp":
+                        raise ImportError(msg)
+                    print(f"WARNING: {msg}. Using the slower Python engine meanwhile.", file=sys.stderr, flush=True)
+                else:
+                    self._core = self._make_core(_core)
         self.backend = "cpp" if self._core is not None else "python"
 
     def _make_core(self, _core):

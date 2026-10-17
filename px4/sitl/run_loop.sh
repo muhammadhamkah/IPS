@@ -152,6 +152,13 @@ PY
   done
 else
   echo "== cameras and engine"
+  # pulled new engine code without rebuilding its compiled core: rebuild it now (the old core would
+  # run the old tracking rules)
+  if "$PY" -c "import sys; from idps.engine import _core; from idps.engine.engine import core_is_stale; sys.exit(0 if core_is_stale(_core) else 1)" 2>/dev/null; then
+    echo "   the engine's compiled core is older than its source: rebuilding it (pip install -e .)"
+    "$PY" -m pip install -q -e . > "$OUT/rebuild.log" 2>&1 \
+      || echo "   rebuild failed ($OUT/rebuild.log): the slower Python engine runs instead"
+  fi
   "$PY" -m idps.sim px4 "$SCENARIO" --manifest "$OUT/show/manifest.json" \
       --duration 600 --workers "${WORKERS:-3}" -o "$OUT" > "$OUT/cams.log" 2>&1 &
   PIDS+=($!); disown $!
