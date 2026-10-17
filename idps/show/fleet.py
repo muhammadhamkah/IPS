@@ -179,6 +179,29 @@ class TimesyncResponder:
                         self.answered += 1
 
 
+def seen_in_log(path, max_age_s: float = 1.0, now_ns: int | None = None) -> dict:
+    """What the cameras see now, from the engine's live log (idps-engine live -o positions.csv):
+    {marker ID (= drone ID): (N, E, D)} of the positions filmed in the last max_age_s."""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    now_ns = time.time_ns() if now_ns is None else now_ns
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        f.seek(max(0, f.tell() - 400_000))
+        lines = f.read().decode(errors="replace").splitlines()[1:]
+    seen = {}
+    for ln in lines:
+        v = ln.split(",")
+        try:
+            t_ns, mid, n, e, d = int(v[0]), int(v[1]), float(v[2]), float(v[3]), float(v[4])
+        except (ValueError, IndexError):
+            continue
+        if now_ns - t_ns <= max_age_s * 1e9:
+            seen[mid] = (n, e, d)
+    return seen
+
+
 def parse_links(specs) -> dict:
     """['7=udpout:192.168.50.107:14550', ...] -> {7: 'udpout:...'} (drone ID = DEVICE)"""
     out = {}

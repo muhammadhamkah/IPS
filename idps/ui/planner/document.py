@@ -23,7 +23,7 @@ DEFAULT_SITE = {
     "no_go_zones": [],
     # charging pads (after the trusses, before planning): centres on the plan + the sequence
     "pads": {"centres": [], "slot_spacing_m": 0.2, "layers_m": [1.0, 2.0, 3.0, 4.0], "batch_gap_s": 5.0,
-             "hold_timeout_s": 60.0, "climb_speed_mps": 1.5, "transfer_speed_mps": 1.5},
+             "hold_timeout_s": 60.0, "climb_speed_mps": 1.5, "transfer_speed_mps": 1.5, "facing": "auto"},
     "candidates": {
         "truss_step_m": 3.0, "truss_drop_m": 0.3, "truss_elevations_deg": [-90, -60, -35, -15, 0],
         "tripod_step_m": 3.0, "tripod_heights_m": [3, 10, 18], "tripod_elevations_deg": [0, -15, -30, -50],

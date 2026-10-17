@@ -157,6 +157,11 @@ const char *IdpsShow::ready_on_pad(hrt_abstime now, int64_t t_pc)
 		return "start time not 4..600 s ahead";
 	}
 
+	// tracked: the cameras see it now (the estimate alone stays valid for seconds without them)
+	if (_vision_at == 0 || now > _vision_at + MAX_VISION_AGE) {
+		return "not tracked (no IDPS position from the cameras)";
+	}
+
 	if (!_lpos.xy_valid || !_lpos.z_valid || now > _lpos.timestamp + 500_ms) {
 		return "no position (IDPS positions not arriving)";
 	}
@@ -227,19 +232,23 @@ const char *IdpsShow::launch(const vehicle_command_s &cmd, hrt_abstime now)
 		return "show file read error";
 	}
 
-	// take-off: straight up over the pad slot to the grid's height, then level to the grid place
+	// take-off: straight up over the pad slot to the grid's height, CLEAR_M forward over the pad's
+	// empty slots (a long leg starts slowly), then level to the grid place
 	_legs.t0 = t_pc + (int64_t)h.batch_gap_ms * 1000 * (h.batch - 1);
-	const float top[3] {h.home[0], h.home[1], grid[2]};
+	float fwd[3];
+	forward(fwd);
 
 	for (int i = 0; i < 3; i++) {
 		_legs.p[0][i] = h.home[i];
-		_legs.p[1][i] = top[i];
-		_legs.p[2][i] = grid[i];
+		_legs.p[1][i] = i < 2 ? h.home[i] : grid[2];
+		_legs.p[2][i] = _legs.p[1][i] + fwd[i] * CLEAR_M;
+		_legs.p[3][i] = grid[i];
 	}
 
-	const float dn = grid[0] - top[0], de = grid[1] - top[1];
+	const float dn = grid[0] - _legs.p[2][0], de = grid[1] - _legs.p[2][1];
 	_legs.T[0] = leg_time(grid[2] - h.home[2], h.climb_mm_s * 1e-3f);
-	_legs.T[1] = leg_time(sqrtf(dn * dn + de * de), h.transfer_mm_s * 1e-3f);
+	_legs.T[1] = leg_time(CLEAR_M, h.transfer_mm_s * 1e-3f);
+	_legs.T[2] = leg_time(sqrtf(dn * dn + de * de), h.transfer_mm_s * 1e-3f);
 
 	_launch_pc = t_pc;
 	_go_pc = _legs.t0;
@@ -576,9 +585,9 @@ void IdpsShow::path_setpoint(const Path &path, int64_t t_pc, trajectory_setpoint
 	float t = (float)((double)(t_pc - path.t0) * 1e-6);
 	int leg = 0;
 
-	if (t > path.T[0]) {
-		t -= path.T[0];
-		leg = 1;
+	while (leg < LEGS - 1 && t > path.T[leg]) {
+		t -= path.T[leg];
+		leg++;
 	}
 
 	const float T = path.T[leg];
@@ -600,25 +609,34 @@ void IdpsShow::path_setpoint(const Path &path, int64_t t_pc, trajectory_setpoint
 	sp.yawspeed = NAN;
 }
 
+void IdpsShow::forward(float f[3]) const
+{
+	const float a = math::radians((float)_file.header().pad_facing_cdeg * 0.01f);
+	f[0] = cosf(a);
+	f[1] = sinf(a);
+	f[2] = 0.f;
+}
+
 void IdpsShow::begin_landing(const float from[3], int64_t t_leave)
 {
-	// level to above the pad slot, then down onto it (at zero speed); PX4 then lands and disarms
+	// level to CLEAR_M in front of the pad slot, back over it, then down onto it (at zero speed);
+	// PX4 then lands and disarms
 	const idps::TrjHeader &h = _file.header();
 	_legs.t0 = t_leave;
+	float fwd[3];
+	forward(fwd);
 
 	for (int i = 0; i < 3; i++) {
 		_legs.p[0][i] = from[i];
+		_legs.p[2][i] = i < 2 ? h.home[i] : from[2];
+		_legs.p[1][i] = _legs.p[2][i] + fwd[i] * CLEAR_M;
+		_legs.p[3][i] = h.home[i];
 	}
 
-	_legs.p[1][0] = h.home[0];
-	_legs.p[1][1] = h.home[1];
-	_legs.p[1][2] = from[2];
-	_legs.p[2][0] = h.home[0];
-	_legs.p[2][1] = h.home[1];
-	_legs.p[2][2] = h.home[2];
-	const float dn = h.home[0] - from[0], de = h.home[1] - from[1];
+	const float dn = _legs.p[1][0] - from[0], de = _legs.p[1][1] - from[1];
 	_legs.T[0] = leg_time(sqrtf(dn * dn + de * de), h.transfer_mm_s * 1e-3f);
-	_legs.T[1] = leg_time(_legs.p[2][2] - from[2], h.climb_mm_s * 1e-3f);
+	_legs.T[1] = leg_time(CLEAR_M, h.transfer_mm_s * 1e-3f);
+	_legs.T[2] = leg_time(_legs.p[3][2] - from[2], h.climb_mm_s * 1e-3f);
 	_land_sent = false;
 	_state = State::Landing;
 }
@@ -687,7 +705,7 @@ void IdpsShow::run_pads(hrt_abstime now)
 		}
 
 	} else if (_state == State::Holding) {
-		hold_setpoint(_legs.p[2], sp);
+		hold_setpoint(_legs.p[LEGS], sp);
 
 		if (_start_pc != 0 && t >= _start_pc) {
 			read_params();
@@ -700,7 +718,7 @@ void IdpsShow::run_pads(hrt_abstime now)
 
 			if (t >= leave) {
 				mavlink_log_info(&_mavlink_log_pub, "IDPS show: no start, back to the pad");
-				const float grid[3] {_legs.p[2][0], _legs.p[2][1], _legs.p[2][2]};
+				const float grid[3] {_legs.p[LEGS][0], _legs.p[LEGS][1], _legs.p[LEGS][2]};
 				begin_landing(grid, leave);
 			}
 		}
@@ -802,6 +820,11 @@ void IdpsShow::Run()
 
 	_vehicle_status_sub.update(&_status);
 	_vehicle_local_position_sub.update(&_lpos);
+	vehicle_odometry_s vo;
+
+	if (_visual_odometry_sub.update(&vo)) {
+		_vision_at = hrt_absolute_time();
+	}
 
 	vehicle_land_detected_s land{};
 

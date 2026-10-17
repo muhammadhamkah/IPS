@@ -40,7 +40,12 @@ SLOTS = 4
 MIN_LEG_S = 1.5
 LAND_HOVER_M = 0.0               # the last leg ends on the pad (at zero speed); PX4 then only disarms
 TOUCHDOWN_S = 0.5                # ... which takes this long: still flying for the checks
-# slot -> (N, E) offset in units of half the slot spacing: 1 front-left, 2 front-right, 3 back-left, 4 back-right
+CLEAR_M = 0.5                    # after the climb, first this far forward (the pad's front) at the layer,
+                                 # over the slots already gone, before the long leg to the grid; landing
+                                 # comes in there and steps back over the slot
+# slot -> (front, right) offset in units of half the slot spacing: 1 front-left, 2 front-right, 3 back-left,
+# 4 back-right. A pad's front faces where its drones fly (facing_deg, from North): batches 1-2 leave first and
+# 3-4 fly forward over their empty slots, never over a drone still on the pad.
 SLOT_UNITS = {1: (1, -1), 2: (1, 1), 3: (-1, -1), 4: (-1, 1)}
 PAD_SIDE_M = 0.45                # a pad as drawn: its 4 slots and half a drone around them
 MIN_PAD_GAP_M = 0.5              # pads stand 0.5-1 m apart, centre to centre
@@ -48,7 +53,15 @@ MARKER_Z_M = 0.08                # a drone's marker standing on its pad
 # The venue (site) file's "pads": centres in the drawing frame like the trusses, plus the
 # sequence settings. idps-show reads it with --pads venue.yaml, as a pads file.
 SITE_DEFAULTS = {"centres": [], "slot_spacing_m": 0.2, "layers_m": [1.0, 2.0, 3.0, 4.0], "batch_gap_s": 5.0,
-                 "hold_timeout_s": 60.0, "climb_speed_mps": 1.5, "transfer_speed_mps": 1.5}
+                 "hold_timeout_s": 60.0, "climb_speed_mps": 1.5, "transfer_speed_mps": 1.5, "facing": "auto"}
+
+
+def slot_offset_ne(slot: int, spacing_m: float, facing_deg: float = 0.0) -> np.ndarray:
+    """A slot's (N, E) offset from its pad's centre."""
+    f, r = SLOT_UNITS[slot]
+    a = np.radians(facing_deg)
+    front, right = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
+    return (f * front + r * right) * spacing_m / 2
 
 
 @dataclass
@@ -60,6 +73,7 @@ class PadLayout:
     hold_timeout_s: float = 60.0
     climb_speed_mps: float = 0.8
     transfer_speed_mps: float = 1.0
+    facing_deg: float = 0.0                              # the pads' front, degrees from North (clockwise)
     source: str = ""
 
     def pad_slot(self, drone_id: int) -> tuple[int, int]:
@@ -77,9 +91,8 @@ class PadLayout:
         pad, slot = self.pad_slot(drone_id)
         if pad > len(self.pads_ne):
             raise ValueError(f"drone {drone_id} needs pad {pad}, the layout has {len(self.pads_ne)}")
-        un, ue = SLOT_UNITS[slot]
-        h = self.slot_spacing_m / 2
-        return np.array([self.pads_ne[pad - 1][0] + un * h, self.pads_ne[pad - 1][1] + ue * h, 0.0])
+        dn, de = slot_offset_ne(slot, self.slot_spacing_m, self.facing_deg)
+        return np.array([self.pads_ne[pad - 1][0] + dn, self.pads_ne[pad - 1][1] + de, 0.0])
 
     def n_batches(self, drone_ids) -> int:
         return max(self.batch(d) for d in drone_ids)
@@ -88,7 +101,7 @@ class PadLayout:
         return {"pads": [[float(x) for x in p] for p in self.pads_ne], "slot_spacing_m": self.slot_spacing_m,
                 "layers_m": [float(x) for x in self.layers_m], "batch_gap_s": self.batch_gap_s,
                 "hold_timeout_s": self.hold_timeout_s, "climb_speed_mps": self.climb_speed_mps,
-                "transfer_speed_mps": self.transfer_speed_mps}
+                "transfer_speed_mps": self.transfer_speed_mps, "facing_deg": self.facing_deg}
 
 
 def pads_from_site(d: dict, source: str = "") -> PadLayout | None:
@@ -100,7 +113,34 @@ def pads_from_site(d: dict, source: str = "") -> PadLayout | None:
     f = Frame.from_dict(d.get("origin"))
     ne = np.round(np.array([f.ne(c) for c in p["centres"]], float).reshape(-1, 2), 6) + 0.0   # (no -0.0)
     return PadLayout(ne, float(p["slot_spacing_m"]), tuple(float(x) for x in p["layers_m"]), float(p["batch_gap_s"]),
-                     float(p["hold_timeout_s"]), float(p["climb_speed_mps"]), float(p["transfer_speed_mps"]), source)
+                     float(p["hold_timeout_s"]), float(p["climb_speed_mps"]), float(p["transfer_speed_mps"]),
+                     site_facing_deg(d), source)
+
+
+FACINGS = {"north": 0.0, "east": 90.0, "south": 180.0, "west": 270.0}
+
+
+def site_facing_deg(d: dict) -> float:
+    """The pads' front, degrees from North: "auto" (the default) faces the middle of the performance
+    area from the pads' middle, where their drones fly; or north / east / south / west, or degrees."""
+    from idps.core.frames import Frame
+    facing = (d.get("pads") or {}).get("facing", "auto")
+    if isinstance(facing, (int, float)):
+        return float(facing) % 360.0
+    if str(facing).lower() in FACINGS:
+        return FACINGS[str(facing).lower()]
+    f = Frame.from_dict(d.get("origin"))
+    vol = d.get("volume") or {}
+    if "polygon" in vol and len(vol["polygon"]) >= 3:
+        poly = np.array(vol["polygon"], float)
+    elif "min" in vol:
+        poly = np.array([vol["min"][:2], vol["max"][:2]], float)
+    else:
+        return 0.0
+    dn, de = f.ne(poly).mean(0) - f.ne(np.array(d["pads"]["centres"], float)).mean(0)
+    if np.hypot(dn, de) < 1e-6:
+        return 0.0
+    return round(float(np.degrees(np.arctan2(de, dn))), 3) % 360.0 + 0.0
 
 
 def coverage_points(lay: PadLayout, frame, step_m: float = 0.5) -> np.ndarray:
@@ -142,10 +182,13 @@ def load_pads(path) -> PadLayout:
     return PadLayout(np.array(d["pads"], float).reshape(-1, 2), float(d.get("slot_spacing_m", 0.2)),
                      tuple(float(x) for x in d.get("layers_m", (1, 2, 3, 4))), float(d.get("batch_gap_s", 5.0)),
                      float(d.get("hold_timeout_s", 60.0)), float(d.get("climb_speed_mps", 0.8)),
-                     float(d.get("transfer_speed_mps", 1.0)), str(path))
+                     float(d.get("transfer_speed_mps", 1.0)), float(d.get("facing_deg", 0.0)), str(path))
+
+
 
 
 def leg_time(dist: float, speed: float) -> float:
+    """A minimum-jerk leg: peak speed 1.875 x mean (and peak acceleration 5.77 x dist / T²)."""
     return max(MIN_LEG_S, 1.875 * abs(dist) / speed)
 
 
@@ -179,26 +222,36 @@ class Legs:
         return out
 
 
+def _forward(lay: PadLayout) -> np.ndarray:
+    a = np.radians(lay.facing_deg)
+    return np.array([np.cos(a), np.sin(a), 0.0])
+
+
 def launch_legs(lay: PadLayout, drone_id: int, grid_ned, t_launch: float = 0.0) -> Legs:
-    """Pad -> up to the layer -> level to the grid place."""
+    """Pad -> up to the layer -> CLEAR_M forward -> level to the grid place. The short step clears the
+    pad (and the slot beside it, whose batch climbs next) at once; a long leg starts slowly."""
     home = lay.home_ned(drone_id)
     g = np.asarray(grid_ned, float)
     top = np.array([home[0], home[1], g[2]])
+    clear = top + _forward(lay) * CLEAR_M
     t0 = t_launch + lay.batch_gap_s * (lay.batch(drone_id) - 1)
-    return Legs(t0, [home, top, g], [leg_time(top[2] - home[2], lay.climb_speed_mps),
-                                     leg_time(np.linalg.norm(g - top), lay.transfer_speed_mps)])
+    return Legs(t0, [home, top, clear, g], [leg_time(top[2] - home[2], lay.climb_speed_mps),
+                                            leg_time(CLEAR_M, lay.transfer_speed_mps),
+                                            leg_time(np.linalg.norm(g - clear), lay.transfer_speed_mps)])
 
 
 def landing_legs(lay: PadLayout, drone_id: int, from_ned, t_leave0: float, n_batches: int) -> Legs:
-    """Grid place -> level to above the pad -> down onto it (PX4 lands and disarms).
-    t_leave0: when the first batch to land (the last to take off) leaves the grid."""
+    """Grid place -> level to CLEAR_M in front of its slot -> back over it -> down onto it (PX4 lands
+    and disarms). t_leave0: when the first batch to land (the last to take off) leaves the grid."""
     home = lay.home_ned(drone_id)
     p = np.asarray(from_ned, float)
     above = np.array([home[0], home[1], p[2]])
+    front = above + _forward(lay) * CLEAR_M
     low = np.array([home[0], home[1], home[2] - LAND_HOVER_M])
     t0 = t_leave0 + lay.batch_gap_s * (n_batches - lay.batch(drone_id))
-    return Legs(t0, [p, above, low], [leg_time(np.linalg.norm(above - p), lay.transfer_speed_mps),
-                                      leg_time(low[2] - above[2], lay.climb_speed_mps)])
+    return Legs(t0, [p, front, above, low], [leg_time(np.linalg.norm(front - p), lay.transfer_speed_mps),
+                                             leg_time(CLEAR_M, lay.transfer_speed_mps),
+                                             leg_time(low[2] - above[2], lay.climb_speed_mps)])
 
 
 def downwash_pairs(P: np.ndarray, active: np.ndarray, radius_m: float, depth_m: float):

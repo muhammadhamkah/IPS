@@ -76,7 +76,7 @@ def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz:
         home = pads.home_ned(k) if pads is not None else S[0, 1:4]
         seq = dict(batch=pads.batch(k), n_batches=nb, batch_gap_s=pads.batch_gap_s,
                    climb_speed_mps=pads.climb_speed_mps, transfer_speed_mps=pads.transfer_speed_mps,
-                   hold_timeout_s=pads.hold_timeout_s) if pads is not None else {}
+                   hold_timeout_s=pads.hold_timeout_s, pad_facing_deg=pads.facing_deg) if pads is not None else {}
         doc = {
             "format": FORMAT, "drone_id": k, "name": d.name, "frame": "NED",
             "frame_note": "metres from the venue origin (calibration square corner): N along its long arm, "

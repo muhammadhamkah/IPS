@@ -1,5 +1,6 @@
 """Headless dashboard tests (QT_QPA_PLATFORM=offscreen)."""
 import os
+from pathlib import Path
 
 import pytest
 
@@ -909,3 +910,38 @@ def test_charging_pads_after_trusses_before_planning(win, app, monkeypatch, tmp_
     lay = load_pads(tmp_path / "venue.yaml")
     assert lay.pads_ne.shape == (1, 2) and lay.batch_gap_s == 5.0
     assert lay.home_ned(1)[:2] == pytest.approx([0.1, -0.1])     # origin at the pad, North up: slot 1 front-left
+
+
+def test_px4_flight_flies_the_planner_venue(win, app):
+    """The PX4 tab flies the venue open in the Planner: its pads, and for the camera loop its
+    planned cameras; it says what is missing instead of flying the example."""
+    from types import SimpleNamespace
+    c = win.canvas
+    c.resetTransform()
+    c.scale(40, -40)
+    draw_rect(win)
+    tab = win.px4
+    tab.n_drones.setValue(5)
+    env, why = tab._venue_files("vision")
+    assert env is None and "charging pads" in why
+    win.inspector._add_strip()
+    c.place_pad((-8.0, 3.0))
+    env, why = tab._venue_files("vision")
+    assert env is None and "5 drones need 2 charging pads" in why
+    tab.n_drones.setValue(4)
+    env, why = tab._venue_files("vision")
+    assert why is None and env["PLAN"] == "" and Path(env["SITE"]).exists()
+    from idps.show.pads import load_pads
+    assert load_pads(env["SITE"]).pads_ne.shape == (1, 2)
+    env, why = tab._venue_files("cameras")
+    assert env is None and "Plan the cameras first" in why
+    # a plan whose cameras cannot tell a pad's drones apart: say so before flying
+    from idps.plan.model import Plan
+    plan = Plan("v", None, [], {"pads": [{"pad": 1, "cameras": 2, "resolving": 1, "ids": [], "ok": False}]}, None)
+    c.result, c.result_stale = (plan, SimpleNamespace()), False
+    env, why = tab._venue_files("cameras")
+    assert env is None and "pad(s) 1" in why
+    plan.summary["pads"][0]["ok"] = True
+    env, why = tab._venue_files("cameras")
+    assert why is None and Path(env["PLAN"]).exists() and Path(env["SCENARIO"]).exists()
+    c.result = None

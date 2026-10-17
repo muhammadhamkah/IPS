@@ -545,8 +545,8 @@ class Inspector(QTabWidget):
         lines = [f"Drone {4 * i + s + 1}: {names[s]}, batch {s + 1}"
                  + (f", grid at {layers[s]:g} m" if s < len(layers) else "") for s in range(4)]
         who = QLabel("\n".join(lines))
-        who.setToolTip("Front = North. Batch k takes off k-th (slot k of every pad together) and lands "
-                       "(n - k + 1)-th: last up, first down")
+        who.setToolTip("Front = where the pads face (towards the performance area unless set below). Batch k "
+                       "takes off k-th (slot k of every pad together) and lands (n - k + 1)-th: last up, first down")
         form.addRow("Drones", who)
         for a, b, dist in too_close(pads["centres"]):
             if i in (a, b):
@@ -573,6 +573,17 @@ class Inspector(QTabWidget):
             sp.setValue(float(p.get(key, 0.0)))
             sp.editingFinished.connect(lambda sp=sp, key=key: self._set(("pads", key), sp.value()))
             form.addRow(label, sp)
+        facing = Combo()
+        choices = [("auto", "Towards the performance area"), ("north", "North"), ("east", "East"),
+                   ("south", "South"), ("west", "West")]
+        for key, label in choices:
+            facing.addItem(label, key)
+        cur = str(p.get("facing", "auto")).lower()
+        facing.setCurrentIndex(next((k for k, (key, _) in enumerate(choices) if key == cur), 0))
+        facing.setToolTip("The pads' front (slots 1 and 2, the first batches up): where the drones fly off to. "
+                          "After climbing, each drone first steps forward over the pad's empty slots.")
+        facing.currentIndexChanged.connect(lambda i: self._set(("pads", "facing"), facing.itemData(i)))
+        form.addRow("Pads face", facing)
         lay_edit = QLineEdit(fmt_floats(p.get("layers_m", [1, 2, 3, 4])))
         lay_edit.setToolTip("Batch 1, 2, 3, 4's height in the initial and final grid (the show's first and last frame)")
 

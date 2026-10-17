@@ -15,6 +15,9 @@
 #      the drones' EKF2_EV_DELAY 0, EKF2_DELAY_MAX EV_HORIZON_MS, default 50) and sends none older
 #      than that. ARRIVAL_STAMPS=1: the old way, PX4 stamps on arrival, EKF2_EV_DELAY EV_DELAY_MS
 #      (DROP_LATE=1: no positions over 30 ms later than that).
+#      SITE (venue with charging pads), PLAN (its cameras: the Planner's plan.yaml) and SCENARIO (the
+#      camera simulation, whose plan: names the cameras): default the 8 x 8 m show floor. The dashboard
+#      passes the venue open in the Planner. Cameras: no take-off until every drone is tracked on its pad.
 set -e
 MODE=${1:-cameras}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -24,13 +27,16 @@ PY=${PYTHON:-python}                    # the IDPS python (the dashboard passes 
 N=${N:-5}; OUT=${OUT:-out/loop}; export EV_DELAY_MS=${EV_DELAY_MS:-28}
 [ "$N" -ge 1 ] && [ "$N" -le 20 ] 2>/dev/null || { echo "N must be 1 to 20 drones (got $N)"; exit 1; }
 # Charging pads (default): the drones take off in batches from the venue's pads (the Planner's
-# Charging pad tool; examples/sites/show_8x8.yaml, as examples/pads/show_8x8.yaml) to the
-# show's layered air grid and land back (idps/show/pads.py). PADS=0: the 5-drone show from the ground.
+# Charging pad tool) to the show's layered air grid, built for that venue, and land back
+# (idps/show/pads.py). PADS=0: the 5-drone show from the ground on the 8 x 8 m show floor.
+SITE=${SITE:-examples/sites/show_8x8.yaml}; PLAN=${PLAN-examples/plans/show_8x8.yaml}   # PLAN="": no camera plan
+PLAN_ARG=(); [ -n "$PLAN" ] && PLAN_ARG=(--plan "$PLAN")
+SCENARIO=${SCENARIO:-examples/scenarios/show_8x8_micro60.yaml}
 if [ "${PADS:-1}" = 0 ]; then
   [ "$N" -le 5 ] || { echo "PADS=0 flies the 5-drone ground show: N must be 1 to 5"; exit 1; }
   SHOW_CMD=(examples/shows/five_drones_sphere_square.py); PADS_ARG=()
 else
-  SHOW_CMD=(examples/shows/layers_from_pads.py); PADS_ARG=(--pads examples/sites/show_8x8.yaml)
+  SHOW_CMD=(examples/shows/layers_from_pads.py --site "$SITE"); PADS_ARG=(--pads "$SITE")
 fi
 PX4_DIR=${PX4_DIR:-$HOME/PX4-Autopilot}; B=$PX4_DIR/build/${PX4_BUILD:-px4_sitl_default}
 rm -rf "$OUT"; mkdir -p "$OUT"
@@ -83,8 +89,8 @@ if busy:
 PY
 echo "== show"
 "$PY" "${SHOW_CMD[@]}" "$OUT/show.zip" "$N" > "$OUT/show.txt"
-"$PY" -m idps.show.cli export "$OUT/show.zip" --site examples/sites/show_8x8.yaml \
-    --plan examples/plans/show_8x8.yaml --min-sep 0.9 "${PADS_ARG[@]}" -o "$OUT/show" > "$OUT/export.txt" 2>&1 \
+"$PY" -m idps.show.cli export "$OUT/show.zip" --site "$SITE" \
+    "${PLAN_ARG[@]}" --min-sep 0.9 "${PADS_ARG[@]}" -o "$OUT/show" > "$OUT/export.txt" 2>&1 \
   || { cat "$OUT/export.txt"; exit 1; }
 grep -E "^Charging pads" "$OUT/export.txt" || true
 tail -1 "$OUT/export.txt"
@@ -146,11 +152,11 @@ PY
   done
 else
   echo "== cameras and engine"
-  "$PY" -m idps.sim px4 examples/scenarios/show_8x8_micro60.yaml --manifest "$OUT/show/manifest.json" \
+  "$PY" -m idps.sim px4 "$SCENARIO" --manifest "$OUT/show/manifest.json" \
       --duration 600 --workers "${WORKERS:-3}" -o "$OUT" > "$OUT/cams.log" 2>&1 &
   PIDS+=($!); disown $!
   while [ ! -s "$OUT/calibration.yaml" ]; do sleep 0.5; done; sleep 1
-  "$PY" -m idps.engine.cli live --port 5600 --calib "$OUT/calibration.yaml" --site examples/sites/show_8x8.yaml \
+  "$PY" -m idps.engine.cli live --port 5600 --calib "$OUT/calibration.yaml" --site "$SITE" \
       $L14 $TS_ARGS ${DROP_LATE:+--ev-delay-ms "$EV_DELAY_MS"} \
       -o "$OUT/positions.csv" > "$OUT/engine.log" 2>&1 &
   PIDS+=($!); disown $!; TRACK=$OUT/track.csv
@@ -178,8 +184,10 @@ fi
 # in the background and waited for, so a stop (TERM) is handled at once: the trap aborts the
 # show and stops every helper (a foreground command would delay it to the end of the show)
 # its progress (launch, holding, show start) also shows here
-( "$PY" -m idps.show.cli start "$OUT/show/manifest.json" $L --lead 15 2>&1 | tee "$OUT/start.txt" \
-    | grep --line-buffered -E "^(launch in|every drone holds|show starts in|Not started)" ) &
+# cameras: no take-off before the cameras see every drone on its own pad slot (idps-show start --positions)
+TRACK_ARG=(); [ "$MODE" = cameras ] && TRACK_ARG=(--positions "$OUT/positions.csv")
+( "$PY" -m idps.show.cli start "$OUT/show/manifest.json" $L --lead 15 "${TRACK_ARG[@]}" 2>&1 | tee "$OUT/start.txt" \
+    | grep --line-buffered -E "^(tracked|waiting for tracking|launch in|every drone holds|show starts in|Not started)" ) &
 PIDS+=($!); wait $! || true
 grep -E "denied|refused|Not started" "$OUT/start.txt" || true
 for ((i=0;i<N;i++)); do

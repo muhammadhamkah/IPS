@@ -22,7 +22,7 @@ without parsing:
    50  u16      gap between batches (ms)
    52  u16      climb speed (mm/s), 54 u16 transfer speed (mm/s): see idps.show.pads
    56  u16      hold timeout (s): no start this long after the last batch took off: land
-   58  u16      reserved (0)
+   58  u16      pad facing (0.01°): the way its pad's front points, clockwise from North
    60  u32      CRC-32 of bytes 0..59
 
   samples, 40 bytes each, at the sample rate from the first sample's time
@@ -72,6 +72,7 @@ class Trj:
     climb_speed_mps: float = 0.0
     transfer_speed_mps: float = 0.0
     hold_timeout_s: float = 0.0
+    pad_facing_deg: float = 0.0
 
     @property
     def duration(self) -> float:
@@ -87,7 +88,8 @@ def to_bytes(t: Trj) -> bytes:
     head = HEADER.pack(MAGIC, VERSION, HEADER_SIZE, int(t.drone_id), 0, float(t.rate_hz), n, float(t.t0),
                        *[float(x) for x in t.home], float(t.yaw_rad), crc32(body), int(t.batch), int(t.n_batches),
                        int(round(t.batch_gap_s * 1000)), int(round(t.climb_speed_mps * 1000)),
-                       int(round(t.transfer_speed_mps * 1000)), int(round(t.hold_timeout_s)), 0)
+                       int(round(t.transfer_speed_mps * 1000)), int(round(t.hold_timeout_s)),
+                       int(round((t.pad_facing_deg % 360.0) * 100)) % 36000)
     return head + struct.pack("<I", crc32(head)) + body
 
 
@@ -98,7 +100,8 @@ def from_bytes(b: bytes) -> Trj:
     (crc_h,) = struct.unpack_from("<I", b, HEADER.size)
     if crc32(head) != crc_h:
         raise ValueError(".trj header CRC mismatch")
-    _, ver, hsize, did, _, rate, n, t0, hn, he, hd, yaw, crc_s, batch, nb, gap, climb, xfer, hold, _ = HEADER.unpack(head)
+    _, ver, hsize, did, _, rate, n, t0, hn, he, hd, yaw, crc_s, batch, nb, gap, climb, xfer, hold, facing = \
+        HEADER.unpack(head)
     if ver != VERSION:
         raise ValueError(f".trj version {ver} not supported")
     body = b[hsize:hsize + n * SAMPLE.itemsize]
@@ -107,7 +110,7 @@ def from_bytes(b: bytes) -> Trj:
     s = np.frombuffer(body, SAMPLE)
     return Trj(did, rate, t0, np.array([hn, he, hd]), yaw, s["pos"].astype(float), s["vel"].astype(float),
                s["acc"].astype(float), s["rgb"].astype(float), batch, nb, gap / 1000, climb / 1000, xfer / 1000,
-               float(hold))
+               float(hold), facing / 100)
 
 
 def write_trj(path, t: Trj) -> bytes:

@@ -15,7 +15,7 @@ from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, Q
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView
 
 from idps.coverage.volume import offset_ring
-from idps.show.pads import MIN_PAD_GAP_M, PAD_SIDE_M, SLOT_UNITS, SLOTS
+from idps.show.pads import MIN_PAD_GAP_M, PAD_SIDE_M, SLOTS, site_facing_deg, slot_offset_ne
 from idps.ui import theme
 from idps.ui.planner.document import frame_of
 
@@ -425,19 +425,26 @@ class PlanCanvas(QGraphicsView):
         return (self.doc.data.get("pads") or {}).get("centres") or []
 
     def _pad_corners(self, centre, side=PAD_SIDE_M):
-        """A pad's square, its sides along North and East."""
+        """A pad's square, its front facing where its drones fly (the slot 1-2 side first)."""
         f = frame_of(self.doc.data)
-        c, h = np.asarray(centre, float), side / 2
-        return [c + f.n_hat * a * h + f.e_hat * b * h for a, b in ((1, -1), (1, 1), (-1, 1), (-1, -1))]
+        c = np.asarray(centre, float)
+        offs = [slot_offset_ne(s, side, self._facing()) for s in (1, 2, 4, 3)]
+        return [c + f.n_hat * dn + f.e_hat * de for dn, de in offs]
+
+    def _facing(self) -> float:
+        d = self.doc.data
+        return site_facing_deg(d) if self._pads() else 0.0
 
     def _slot_xy(self, centre, slot):
         f = frame_of(self.doc.data)
-        un, ue = SLOT_UNITS[slot]
-        h = float((self.doc.data.get("pads") or {}).get("slot_spacing_m", 0.2)) / 2
-        return np.asarray(centre, float) + f.n_hat * un * h + f.e_hat * ue * h
+        dn, de = slot_offset_ne(slot, float((self.doc.data.get("pads") or {}).get("slot_spacing_m", 0.2)),
+                                self._facing())
+        return np.asarray(centre, float) + f.n_hat * dn + f.e_hat * de
 
     def _draw_pads(self, p: QPainter, tok):
         close = {k for i, j, _ in _pads_too_close(self._pads()) for k in (i, j)}
+        if self.result is not None and not self.result_stale:      # cameras that cannot tell its drones apart
+            close |= {r["pad"] - 1 for r in self.result[0].summary.get("pads", []) if not r["ok"]}
         for i, c in enumerate(self._pads()):
             self._draw_pad(p, tok, c, i, selected=self.selection == ("pad", i), warn=i in close)
 
@@ -790,9 +797,11 @@ class PlanCanvas(QGraphicsView):
                     if math.hypot(v[0] - x, v[1] - y) < tol:
                         return (kind, idx, k)
         f = frame_of(d)
+        a = math.radians(self._facing())
         for i, c in enumerate(self._pads()):              # a pad: grab it anywhere to move it
-            dn, de = np.abs(f.ne((x, y)) - f.ne(c))
-            if max(dn, de) <= PAD_SIDE_M / 2 + tol:
+            dn, de = f.ne((x, y)) - f.ne(c)
+            front, right = dn * math.cos(a) + de * math.sin(a), -dn * math.sin(a) + de * math.cos(a)
+            if max(abs(front), abs(right)) <= PAD_SIDE_M / 2 + tol:
                 return ("pad", i, 0)
         if self.result is not None:
             for k, c in enumerate(self.result[0].cameras):

@@ -29,7 +29,7 @@ struct TrjHeader {
 	uint16_t climb_mm_s;      // leg speeds (peak of a minimum-jerk move = 1.875 x mean)
 	uint16_t transfer_mm_s;
 	uint16_t hold_timeout_s;  // no start this long after the last batch took off: land
-	uint16_t reserved;
+	uint16_t pad_facing_cdeg; // the pad's front, 0.01° clockwise from North (take-off steps that way)
 	uint32_t header_crc;
 };
 static_assert(sizeof(TrjHeader) == 64, "TrjHeader must be 64 bytes");

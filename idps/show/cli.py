@@ -186,6 +186,8 @@ def cmd_start(a) -> int:
     man = json.loads(open(a.manifest).read())
     duration = man["duration_s"]
     pads = man.get("pads")
+    if a.positions and not _wait_tracked(a, sync):
+        return 1
     if pads:
         # charging pads: launch (batches take off and fly to the air grid), wait until every drone
         # holds there, then start the show from the air
@@ -244,6 +246,32 @@ def cmd_start(a) -> int:
     finally:
         sync.stop()
     return 0
+
+
+TRACK_TOL_M = 0.1          # on its own pad slot (the next slot is 0.2 m away)
+
+
+def _wait_tracked(a, sync) -> bool:
+    """No take-off before the cameras see every drone on its own spot: wait for it (up to
+    --track-wait s), then say which drones are missing or misplaced."""
+    import time
+    from idps.show.fleet import Fleet, seen_in_log
+    fleet = Fleet(a.manifest, {})
+    fleet.links = {did: None for did in fleet.homes}
+    end, last = time.monotonic() + a.track_wait, 0.0
+    while True:
+        problems = fleet.preflight(seen_in_log(a.positions), tol_m=TRACK_TOL_M)
+        if not problems:
+            print(f"tracked: every drone on its spot ({len(fleet.homes)})", flush=True)
+            return True
+        if time.monotonic() >= end:
+            print("Not started: not every drone is tracked on its spot: " + "; ".join(problems), flush=True)
+            sync.stop()
+            return False
+        if time.monotonic() - last >= 5.0:
+            last = time.monotonic()
+            print("waiting for tracking: " + "; ".join(problems[:4]) + (" …" if len(problems) > 4 else ""), flush=True)
+        time.sleep(0.5)
 
 
 def _wait_until(t_mono: float, sync) -> None:
@@ -317,6 +345,9 @@ def main(argv=None) -> int:
     sa.add_argument("manifest")
     link_args(sa)
     sa.add_argument("--lead", type=float, default=15.0, help="seconds from the command to the show start")
+    sa.add_argument("--positions", help="the engine's live log (idps-engine live -o positions.csv): no take-off "
+                    "before the cameras see every drone on its own spot")
+    sa.add_argument("--track-wait", type=float, default=60.0, help="how long to wait for that (s)")
     ab = sub.add_parser("abort", help="every drone lands where it is")
     link_args(ab)
     p = sub.add_parser("play", help="testing: stream one drone file from the PC through PX4 offboard, or print it")

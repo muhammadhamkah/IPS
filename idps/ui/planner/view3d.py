@@ -510,24 +510,28 @@ class View3D(QWidget):
 
     def _pads(self, prims, tok):
         """Charging pads on the floor, with each slot's climb to its batch's grid height."""
-        from idps.show.pads import PAD_SIDE_M, SLOT_UNITS, SLOTS
+        from idps.show.pads import PAD_SIDE_M, SLOTS, site_facing_deg, slot_offset_ne
         from idps.ui.planner.document import frame_of
         pads = self.doc.data.get("pads") or {}
+        if not pads.get("centres"):
+            return
         f = frame_of(self.doc.data)
-        h = float(pads.get("slot_spacing_m", 0.2)) / 2
+        facing = site_facing_deg(self.doc.data)
+        spacing = float(pads.get("slot_spacing_m", 0.2))
         layers = pads.get("layers_m", [1, 2, 3, 4])
         sel = self.canvas.selection
-        for i, c in enumerate(pads.get("centres") or []):
+
+        def at(c, ne):
+            return c + f.n_hat * ne[0] + f.e_hat * ne[1]
+        for i, c in enumerate(pads["centres"]):
             c = np.asarray(c, float)
             col = QColor(tok["select"] if sel == ("pad", i) else tok["pad"])
             fill = QColor(col)
             fill.setAlphaF(0.25)
-            sq = [c + f.n_hat * a * PAD_SIDE_M / 2 + f.e_hat * b * PAD_SIDE_M / 2
-                  for a, b in ((1, -1), (1, 1), (-1, 1), (-1, -1))]
+            sq = [at(c, slot_offset_ne(s, PAD_SIDE_M, facing)) for s in (1, 2, 4, 3)]
             self._poly(prims, [(*q, 0.0) for q in sq], QPen(col, 1.5), fill)
             for slot in range(1, SLOTS + 1):
-                un, ue = SLOT_UNITS[slot]
-                q = c + f.n_hat * un * h + f.e_hat * ue * h
+                q = at(c, slot_offset_ne(slot, spacing, facing))
                 if slot <= len(layers):
                     self._line(prims, (*q, 0.0), (*q, float(layers[slot - 1])), QPen(col, 1, Qt.PenStyle.DotLine))
             self._text(prims, (*sq[0], 0.0), f"Pad {i + 1}", col, sel == ("pad", i), 9)

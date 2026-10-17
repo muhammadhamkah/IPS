@@ -308,6 +308,48 @@ def _neighbour_spacing(cams: list[PlannedCamera]) -> None:
                                      if others else None)
 
 
+PAD_MIN_SEP_PX = 8.0           # a camera tells a pad's 4 drones apart if no two are closer than this in its image
+
+
+def pad_coverage(site: Site, cameras: list[PlannedCamera]) -> list[dict]:
+    """Per charging pad: the cameras that see all 4 of its drones standing on it far enough apart in
+    the image to tell them apart (PAD_MIN_SEP_PX between the closest two). Drones 0.2 m apart seen
+    from far away, or only edge-on, merge or get mixed up, and the start, which waits until every
+    drone is tracked on its own slot, never comes. Simulated: 2 such cameras failed, 3 worked."""
+    out = []
+    if not site.pad_slots or not cameras:
+        return out
+    req = site.requirements
+    pos = np.array([c.position_m for c in cameras])
+    R = np.array([c.R for c in cameras])
+    f_px = np.array([site.sensor.f_px(c.lens_mm) for c in cameras])
+    for k, (_, slots) in enumerate(site.pad_slots):
+        vis, _ = contributions(pos, R, f_px, slots, site.sensor, req.noise, site.limits)
+        sees, sep = [], []
+        for i in np.nonzero(vis.all(axis=1))[0]:
+            X = (slots - pos[i]) @ R[i].T
+            uv = f_px[i] * X[:, :2] / X[:, 2:3]
+            d = min(float(np.linalg.norm(uv[a] - uv[b])) for a in range(4) for b in range(a + 1, 4))
+            sees.append(cameras[i].id)
+            if d >= PAD_MIN_SEP_PX:
+                sep.append(cameras[i].id)
+        out.append({"pad": k + 1, "cameras": len(sees), "resolving": len(sep), "ids": sep,
+                    "ok": len(sep) >= req.min_cameras})
+    return out
+
+
+def pad_coverage_text(rows: list[dict], min_cameras: int) -> list[str]:
+    lines = []
+    for r in rows:
+        if r["ok"]:
+            continue
+        lines.append(f"Charging pad {r['pad']}: only {r['resolving']} camera(s) see its 4 drones far enough apart to "
+                     f"tell them apart (needs {min_cameras}; {r['cameras']} see them at all). No drone takes off "
+                     "before every drone is tracked on its own slot: move the pad 1.5 m or more in from the edge, "
+                     "nearer the cameras, or add a mount (truss or tripod area) that looks down on it.")
+    return lines
+
+
 def optimise(site: Site, log=print, max_cameras: int | None = None, cancel=None):
     for w in site.warnings():
         log(f"warning: {w}")
@@ -344,7 +386,12 @@ def optimise(site: Site, log=print, max_cameras: int | None = None, cancel=None)
             break                                       # the same points again: nothing more to gain
         log(f"Re-planning with {len(extra):,} extra points where the fine check found gaps…")
     ev = evaluate(site, cams)
+    pads = pad_coverage(site, cams)
+    for line in pad_coverage_text(pads, site.requirements.min_cameras):
+        log("warning: " + line)
     summary = dict(ev.summary)
+    if pads:
+        summary["pads"] = pads
     summary["optimiser"] = {"candidates": len(cands), "seconds": round(seconds, 1),
                             "stopped_because": result.stopped_because, "fine_check_rounds": rnd + 1}
     summary["fine_check"] = ev.summary["fine_check"] = fc

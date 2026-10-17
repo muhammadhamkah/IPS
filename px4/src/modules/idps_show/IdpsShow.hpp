@@ -96,13 +96,17 @@ private:
 	void run_pads(hrt_abstime now);
 	bool active() const;
 
-	// A move of two minimum-jerk legs through three points (NED), starting at t0 (PC clock, µs).
+	// A move of minimum-jerk legs through points (NED), starting at t0 (PC clock, µs).
+	static constexpr int LEGS = 3;
 	struct Path {
 		int64_t t0{0};
-		float p[3][3] {};
-		float T[2] {};
-		int64_t end() const { return t0 + (int64_t)((T[0] + T[1]) * 1e6f); }
+		float p[LEGS + 1][3] {};
+		float T[LEGS] {};
+		int64_t end() const { return t0 + (int64_t)((T[0] + T[1] + T[2]) * 1e6f); }
 	};
+	static constexpr float CLEAR_M = 0.5f;   // after the climb, this far forward over the pad's empty
+	                                         // slots first (as idps/show/pads.py CLEAR_M)
+	void forward(float f[3]) const;
 	static float leg_time(float dist, float speed);
 	void path_setpoint(const Path &path, int64_t t_pc, trajectory_setpoint_s &sp) const;
 	void publish(const trajectory_setpoint_s &sp, hrt_abstime now);
@@ -131,7 +135,9 @@ private:
 	static constexpr int64_t MIN_NOTICE = 4000000;         // start must be at least 4 s ahead
 	static constexpr int64_t MAX_NOTICE = 600000000;       // and at most 600 s
 	static constexpr hrt_abstime SYNC_STALE = 5_s;         // no sync for this long: clock not trusted to start
-	static constexpr float MAX_HOME_OFFSET_M = 0.5f;       // drone must stand on its home spot
+	static constexpr float MAX_HOME_OFFSET_M = 0.1f;       // drone must stand on its home spot (its own pad
+	                                                       // slot: the next slot is 0.2 m away)
+	static constexpr hrt_abstime MAX_VISION_AGE = 300_ms;  // ... tracked: an IDPS position this recent
 
 	// Clock sync with the PC: per-second minima of (local receive time - PC send time).
 	static constexpr int SYNC_BUCKETS = 16;
@@ -176,6 +182,8 @@ private:
 	uORB::Subscription _vehicle_command_sub{ORB_ID(vehicle_command)};
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
+	uORB::Subscription _visual_odometry_sub{ORB_ID(vehicle_visual_odometry)};
+	hrt_abstime _vision_at{0};       // when the latest IDPS position arrived
 	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
 	// Simulator only: SIH's exact position, republished as DEBUG_VECT "truth" for IDPS's SITL tests
 	// (HIL_STATE_QUATERNION carries latitude/longitude in 1.1 cm steps). Nothing publishes it on a drone.

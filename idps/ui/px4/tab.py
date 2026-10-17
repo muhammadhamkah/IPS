@@ -64,7 +64,8 @@ def camera_build(px4_dir) -> str:
 STAGES = [("== show", "building the show files"), ("PX4 drones", "starting the PX4 drones"),
           ("launch in", "taking off from the pads"), ("every drone holds in the grid", "holding in the grid"),
           ("== positions inside", "checking every drone's link"), ("== cameras", "starting cameras and engine"),
-          ("== upload", "uploading the show"), ("show starts in", "waiting for the start"),
+          ("== upload", "uploading the show"), ("waiting for tracking", "waiting for every drone to be tracked on its pad"),
+          ("tracked: every drone", "every drone tracked on its pad"), ("show starts in", "waiting for the start"),
           ("== result", "scoring")]
 FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still going (ports {0} busy). Quit it, or "
              "run: pkill -f 'idps.sim px4'; pkill -f idps_stand_in; pkill -x px4"),
@@ -90,8 +91,14 @@ FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still goi
             (r"Upload failed: those drones have no show file", "The show upload failed for some drones (the "
              "FAILED lines in the Log pane): fly again."),
             (r"Not started: every drone was told to abort", "Not started: a drone refused the start, so every drone "
-             "was told to abort.")]
+             "was told to abort."),
+            (r"Not started: not every drone is tracked on its spot: (.*)", "Not started: the cameras do not see every "
+             "drone on its own pad ({0}). No drone took off."),
+            (r"the venue has no charging pads", "The venue has no charging pads: place them in the Planner (C)."),
+            (r"(\d+) drones need (\d+) charging pads; the venue has (\d+)", "{0} drones need {1} charging pads; the "
+             "venue has {2}: fly fewer drones or place more pads.")]
 DRONE_NOTES = [(r"drone (\d+): (?:denied|temporarily rejected|failed|unsupported) \(\w+\) ?(.*)", "refused: {1}"),
+               (r"Drone (\d+): (not seen|on Drone \d+'s spot|[\d.]+ m from its spot)", "not tracked: {1}"),
                (r"drone (\d+): nothing on udp (\d+)", "no data (udp {1} silent)"),
                (r"^\s+drone (\d+): \S+\s+\[(\w+)\] (Failsafe.*|IDPS show stopped.*)", "{2}")]
 
@@ -294,6 +301,10 @@ class Px4Tab(QWidget):
             self.status.setText(f"PX4 is not built in {self.px4_dir} (no build/{build}): build it as px4/README.md "
                                 "says, or pick your PX4-Autopilot folder.")
             return False
+        venue, problem = self._venue_files(mode)
+        if problem:
+            self.status.setText(problem)
+            return False
         prune_runs(ROOT / "out" / "px4_runs", keep=KEEP_RUNS)
         self.out_dir = ROOT / "out" / "px4_runs" / time.strftime("%Y%m%d-%H%M%S")
         env = QProcessEnvironment.systemEnvironment()
@@ -303,6 +314,8 @@ class Px4Tab(QWidget):
         env.insert("PX4_BUILD", build)
         env.insert("N", str(self.n_drones.value()))
         env.insert("OUT", str(self.out_dir))
+        for k, v in venue.items():                       # the venue open in the Planner (else the example)
+            env.insert(k, v)
         self.proc = QProcess(self)
         pp = QProcess.UnixProcessParameters()            # its own process group: Stop reaches every helper
         pp.flags = QProcess.UnixProcessFlag.CreateNewSession
@@ -368,6 +381,50 @@ class Px4Tab(QWidget):
         self._signal_group(signal.SIGTERM)               # the script's cleanup runs; helpers get it too
         proc = self.proc                                 # only this run: a new one may have started by then
         QTimer.singleShot(12000, lambda: self._signal_group(signal.SIGKILL, proc))
+
+    def _venue_files(self, mode: str):
+        """The venue the drones fly: the one open in the Planner, with its charging pads and (for the
+        camera loop) its planned cameras, written for run_loop.sh. ({env}, None), or (None, why not).
+        The example show floor, as shipped, flies with its own files."""
+        doc = self.win.doc
+        d = doc.data
+        if doc.path is not None and Path(doc.path).resolve() == VENUE.resolve() and not doc.dirty:
+            return {}, None
+        pads = (d.get("pads") or {}).get("centres") or []
+        if len(d["volume"]["polygon"]) < 3 or not d.get("origin"):
+            return None, "Draw the venue in the Planner first (performance area and origin), or open one."
+        if not pads:
+            return None, ("Place the charging pads in the Planner first (Charging pad tool, C): the drones take off "
+                          "from them and land back on them.")
+        n = self.n_drones.value()
+        if n > 4 * len(pads):
+            return None, (f"{n} drones need {-(-n // 4)} charging pads (4 drones each); the venue has {len(pads)}. "
+                          "Fly fewer drones or place more pads.")
+        folder = ROOT / "out" / "px4_venue"
+        folder.mkdir(parents=True, exist_ok=True)
+        import yaml
+        (folder / "venue.yaml").write_text(yaml.safe_dump(doc.to_site_dict(), sort_keys=False))
+        env = {"SITE": str(folder / "venue.yaml"), "PLAN": ""}
+        canvas = self.win.canvas
+        if canvas.result is not None and not canvas.result_stale:
+            bad = [r["pad"] for r in canvas.result[0].summary.get("pads", []) if not r["ok"]]
+            if mode == "cameras" and bad:
+                return None, (f"The planned cameras cannot tell the drones on pad(s) {', '.join(map(str, bad))} apart "
+                              "(Planner: red pads, and the warning in the plan log), so no drone would take off. Move "
+                              "those pads 1.5 m or more in from the edge, or add a mount looking down on them, and plan "
+                              "again.")
+            canvas.result[0].save(folder / "plan.yaml")
+            env["PLAN"] = str(folder / "plan.yaml")
+        if mode == "cameras":
+            if not env["PLAN"]:
+                return None, ("Plan the cameras first (Planner → Plan Cameras, ⌘R): the simulated cameras are this "
+                              "venue's planned cameras" + (" and the venue changed since the last plan." if
+                                                          canvas.result is not None else "."))
+            sc = yaml.safe_load((ROOT / "examples" / "scenarios" / "show_8x8_micro60.yaml").read_text())
+            sc["name"], sc["plan"] = d.get("name", "venue"), "plan.yaml"
+            (folder / "scenario.yaml").write_text(yaml.safe_dump(sc, sort_keys=False))
+            env["SCENARIO"] = str(folder / "scenario.yaml")
+        return env, None
 
     def _read_output(self):
         text = bytes(self.proc.readAllStandardOutput()).decode(errors="replace").rstrip()

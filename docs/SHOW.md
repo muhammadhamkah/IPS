@@ -161,14 +161,32 @@ The show you design starts and ends in the air: its **first frame is the initial
 **last frame the final grid**, with batch k at `layers_m[k]` in both. Check and export with
 `--pads pads.yaml`:
 
+0. **Tracked on the pads.** No drone takes off before the cameras see every drone on its own
+   slot: `idps-show start --positions positions.csv` (the engine's live log) waits for that (up to
+   `--track-wait`, 60 s) and names the drones not seen or on the wrong slot; each drone also refuses
+   the launch without an IDPS position from the last 0.3 s or more than 0.1 m from its slot.
 1. **Launch** (`idps-show start`): batch k takes off `batch_gap_s` × (k − 1) after the launch
-   time. It climbs straight up over its pad slot to its layer, then flies level to its place in the
-   initial grid, and holds there.
+   time. It climbs straight up over its pad slot to its layer, steps 0.5 m forward (the pad's
+   front: over the slots already gone), then flies level to its place in the initial grid, and
+   holds there.
 2. **Show**: once every drone holds, the PC sends the start, and the show plays from the grid.
 3. **Back to the pads**: after the show (from the final grid), or if no start comes within
    `hold_timeout_s` after the last batch took off, batch k leaves `batch_gap_s` × (n − k)
-   later: last up, first down, so every drone flies as long. It flies level to above its pad slot,
-   comes straight down onto it (arriving at zero speed), and PX4 lands and disarms it.
+   later: last up, first down, so every drone flies as long. It flies level to 0.5 m in front of
+   its pad slot, steps back over it, comes straight down onto it (arriving at zero speed), and PX4
+   lands and disarms it.
+
+**A pad's front faces where its drones fly** (`facing`: `auto`, the default, towards the middle
+of the performance area; or north / east / south / west). Slots 1 and 2 are at the front, so the
+first batches leave first and the later ones step forward over empty slots: never over a drone
+still on the pad, wherever the pads stand. Drones still face North (yaw 0); only the slots turn.
+
+**The cameras must tell the drones on a pad apart.** Four drones 0.2 m apart, seen from far away
+or edge-on, merge or get mixed up. Planning reports, per pad, the cameras that see its 4 drones at
+least 8 px apart in the image (`pad_coverage`); a pad with fewer than the required cameras is
+drawn red and named in the plan log (simulated: 2 such cameras failed to identify them, 3
+worked). Pads tucked under the cameras on the near side are the usual cause: move them 1.5 m or
+more in from the edge, or add a mount that looks down on them.
 
 Every leg is a minimum-jerk move: T = max(1.5 s, 1.875 × distance / speed). The drone (the PX4
 module) computes the legs itself from its file's header (batch, gap, speeds, timeout), so all

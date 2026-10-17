@@ -39,11 +39,13 @@ the following inputs. In the dashboard the order is fixed:
    each pad stands. A pad holds 4 drones in a 2 × 2 square; pad k holds drones 4k − 3 … 4k, and a
    drone's slot is its take-off batch (docs/SHOW.md, "Charging pads"). Pads stand at least 0.5 m
    apart; drag a pad to move it, ⌫ to delete it. The inspector sets the take-off and landing
-   sequence (batch gap, speeds, grid heights, hold timeout) for every pad.
+   sequence (batch gap, speeds, grid heights, hold timeout, which way the pads face) for every pad.
 5. **Plan Cameras** (⌘R). Planning without pads asks first: the cameras are planned to also see
    every drone on its pad (its marker, so the start can check each drone is on its own spot) and
-   on its climb to its grid height, wherever the pads stand. The show tools read the pads from
-   the saved venue file (`idps-show check / export --pads venue.yaml`).
+   on its climb to its grid height, wherever the pads stand, and warns (red pad) where the cameras
+   would not tell a pad's 4 drones apart. The show tools read the pads from the saved venue file
+   (`idps-show check / export --pads venue.yaml`), and the dashboard's PX4 flight tab flies the
+   venue open in the Planner: its pads, and in the camera loop its planned cameras.
 
 All coordinates shown and exported are **North-East-Down from the origin** (decision D18):
 N and E on the floor, D down (a camera 11.2 m up has D = −11.2). Headings (gimbal base,

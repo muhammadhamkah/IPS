@@ -212,9 +212,12 @@ any weight, however the drone is tuned.
 ### 20 drones, from charging pads
 
 `run_loop.sh` flies the drones as they will fly at a show: they stand on charging pads
-(`examples/pads/show_8x8.yaml`: 5 pads along the South edge, 4 drones each), take off in 4
-batches to a layered air grid (batch k at k m), fly `examples/shows/layers_from_pads.py` (80 s)
-and land back on their pads, last up first down (docs/SHOW.md, "Charging pads"). N = 1–20;
+(the venue's: `SITE`, default `examples/sites/show_8x8.yaml` with 5 pads along the South edge, 4
+drones each; `PLAN` and `SCENARIO` its cameras; the dashboard passes the venue open in the
+Planner), and in the camera loop wait until the cameras track every drone on its own slot. They
+take off in 4 batches to a layered air grid (batch k at k m) built for the venue, fly
+`examples/shows/layers_from_pads.py` (80 s) and land back on their pads, last up first down
+(docs/SHOW.md, "Charging pads"). N = 1–20 (4 per pad);
 `PADS=0` flies the old 5-drone show from the ground. 3 drones in PX4: take-offs 8 s apart, held at
 1/2/3 m, show median 2.4–2.7 mm, landed 3–4 mm from their pad slots. With 1.5 m/s climb and transfer
 and a 5 s gap (the defaults), 5 drones: show median 2.6–3.0 mm, worst 27.6 mm.
@@ -224,6 +227,16 @@ found a lurch: the module held the final grid 0.5 s after the show before handin
 landing, but the first batch down (the last up) leaves at the show's end, so its landing path was
 already 0.5 s along: a 14 cm jump. Landing now takes over at the end. 5 drones, simulated cameras:
 take-off worst 17.0 mm, hold 8.2 mm, show 8.9 mm (median 2.2–3.0 mm), landing 17.4 mm.
+
+A 10 × 8 m venue with 2 pads in its north-west corner and 8 planned tripod cameras, 8 drones:
+with the pads tucked under the west cameras, only 2 cameras saw each pad's drones far enough
+apart, the engine never identified them all, and the start refused ("not every drone is tracked
+on its spot"; nothing took off). With the pads 1.5 m further in (3–4 such cameras, re-planned:
+10 cameras), every drone was tracked on its slot within the first seconds, and the flight from
+the pads (facing south-east, the area's middle) ran through: show median 2.6–3.3 mm (worst
+47 mm in a 76 ms PC stall, 4 cores, 8 drones), take-off worst 28 mm, landing worst 77 mm on the
+short fast leg from the grid to the pad at 1.5 m/s (about 2 m/s²); a slower "Speed to and from
+the grid" is gentler where the checks allow it.
 
 * The cameras and engine on the earlier 20-drone show with drones exactly on their files: all 20
   identified, median 1.3–1.7 mm, worst 10 mm; filming runs at about 2× real time in one process.
