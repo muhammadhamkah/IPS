@@ -100,7 +100,9 @@ class EngineConfig:
     confirm_hits: int = 8             # updates needed (within confirm_window epochs) to confirm
     confirm_window: int = 16
     coast_s: float = 0.5              # delete a track not updated for this long
-    q_accel: float = 400.0            # Kalman process noise (m²/s³); drones change acceleration quickly
+    q_accel: float = 50.0             # Kalman process noise (m²/s³): still ~75 m/s² of acceleration per 1/120 s,
+                                      # but a 2 cm blip (two markers merging in a camera) no longer becomes a
+                                      # 3-5 m/s velocity that carries a parked drone's track onto its neighbour
     innov_gate: float = 25.0          # reject a measurement this far from the prediction (Mahalanobis², ~5 sigma) ...
     innov_max_rejects: int = 3        # ... unless it happens this many times in a row (then it is real motion)
     inherit_radius_m: float = 0.5     # a new track this close to a lost one takes over its ID ...

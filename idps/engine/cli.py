@@ -13,6 +13,10 @@ import time
 
 import numpy as np
 
+from struct import Struct
+
+_REC = Struct("<QI")                  # idps.sim.runner.FileSink's record: [u64 time ns][u32 length][packet]
+
 
 def cmd_replay(a) -> int:
     from idps.engine.calib import load_calibration
@@ -107,6 +111,10 @@ def cmd_live(a) -> int:
     w = csv.writer(out_f) if out_f else None
     if w:
         w.writerow(["t_ns", "marker_id", "n", "e", "d", "vn", "ve", "vd", "n_cams", "sigma_mm", "age_ms"])
+    rec = None
+    if a.record:
+        rec = open(a.record, "wb", buffering=1 << 20)       # the packets as received: replay them offline
+        rec.write(b"IDPSRAW1")
     print(f"listening on udp {a.host}:{a.port}; positions to drone(s) {sorted(mavs) or 'none'}; Ctrl+C to stop")
     last_print, sent, dropped, seen, ages = time.monotonic(), 0, 0, {}, []
     try:
@@ -117,6 +125,8 @@ def cmd_live(a) -> int:
                 data = None
             outs = []
             if data:
+                if rec is not None:
+                    rec.write(_REC.pack(time.time_ns(), len(data)) + data)
                 for f in ing.feed(data):
                     outs += eng.feed(f)
             now = time.monotonic()
@@ -159,6 +169,8 @@ def cmd_live(a) -> int:
             ts.stop()
         if out_f:
             out_f.close()
+        if rec is not None:
+            rec.close()
     return 0
 
 
@@ -189,6 +201,8 @@ def main(argv=None) -> int:
     lv.add_argument("--timesync", action="store_true",
                     help="answer the drones' TIMESYNC with the cameras' clock and stamp each position with its "
                          "exposure time (drones: EKF2_EV_DELAY 0, EKF2_DELAY_MAX = --horizon-ms)")
+    lv.add_argument("--record", help="also write the camera packets as received to this file (idps-engine "
+                    "replay reads it: diagnose a flight offline)")
     lv.add_argument("--horizon-ms", type=float, default=50.0,
                     help="with --timesync: the drones' EKF2_DELAY_MAX; an older position is not sent")
     a = ap.parse_args(argv)

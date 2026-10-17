@@ -47,7 +47,14 @@ stations ──UDP──▶ ingest ─▶ 1/120 s slots ─▶ match to tracks �
      others, or their dots are ambiguous) is still updated with that one line of sight. The
      update is skipped if the line misses the prediction by more than 5σ. Otherwise the track
      would coast on its last velocity and be lost, as drones on pads often are.
+   * The filter's process noise (q_accel) is 50 m²/s³, which still allows ~75 m/s² of
+     acceleration from one slot to the next. It was 400. That made a 2 cm blip into a
+     3–5 m/s velocity: two markers merging in a camera as a drone lands beside a parked
+     one, for example. That velocity then carried the parked drone's track onto its
+     neighbour, and the two IDs swapped.
    * A track is confirmed after 8 updates and deleted after 0.5 s without one.
+   * A named track's ID votes fade at each blink-code read (× 0.7). Two tracks that
+     traded markers are renamed after two consistent reads (~4 s); one misread can't do it.
 6. **New tracks.** These start from leftover dots: two cameras whose lines nearly cross
    inside the volume, confirmed by a dot in a third camera.
    * Each camera's **fixed reflections** are learned: a leftover dot that stays within

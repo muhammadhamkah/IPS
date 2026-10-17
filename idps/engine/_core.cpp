@@ -369,7 +369,7 @@ struct Lost { double t; int mid; Vec3 pos, vel; Votes votes; };
 
 struct Config {
     double reorder_s = 0.008, sigma_px = 0.15, gate_px = 4.0, max_resid_px = 3.0, init_gap_m = 0.03,
-           init_support_px = 2.5, coast_s = 0.5, q_accel = 400.0, innov_gate = 25.0, inherit_radius_m = 0.5,
+           init_support_px = 2.5, coast_s = 0.5, q_accel = 50.0, innov_gate = 25.0, inherit_radius_m = 0.5,
            inherit_within_s = 1.0, decode_every_s = 0.5, decode_every_named_s = 2.0, decode_window_s = 2.5,
            ambiguous_px = 3.0, id_vote_decay = 0.7;
     int min_cams_init = 3, min_cams_update = 2, confirm_hits = 8, confirm_window = 16, innov_max_rejects = 3,
