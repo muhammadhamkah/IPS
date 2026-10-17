@@ -178,6 +178,35 @@ def test_bearing_update_has_no_velocity_feedback():
     assert np.linalg.norm(tr.kf.vel - v_true) < 0.02
 
 
+def test_a_dot_two_tracks_share_in_one_camera_updates_neither():
+    """Two drones in one line from camera A (a drone taking off in front of the one on the pad
+    behind it): A's one dot could be either, so it goes to neither and their IDs cannot swap;
+    camera B, which sees them apart, still gives each its own dot."""
+    from idps.engine.ingest import CameraFrame
+    from idps.engine.tracker import CONFIRMED, KalmanCV, Track
+    zero = (0.0,) * 5
+    cam_a = CameraCal(1, np.array([0.0, 0.0, -5.0]), np.eye(3), 933.3, 639.5, 399.5, np.array(zero))
+    cam_b = CameraCal(2, np.array([5.0, 0.0, 0.15]), np.array([[0.0, 1, 0], [0, 0, -1], [-1, 0, 0]]),
+                      933.3, 639.5, 399.5, np.array(zero))
+    eng = Engine({1: cam_a, 2: cam_b}, backend="python")
+    X = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.3]])
+    for k, x in enumerate(X):
+        tr = Track(k + 1, KalmanCV(x, 0.0, np.eye(3) * 1e-6, q=400.0), 0.0)
+        tr.state = CONFIRMED
+        eng.tracks.append(tr)
+
+    def frame(cam, pts):
+        u, v, _ = cam.project(pts)
+        n = len(u)
+        return CameraFrame(cam.station_id, 0, 0, np.c_[u, v], np.ones(n), np.ones(n), np.zeros(n, np.uint8))
+
+    frames = [frame(cam_a, X[:1]), frame(cam_b, X)]
+    used = [np.zeros(f.n, bool) for f in frames]
+    got = eng._associate(frames, np.zeros(2), 0.0, used)
+    assert got == {0: [(1, 0)], 1: [(1, 1)]}
+    assert used[0][0]                     # A's dot is not free to start a new track either
+
+
 def test_live_does_not_send_a_stale_position():
     from idps.engine.cli import too_late
     assert not too_late(0.5, None)              # no EKF2_EV_DELAY given: everything is sent

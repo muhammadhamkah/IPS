@@ -367,9 +367,10 @@ struct Lost { double t; int mid; Vec3 pos, vel; Votes votes; };
 struct Config {
     double reorder_s = 0.008, sigma_px = 0.15, gate_px = 4.0, max_resid_px = 3.0, init_gap_m = 0.03,
            init_support_px = 2.5, coast_s = 0.5, q_accel = 400.0, innov_gate = 25.0, inherit_radius_m = 0.5,
-           inherit_within_s = 1.0, decode_every_s = 0.5, decode_every_named_s = 2.0, decode_window_s = 2.5;
+           inherit_within_s = 1.0, decode_every_s = 0.5, decode_every_named_s = 2.0, decode_window_s = 2.5,
+           ambiguous_px = 3.0;
     int min_cams_init = 3, min_cams_update = 2, confirm_hits = 8, confirm_window = 16, innov_max_rejects = 3,
-        id_votes_needed = 2, decodes_per_epoch = 2;
+        id_votes_needed = 2, decodes_per_epoch = 2, single_cam_update = 1;
 };
 
 // ------------------------------------------------------------------ triangulation
@@ -480,10 +481,11 @@ static bool chol_solve(std::vector<double> &S, int m, std::vector<double> &B, in
 
 // Kalman update of [p, v] at tr.t from lines of sight: camera k at O[k] saw the marker along
 // D[k] at tr.t + dt[k]; the components of (p + v dt - O) across the line are zero.
-static void bearing_update(Track &tr, const std::vector<Vec3> &O, const std::vector<Vec3> &D,
-                           const std::vector<double> &dt, double sigma_ang) {
+// With gate > 0: no update (false) if the lines miss the prediction by more (Mahalanobis²).
+static bool bearing_update(Track &tr, const std::vector<Vec3> &O, const std::vector<Vec3> &D,
+                           const std::vector<double> &dt, double sigma_ang, double gate = 0.0) {
     const int m = 2 * (int)O.size();
-    if (m == 0) return;
+    if (m == 0) return false;
     std::vector<double> H((size_t)m * 6), z(m), r2(m);
     for (size_t k = 0; k < O.size(); k++) {
         const Vec3 &d = D[k];
@@ -520,28 +522,38 @@ static void bearing_update(Track &tr, const std::vector<Vec3> &O, const std::vec
             for (int k = 0; k < 6; k++) a += HP[i * 6 + k] * H[j * 6 + k];
             S[i * m + j] = a + (i == j ? r2[i] : 0.0);
         }
-    std::vector<double> Y = HP;                          // Y = S^-1 H P  (m x 6), K = Y^T
-    if (!chol_solve(S, m, Y, 6)) return;
     std::vector<double> nu(m);
     for (int i = 0; i < m; i++) {
         double a = z[i];
         for (int k = 0; k < 6; k++) a -= H[i * 6 + k] * tr.x[k];
         nu[i] = a;
     }
+    std::vector<double> Y((size_t)m * 7);                 // [S^-1 H P | S^-1 nu]  (m x 7), K = Y[:, :6]^T
+    for (int i = 0; i < m; i++) {
+        for (int j = 0; j < 6; j++) Y[i * 7 + j] = HP[i * 6 + j];
+        Y[i * 7 + 6] = nu[i];
+    }
+    if (!chol_solve(S, m, Y, 7)) return false;
+    if (gate > 0) {
+        double d2 = 0;
+        for (int i = 0; i < m; i++) d2 += nu[i] * Y[i * 7 + 6];
+        if (d2 > gate) return false;
+    }
     for (int j = 0; j < 6; j++) {
         double a = 0;
-        for (int i = 0; i < m; i++) a += Y[i * 6 + j] * nu[i];
+        for (int i = 0; i < m; i++) a += Y[i * 7 + j] * nu[i];
         tr.x[j] += a;
     }
     double Pn[36];
     for (int i = 0; i < 6; i++)
         for (int j = 0; j < 6; j++) {
             double a = 0;
-            for (int k = 0; k < m; k++) a += Y[k * 6 + i] * HP[k * 6 + j];
+            for (int k = 0; k < m; k++) a += Y[k * 7 + i] * HP[k * 6 + j];
             Pn[i * 6 + j] = tr.P[i * 6 + j] - a;
         }
     for (int i = 0; i < 6; i++)
         for (int j = 0; j < 6; j++) tr.P[i * 6 + j] = 0.5 * (Pn[i * 6 + j] + Pn[j * 6 + i]);
+    return true;
 }
 
 // ------------------------------------------------------------------ the engine core
@@ -575,9 +587,9 @@ class Core {
 #define SETI(n) if (key == #n) cfg.n = v.cast<int>();
             SETD(reorder_s) SETD(sigma_px) SETD(gate_px) SETD(max_resid_px) SETD(init_gap_m) SETD(init_support_px)
             SETD(coast_s) SETD(q_accel) SETD(innov_gate) SETD(inherit_radius_m) SETD(inherit_within_s)
-            SETD(decode_every_s) SETD(decode_every_named_s) SETD(decode_window_s)
+            SETD(decode_every_s) SETD(decode_every_named_s) SETD(decode_window_s) SETD(ambiguous_px)
             SETI(min_cams_init) SETI(min_cams_update) SETI(confirm_hits) SETI(confirm_window) SETI(innov_max_rejects)
-            SETI(id_votes_needed) SETI(decodes_per_epoch)
+            SETI(id_votes_needed) SETI(decodes_per_epoch) SETI(single_cam_update)
 #undef SETD
 #undef SETI
         }
@@ -652,17 +664,37 @@ class Core {
                     refl[a] = mask.known(xy(di, 0), xy(di, 1), times[fi]);
                 }
                 const double m = cfg.gate_px;
+                std::vector<double> pu(NT), pv(NT), pg(NT, -1.0);    // projections; gate < 0: not in view
                 for (int ti = 0; ti < NT; ti++) {
                     double dtt = times[fi] - tk[ti];
                     Vec3 Xp{pos[ti][0] + vel[ti][0] * dtt, pos[ti][1] + vel[ti][1] * dtt, pos[ti][2] + vel[ti][2] * dtt};
                     double u, v, z;
                     cam.project(Xp, u, v, z);
                     if (!(z > 0.3 && u >= -m && u <= cam.w - 1 + m && v >= -m && v <= cam.h - 1 + m)) continue;
-                    double gate = cfg.gate_px + 3 * sig[ti] * cam.f / std::max(z, 0.3);
-                    for (size_t a = 0; a < fdots[fi].size(); a++) {
-                        int di = fdots[fi][a];
-                        double d = std::hypot(xy(di, 0) - u, xy(di, 1) - v);
-                        if (d < gate && !(moving[ti] && refl[a])) cand.push_back({d, ti, fi, (int)a});
+                    pu[ti] = u; pv[ti] = v;
+                    pg[ti] = cfg.gate_px + 3 * sig[ti] * cam.f / std::max(z, 0.3);
+                }
+                for (size_t a = 0; a < fdots[fi].size(); a++) {
+                    int di = fdots[fi][a];
+                    // a dot that two confirmed tracks' predictions both come about as close to cannot
+                    // tell them apart in this camera (engine.py _associate): it updates neither
+                    double b0 = INFINITY, b1 = INFINITY;
+                    bool in_gate = false;
+                    size_t first = cand.size();
+                    for (int ti = 0; ti < NT; ti++) {
+                        if (pg[ti] < 0) continue;
+                        double d = std::hypot(xy(di, 0) - pu[ti], xy(di, 1) - pv[ti]);
+                        if (tracks[ti].confirmed) {
+                            if (d < b0) { b1 = b0; b0 = d; } else if (d < b1) b1 = d;
+                        }
+                        if (d < pg[ti] && !(moving[ti] && refl[a])) {
+                            cand.push_back({d, ti, fi, (int)a});
+                            in_gate = true;
+                        }
+                    }
+                    if (cfg.ambiguous_px > 0 && in_gate && b1 < b0 + cfg.ambiguous_px) {
+                        cand.resize(first);
+                        used[di] = 1;
                     }
                 }
             }
@@ -691,14 +723,34 @@ class Core {
                     if (fl(o.dot) & 4) used[o.dot] = 0;
                 obs = clean;
             }
-            if ((int)obs.size() < cfg.min_cams_update) {
+            bool single = obs.size() == 1 && cfg.single_cam_update && tracks[ti].confirmed;
+            if ((int)obs.size() < cfg.min_cams_update && !single) {
                 for (auto &o : obs) used[o.dot] = 0;
                 obs.clear();
             }
         }
         for (int ti = 0; ti < NT; ti++) {
             auto &obs = assigned[ti];
-            if (obs.empty()) continue;
+            if (obs.empty() || (int)obs.size() >= cfg.min_cams_update) continue;
+            // a confirmed track seen by one camera only follows that line of sight, if it passes
+            // the innovation gate (engine.py _update_single)
+            Track &tr = tracks[ti];
+            const Obs &o = obs[0];
+            const Cam &c = cams[fcam(o.frame)];
+            tr.predict(times[o.frame], cfg.q_accel);
+            if ((fl(o.dot) & 4) || !bearing_update(tr, {c.pos}, {rays[o.dot]}, {0.0}, c.sigma_ang, cfg.innov_gate)) {
+                used[o.dot] = 0;
+                continue;
+            }
+            tr.hits++;
+            tr.last_update = T;
+            tr.updated_epoch = epochs;
+            tr.n_cams = 1;
+            tr.add_brightness(times[o.frame], c.station, sm(o.dot));
+        }
+        for (int ti = 0; ti < NT; ti++) {
+            auto &obs = assigned[ti];
+            if ((int)obs.size() < cfg.min_cams_update) continue;
             Track &tr = tracks[ti];
             double Tm = 0;
             for (auto &o : obs) Tm += times[o.frame];

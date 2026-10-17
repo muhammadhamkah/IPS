@@ -23,6 +23,11 @@ stations ──UDP──▶ ingest ─▶ 1/120 s slots ─▶ match to tracks �
    * The gate is 4 px plus the track's own uncertainty.
    * Nearest pairs win first, and each dot is used once.
    * A moving track can't take a dot on a known fixed reflection.
+   * A dot that two confirmed tracks' predictions come within 3 px of each other to is
+     **ambiguous** in that camera: it updates neither track and starts nothing. Example:
+     drones on charging pads 0.5 m apart, where a drone taking off rises in front of its
+     neighbour, so one camera sees both in one line. Without this rule, the hidden drone's
+     track took the climbing drone's dot, and the two IDs swapped.
    * A dot the station flags as two merged markers is left out when 3 other cameras see the
      drone.
 4. **Screening.** The engine finds the point closest to all of a track's lines of sight
@@ -38,6 +43,10 @@ stations ──UDP──▶ ingest ─▶ 1/120 s slots ─▶ match to tracks �
      estimated velocity. A slightly wrong velocity then biased the point, slots with
      different camera sets pulled the velocity apart, and the result was short 10–18 mm
      bursts. Updating with the lines themselves removes that feedback.
+   * A confirmed track that only one camera sees in a slot (its neighbours hide it from the
+     others, or their dots are ambiguous) is still updated with that one line of sight. The
+     update is skipped if the line misses the prediction by more than 5σ. Otherwise the track
+     would coast on its last velocity and be lost, as drones on pads often are.
    * A track is confirmed after 8 updates and deleted after 0.5 s without one.
 6. **New tracks.** These start from leftover dots: two cameras whose lines nearly cross
    inside the volume, confirmed by a dot in a third camera.

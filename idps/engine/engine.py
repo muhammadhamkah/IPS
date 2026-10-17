@@ -81,11 +81,13 @@ class EngineConfig:
                                       # (wired PTP stations: 4-8 ms is enough; Wi-Fi stations need ~25 ms)
     sigma_px: float = 0.15            # centroid + calibration noise per ray, pixels
     gate_px: float = 4.0              # matching gate around a track's prediction (plus its uncertainty)
+    ambiguous_px: float = 3.0         # a dot no nearer (px) one confirmed track's prediction than another's updates neither
     max_resid_px: float = 3.0         # a ray missing the triangulated point by more is dropped
     init_gap_m: float = 0.03          # rays this close count as crossing (plus 0.3 % of range)
     init_support_px: float = 2.5      # a third camera's dot must be this close to the candidate
     min_cams_init: int = 3            # cameras needed to start a track
-    min_cams_update: int = 2          # cameras needed to update a track
+    min_cams_update: int = 2          # cameras needed to update a track (triangulated) ...
+    single_cam_update: bool = True    # ... but a confirmed track seen by one camera follows its line of sight
     confirm_hits: int = 8             # updates needed (within confirm_window epochs) to confirm
     confirm_window: int = 16
     coast_s: float = 0.5              # delete a track not updated for this long
@@ -348,6 +350,7 @@ class Engine:
         gate = cfg.gate_px + 3 * sig[None, :] * fpx / np.maximum(z, 0.3)
         # a moving marker cannot be on a known fixed reflection (only a resting one can)
         moving = np.linalg.norm(vel, axis=1) > 0.05
+        confirmed = np.array([tr.state == CONFIRMED for tr in self.tracks])
         cand = []                                                      # (distance px, track, frame, dot)
         for k, fi in enumerate(fis):
             if not vis[k].any():
@@ -359,6 +362,17 @@ class Engine:
             refl = self.static[f.station_id].known(xy, times[fi])
             if refl.any():
                 ok &= ~(moving[:, None] & refl[None, :])
+            if cfg.ambiguous_px > 0 and confirmed.sum() >= 2:
+                # a dot that two confirmed tracks' predictions both come this close to cannot tell
+                # them apart in this camera (two markers in one line from it, or one hidden behind
+                # its neighbour on the ground while that one takes off): it updates neither and
+                # starts nothing, else the track of the hidden one takes it and the IDs swap
+                dc = np.where(vis[k][:, None] & confirmed[:, None], d, np.inf)
+                two = np.partition(dc, 1, axis=0)[:2]
+                amb = (two[1] < two[0] + cfg.ambiguous_px) & ok.any(0)
+                if amb.any():
+                    ok &= ~amb[None, :]
+                    used[fi][amb] = True
             for ti, di in zip(*np.nonzero(ok)):
                 cand.append((d[ti, di], ti, fi, di))
         cand.sort()
@@ -399,12 +413,42 @@ class Engine:
                 assigned[ti] = clean
         rows = [(ti, fi, di) for ti, obs in assigned.items() if len(obs) >= cfg.min_cams_update
                 for fi, di in obs]
+        single = []
         for ti, obs in assigned.items():
             if len(obs) < cfg.min_cams_update:
-                for fi, di in obs:
-                    used[fi][di] = False
-        if not rows:
-            return
+                if len(obs) == 1 and cfg.single_cam_update and self.tracks[ti].state == CONFIRMED:
+                    single.append((ti, *obs[0]))
+                else:
+                    for fi, di in obs:
+                        used[fi][di] = False
+        if rows:
+            self._update_multi(rows, frames, times, T, used)
+        self._update_single(single, frames, times, T, used)
+
+    def _update_single(self, single, frames, times, T, used):
+        """A confirmed track seen by one camera only (a neighbour on the ground hides it from the
+        others, or their dots are ambiguous) is still updated with that line of sight if it
+        passes the innovation gate; otherwise it would coast on its last velocity and be lost."""
+        cfg = self.cfg
+        for ti, fi, di in single:
+            tr = self.tracks[ti]
+            f = frames[fi]
+            if f.mflags[di] & ELONGATED:
+                used[fi][di] = False
+                continue
+            self._predict([ti], [times[fi]])
+            if not self._bearing_update(tr, self.cams[f.station_id].position[None], f.rays[di][None], np.zeros(1),
+                                        self.sigma_ang[f.station_id], gate=cfg.innov_gate):
+                used[fi][di] = False
+                continue
+            tr.hits += 1
+            tr.last_update = T
+            tr.updated_epoch = self.stats["epochs"]
+            tr.n_cams = 1
+            tr.add_brightness(times[fi], f.station_id, f.sum[di])
+
+    def _update_multi(self, rows, frames, times, T, used):
+        cfg = self.cfg
         tix = np.array([r[0] for r in rows])
         fis = [r[1] for r in rows]
         O = np.array([self.cams[frames[fi].station_id].position for fi in fis])
@@ -457,11 +501,12 @@ class Engine:
                 self.tracks[ti].add_brightness(times[fi], f.station_id, f.sum[di])
 
     @staticmethod
-    def _bearing_update(tr: Track, O, D, dt, sigma_ang: float):
+    def _bearing_update(tr: Track, O, D, dt, sigma_ang: float, gate: float | None = None) -> bool:
         """Kalman update of [position, velocity] at tr.kf.t from lines of sight: camera k at
         O[k] saw the marker along D[k] at time tr.kf.t + dt[k]. Each line gives two linear
         measurements: the components of (p + v dt - O) across the line are zero, with noise
-        sigma_ang times the range."""
+        sigma_ang times the range. With ``gate``: no update (False) if the lines miss the
+        prediction by more than that (Mahalanobis²)."""
         x, P = tr.kf.x, tr.kf.P
         rows, z, r2 = [], [], []
         for o, d, t in zip(O, D, dt):
@@ -476,10 +521,14 @@ class Engine:
                 r2.append((sigma_ang * rng) ** 2)
         H = np.array(rows)
         S = H @ P @ H.T + np.diag(r2)
+        nu = np.array(z) - H @ x
+        if gate is not None and float(nu @ np.linalg.solve(S, nu)) > gate:
+            return False
         K = np.linalg.solve(S, H @ P).T
-        x = x + K @ (np.array(z) - H @ x)
+        x = x + K @ nu
         P = P - K @ H @ P
         tr.kf.x, tr.kf.P = x, 0.5 * (P + P.T)
+        return True
 
     def _start_tracks(self, frames, times, T, used):
         cfg = self.cfg
