@@ -149,7 +149,10 @@ def test_open_example_and_plan(win):
     win.canvas.set_selection(("camera", 0))
     # editing the site marks the plan stale
     win.doc.edit("x", lambda d: d["volume"]["z"].__setitem__(1, 4.0))
-    assert win.canvas.result_stale
+    assert win.canvas.result_stale and win.canvas.stale_reasons() == ["the performance area"]
+    # ... and undoing back to the planned venue makes it current again
+    win.doc.undo.undo()
+    assert not win.canvas.result_stale
 
 
 def test_worker_cancel(app):
@@ -944,4 +947,12 @@ def test_px4_flight_flies_the_planner_venue(win, app):
     plan.summary["pads"][0]["ok"] = True
     env, why = tab._venue_files("cameras")
     assert why is None and Path(env["PLAN"]).exists() and Path(env["SCENARIO"]).exists()
+    # moving a pad after planning: plan again, and it says what changed
+    c.result_site = win.doc.to_site_dict()           # as set_result keeps it
+    win.doc.edit("move pad", lambda d: d["pads"]["centres"][0].__setitem__(0, -7.0))
+    env, why = tab._venue_files("cameras")
+    assert env is None and "Plan the cameras again" in why and "the charging pads changed" in why
+    win.doc.undo.undo()
+    env, why = tab._venue_files("cameras")
+    assert why is None
     c.result = None

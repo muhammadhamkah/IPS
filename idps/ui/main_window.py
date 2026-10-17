@@ -478,6 +478,7 @@ class MainWindow(QMainWindow):
             return
         self.results.running(True)
         self.a_run.setEnabled(False)
+        self._planning_site = site_dict
         self.thread, self.worker = start_worker(self, site_dict, str(self.doc.path) if self.doc.path else None)
         keep = (self.thread, self.worker)
         self._running.append(keep)
@@ -569,7 +570,7 @@ class MainWindow(QMainWindow):
     def _plan_done(self, plan, ev, site):
         self._plan_finished()
         self.last_site = site
-        self.canvas.set_result(plan, ev)
+        self.canvas.set_result(plan, ev, getattr(self, "_planning_site", None))
         self.results.show_result(plan, ev)
         self.canvas.zoom_to_fit()                # include every planned camera
         self.view3d.fit()

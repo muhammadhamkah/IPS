@@ -36,6 +36,21 @@ HANDLE_PX = 7
 HIT_PX = 9
 
 
+VENUE_PARTS = {"origin": "the origin or North", "volume": "the performance area", "trusses": "the trusses",
+               "tripod_zones": "the tripod areas", "no_go_zones": "the no-go zones", "pads": "the charging pads",
+               "sensor": "the camera", "lenses_mm": "the lenses", "requirements": "the requirements",
+               "design": "the design settings", "visibility": "the visibility settings",
+               "evaluation": "the evaluation settings", "candidates": "the mounting settings",
+               "optimiser": "the optimiser settings"}
+
+
+def venue_changes(old: dict, new: dict) -> list[str]:
+    """The parts of the venue (plain words) that differ between two site dicts; the name does not count."""
+    keys = (set(old) | set(new)) - {"name"}
+    return [VENUE_PARTS.get(k, k) for k in sorted(keys, key=lambda k: list(VENUE_PARTS).index(k)
+                                                   if k in VENUE_PARTS else 99) if old.get(k) != new.get(k)]
+
+
 def _poly(pts) -> QPolygonF:
     return QPolygonF([QPointF(float(x), float(y)) for x, y in pts])
 
@@ -125,6 +140,7 @@ class PlanCanvas(QGraphicsView):
 
         self.result = None               # (plan, evaluation) from the last planning run
         self.result_stale = False
+        self.result_site: dict | None = None     # the venue that run planned (doc.to_site_dict())
         self.overlay_mode = "count"      # "none" | "count" | "accuracy"
         self.overlay_level = 0
         self.highlight_camera: int | None = None
@@ -632,8 +648,9 @@ class PlanCanvas(QGraphicsView):
         self._dim(p, a, b, 0, f"{np.linalg.norm(b - a):.3f} m", c)
 
     # ------------------------------------------------------------- results
-    def set_result(self, plan, ev):
+    def set_result(self, plan, ev, site_dict: dict | None = None):
         self.result = (plan, ev)
+        self.result_site = site_dict if site_dict is not None else self.doc.to_site_dict()
         self.result_stale = False
         self.highlight_camera = None
         self.overlay_level = min(self.overlay_level, len(ev.grid.zs) - 1)
@@ -641,8 +658,15 @@ class PlanCanvas(QGraphicsView):
             self.scene().addItem(self.overlay)
         self.update_overlay()
 
+    def stale_reasons(self) -> list[str]:
+        """What changed in the venue since the cameras were planned (empty: the plan still holds)."""
+        if self.result is None or self.result_site is None:
+            return []
+        return venue_changes(self.result_site, self.doc.to_site_dict())
+
     def clear_result(self):
         self.result = None
+        self.result_site = None
         if self.overlay.scene() is not None:
             self.scene().removeItem(self.overlay)
         self.viewport().update()
@@ -726,7 +750,9 @@ class PlanCanvas(QGraphicsView):
 
     def rebuild(self):
         if self.result is not None:
-            self.result_stale = True
+            # stale only while the venue differs from the one planned: a change undone, or a
+            # pad dragged and put back, keeps the plan
+            self.result_stale = bool(self.stale_reasons())
             self.update_overlay()
         # drop a selection that no longer exists
         s = self.selection

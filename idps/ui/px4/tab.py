@@ -420,9 +420,12 @@ class Px4Tab(QWidget):
             env["PLAN"] = str(folder / "plan.yaml")
         if mode == "cameras":
             if not env["PLAN"]:
-                return None, ("Plan the cameras first (Planner → Plan Cameras, ⌘R): the simulated cameras are this "
-                              "venue's planned cameras" + (" and the venue changed since the last plan." if
-                                                          canvas.result is not None else "."))
+                if canvas.result is None:
+                    return None, ("Plan the cameras first (Planner → Plan Cameras, ⌘R): the simulated cameras are "
+                                  "this venue's planned cameras.")
+                return None, ("Plan the cameras again (Planner → Plan Cameras, ⌘R): "
+                              + _and(canvas.stale_reasons()) + " changed since the last plan, and the simulated "
+                              "cameras are the planned ones. (Undo back to the planned venue also works.)")
             sc = yaml.safe_load((ROOT / "examples" / "scenarios" / "show_8x8_micro60.yaml").read_text())
             sc["name"], sc["plan"] = d.get("name", "venue"), "plan.yaml"
             (folder / "scenario.yaml").write_text(yaml.safe_dump(sc, sort_keys=False))
@@ -654,3 +657,8 @@ class Px4Tab(QWidget):
             self._signal_group(signal.SIGTERM)
             if not self.proc.waitForFinished(10000):
                 self._signal_group(signal.SIGKILL)
+
+
+def _and(parts: list[str]) -> str:
+    parts = parts or ["the venue"]
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
