@@ -94,6 +94,9 @@ FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still goi
              "was told to abort."),
             (r"Not started: not every drone is tracked on its spot: (.*)", "Not started: the cameras do not see every "
              "drone on its own pad ({0}). No drone took off."),
+            (r"Not exported: fix the errors above", "The show does not pass its checks for this venue (take-off, "
+             "landing or the show itself: the ERROR lines in the Log pane), so nothing was flown. Move the pads or "
+             "change the batch gap or speeds in the Planner's pad settings."),
             (r"the venue has no charging pads", "The venue has no charging pads: place them in the Planner (C)."),
             (r"(\d+) drones need (\d+) charging pads; the venue has (\d+)", "{0} drones need {1} charging pads; the "
              "venue has {2}: fly fewer drones or place more pads.")]

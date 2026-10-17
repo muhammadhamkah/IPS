@@ -83,11 +83,15 @@ def test_pads_face_the_area_and_step_forward_before_the_long_leg():
     area. After climbing, each drone first steps CLEAR_M forward over the pad's empty slots, so a
     long leg's slow start never leaves it over the slot whose batch climbs next."""
     from idps.show.pads import CLEAR_M, launch_legs, pads_from_site, slot_offset_ne
+    one = _corner_site()
+    one["pads"]["centres"] = one["pads"]["centres"][:1]
+    assert pads_from_site(one).facing_deg == pytest.approx(np.degrees(np.arctan2(4.0, -3.0)) % 360, abs=1e-3)  # SE
     lay = pads_from_site(_corner_site())
-    assert lay.facing_deg == pytest.approx(np.degrees(np.arctan2(3.5, -3.0)) % 360, abs=1e-3)    # to the SE
+    assert lay.facing_deg == 180.0          # pads in a row (E-W): across it, towards the area (South)
     a = np.radians(lay.facing_deg)
     fwd = np.array([np.cos(a), np.sin(a)])
     assert slot_offset_ne(1, 0.2, lay.facing_deg) @ fwd == pytest.approx(0.1)            # slot 1 at the front
+    assert lay.clear_m(3) == CLEAR_M                                                       # nothing ahead
     assert slot_offset_ne(3, 0.2, lay.facing_deg) @ fwd == pytest.approx(-0.1)
     L = launch_legs(lay, 3, [0.0, 0.0, -3.0])
     home, top, clear, grid = (np.asarray(p) for p in L.points)
@@ -148,3 +152,48 @@ def test_no_take_off_before_every_drone_is_tracked_on_its_own_slot(tmp_path):
     with open(log, "a") as f:
         f.write(f"{now},1,0.1,-0.1,-0.08\n{now},2,0.12,0.09,-0.08\n")
     assert fleet.preflight(seen_in_log(log, now_ns=now), tol_m=0.1) == []
+
+
+
+@pytest.mark.parametrize("centre,axis", [((-8.6, 6.0), "x"), ((-9.0, -5.0), "y"), ((0.0, -6.0), "x"), ((-2.0, 0.0), "x")])
+def test_pads_side_by_side_half_a_metre_apart(centre, axis):
+    """Pads next to each other, 0.5 m centre to centre, wherever they stand (an edge, a corner, under
+    the middle of the area): the example show built for them passes every take-off and landing
+    check at a 5 s gap. Each batch's long legs take its longest one's time (a formation), each batch
+    waits in front of its slots until the one beside it is down, and the grid stands in front of
+    the pads."""
+    import importlib.util
+    from idps.show.pads import batch_leg_times, check_sequence, pads_from_site
+    spec = importlib.util.spec_from_file_location("lfp", ROOT / "examples/shows/layers_from_pads.py")
+    lfp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lfp)
+    cx, cy = centre
+    site = {"origin": {"xy": [0, 0], "north_deg": 90},
+            "volume": {"polygon": [[-10, 7], [10, 7], [10, -7], [-10, -7]], "z": [0, 10]},
+            "pads": {"centres": [[cx + 0.5 * i * (axis == "x"), cy + 0.5 * i * (axis == "y")] for i in range(3)],
+                     "batch_gap_s": 5, "climb_speed_mps": 1.5, "transfer_speed_mps": 1.5}}
+    lay = pads_from_site(site)
+    ch = lfp.build(site, 12)
+    _, P, _ = ch.arrays()
+    ned = np.stack([P[:, :, 1], P[:, :, 0], -P[:, :, 2]], -1)
+    ids = list(range(1, 13))
+    problems, _ = check_sequence(lay, ids, ned[:, 0], ned[:, -1])
+    assert not problems, problems[:3]
+    up, down, wait = batch_leg_times(lay, ids, ned[:, 0], ned[:, -1])
+    assert len({up[d] for d in (1, 5, 9)}) == 1 and len({down[d] for d in (2, 6, 10)}) == 1   # formations
+    assert wait[4] == 0.0                                         # the first batch down never waits
+
+
+def test_trj_v2_carries_the_pad_sequence_and_reads_v1():
+    from idps.show.trj import HEADER_V1, MAGIC, Trj, crc32, from_bytes, to_bytes
+    import struct
+    n = 2
+    t = Trj(3, 10.0, 0.0, np.zeros(3), 0.0, *[np.zeros((n, 3))] * 4, batch=3, n_batches=4, batch_gap_s=5,
+            climb_speed_mps=1.5, transfer_speed_mps=1.5, hold_timeout_s=60, pad_facing_deg=180.0,
+            pad_clear_m=1.17, up_leg_s=6.25, down_leg_s=7.5, land_wait_s=1.2)
+    back = from_bytes(to_bytes(t))
+    assert (back.pad_clear_m, back.up_leg_s, back.down_leg_s, back.land_wait_s) == (1.17, 6.25, 7.5, 1.2)
+    body = b"".join(bytes(40) for _ in range(n))
+    head = HEADER_V1.pack(MAGIC, 1, 64, 3, 0, 10.0, n, 0.0, 0, 0, 0, 0.0, crc32(body), 0, 0, 0, 0, 0, 0, 0)
+    old = from_bytes(head + struct.pack("<I", crc32(head)) + body)
+    assert old.drone_id == 3 and old.up_leg_s == 0.0

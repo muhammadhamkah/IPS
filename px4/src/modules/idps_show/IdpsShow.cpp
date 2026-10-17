@@ -232,23 +232,26 @@ const char *IdpsShow::launch(const vehicle_command_s &cmd, hrt_abstime now)
 		return "show file read error";
 	}
 
-	// take-off: straight up over the pad slot to the grid's height, CLEAR_M forward over the pad's
-	// empty slots (a long leg starts slowly), then level to the grid place
+	// take-off: straight up over the pad slot to the grid's height, forward clear of the pads (a long
+	// leg starts slowly), then level to the grid place, in its batch's time (a formation)
 	_legs.t0 = t_pc + (int64_t)h.batch_gap_ms * 1000 * (h.batch - 1);
 	float fwd[3];
 	forward(fwd);
+	const float clear = clear_m();
 
 	for (int i = 0; i < 3; i++) {
 		_legs.p[0][i] = h.home[i];
 		_legs.p[1][i] = i < 2 ? h.home[i] : grid[2];
-		_legs.p[2][i] = _legs.p[1][i] + fwd[i] * CLEAR_M;
+		_legs.p[2][i] = _legs.p[1][i] + fwd[i] * clear;
 		_legs.p[3][i] = grid[i];
+		_legs.p[4][i] = grid[i];
 	}
 
 	const float dn = grid[0] - _legs.p[2][0], de = grid[1] - _legs.p[2][1];
 	_legs.T[0] = leg_time(grid[2] - h.home[2], h.climb_mm_s * 1e-3f);
-	_legs.T[1] = leg_time(CLEAR_M, h.transfer_mm_s * 1e-3f);
-	_legs.T[2] = leg_time(sqrtf(dn * dn + de * de), h.transfer_mm_s * 1e-3f);
+	_legs.T[1] = leg_time(clear, h.transfer_mm_s * 1e-3f);
+	_legs.T[2] = h.up_leg_ms ? h.up_leg_ms * 1e-3f : leg_time(sqrtf(dn * dn + de * de), h.transfer_mm_s * 1e-3f);
+	_legs.T[3] = 0.f;
 
 	_launch_pc = t_pc;
 	_go_pc = _legs.t0;
@@ -585,12 +588,12 @@ void IdpsShow::path_setpoint(const Path &path, int64_t t_pc, trajectory_setpoint
 	float t = (float)((double)(t_pc - path.t0) * 1e-6);
 	int leg = 0;
 
-	while (leg < LEGS - 1 && t > path.T[leg]) {
+	while (leg < LEGS - 1 && (t > path.T[leg] || path.T[leg] <= 0.f)) {
 		t -= path.T[leg];
 		leg++;
 	}
 
-	const float T = path.T[leg];
+	const float T = fmaxf(path.T[leg], 1e-3f);
 	const float u = math::constrain(t / T, 0.f, 1.f);
 	// minimum jerk: s = 10u^3 - 15u^4 + 6u^5
 	const float s = u * u * u * (10.f - 15.f * u + 6.f * u * u);
@@ -617,26 +620,35 @@ void IdpsShow::forward(float f[3]) const
 	f[2] = 0.f;
 }
 
+float IdpsShow::clear_m() const
+{
+	const uint16_t cm = _file.header().pad_clear_cm;
+	return cm ? cm * 0.01f : CLEAR_M;
+}
+
 void IdpsShow::begin_landing(const float from[3], int64_t t_leave)
 {
-	// level to CLEAR_M in front of the pad slot, back over it, then down onto it (at zero speed);
-	// PX4 then lands and disarms
+	// level to in front of the pad slot (in its batch's time), wait there until the batch beside it
+	// is down, back over the slot, then down onto it (at zero speed); PX4 then lands and disarms
 	const idps::TrjHeader &h = _file.header();
 	_legs.t0 = t_leave;
 	float fwd[3];
 	forward(fwd);
+	const float clear = clear_m();
 
 	for (int i = 0; i < 3; i++) {
 		_legs.p[0][i] = from[i];
-		_legs.p[2][i] = i < 2 ? h.home[i] : from[2];
-		_legs.p[1][i] = _legs.p[2][i] + fwd[i] * CLEAR_M;
-		_legs.p[3][i] = h.home[i];
+		_legs.p[3][i] = i < 2 ? h.home[i] : from[2];
+		_legs.p[1][i] = _legs.p[3][i] + fwd[i] * clear;
+		_legs.p[2][i] = _legs.p[1][i];
+		_legs.p[4][i] = h.home[i];
 	}
 
 	const float dn = _legs.p[1][0] - from[0], de = _legs.p[1][1] - from[1];
-	_legs.T[0] = leg_time(sqrtf(dn * dn + de * de), h.transfer_mm_s * 1e-3f);
-	_legs.T[1] = leg_time(CLEAR_M, h.transfer_mm_s * 1e-3f);
-	_legs.T[2] = leg_time(_legs.p[3][2] - from[2], h.climb_mm_s * 1e-3f);
+	_legs.T[0] = h.down_leg_ms ? h.down_leg_ms * 1e-3f : leg_time(sqrtf(dn * dn + de * de), h.transfer_mm_s * 1e-3f);
+	_legs.T[1] = h.land_wait_ms * 1e-3f;
+	_legs.T[2] = leg_time(clear, h.transfer_mm_s * 1e-3f);
+	_legs.T[3] = leg_time(_legs.p[4][2] - from[2], h.climb_mm_s * 1e-3f);
 	_land_sent = false;
 	_state = State::Landing;
 }

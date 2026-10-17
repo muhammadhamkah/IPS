@@ -176,8 +176,16 @@ The show you design starts and ends in the air: its **first frame is the initial
    its pad slot, steps back over it, comes straight down onto it (arriving at zero speed), and PX4
    lands and disarms it.
 
-**A pad's front faces where its drones fly** (`facing`: `auto`, the default, towards the middle
-of the performance area; or north / east / south / west). Slots 1 and 2 are at the front, so the
+**Pads can stand side by side, 0.5 m apart (centre to centre) or more.** A batch flies its long
+legs as one formation (every drone takes as long as the batch's longest leg, written into each
+drone's file), so drones from neighbouring pads close in from their 1.2 m in the grid to the pads'
+spacing without coming any closer. On the way back each batch waits in front of its slots until
+the batch beside it is down. A drone whose path to the grid would cross another pad first steps
+forward past it.
+
+**A pad's front faces where its drones fly** (`facing`: `auto`, the default: across the pads'
+row towards the performance area when they stand in a row, else towards the area's middle; or
+north / east / south / west). Slots 1 and 2 are at the front, so the
 first batches leave first and the later ones step forward over empty slots: never over a drone
 still on the pad, wherever the pads stand. Drones still face North (yaw 0); only the slots turn.
 
@@ -202,15 +210,17 @@ counted as 0.5 s) before the next one arrives over the pad. With the example sho
 needs 1.5 m/s climb and transfer; at 1.0 m/s it takes 7.5 s, at 0.8 m/s 8.5–9 s. When the gap
 is too short, the check says so and gives the smallest safe one.
 
-Design the grid so that batch 1 holds the row farthest from the pads and the last batch the
-nearest: no batch then flies over another on its way in or out. The rows' spacing matters too:
-each batch's way back must take long enough that the batch before it is down when it arrives. In
-the example the rows are 1.1 m apart along North; at 0.9 m, 4 to 8 drones failed at a 5 s gap
-(batch 3 arriving over its pad while batch 4 was still touching down next to it).
+Design the grid in front of the pads (where they face), with its rows along the pads' row: batch
+1 holds the row farthest from the pads and the last batch the nearest, so no batch flies over
+another on its way in or out. In the example the rows are 1.1 m apart.
 
-`examples/shows/layers_from_pads.py` is such a show for 1–20 drones (80 s): each batch keeps to its
-own strip along North for the whole show (it waves and closes up within it, and the turns are
-rigid), so it is downwash-free by construction.
+`examples/shows/layers_from_pads.py --site venue.yaml` is such a show for any venue with pads (4
+drones per pad, 80 s): its grid stands in front of the pads (at least 1 m) towards the middle of
+the area, each batch keeps to its own strip for the whole show (it waves and closes up within it,
+and the turns are rigid), so it is downwash-free by construction; a formation too wide to turn
+inside the area holds still instead. Checked at a 5 s gap with 1.5 m/s climb and transfer: pads
+in a row 0.5 m apart along an edge, in a corner and under the middle of a 20 × 14 m area, rows at
+0.6, 0.75 and 1.0 m, and the 8 × 8 m example with 1–20 drones.
 
 ## 4. Upload, start, fly
 

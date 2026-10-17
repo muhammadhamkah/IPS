@@ -70,13 +70,20 @@ def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz:
     drones = []
     ids = drone_ids(show)
     nb = pads.n_batches(ids) if pads is not None else 0
+    up = down = wait = {}
+    if pads is not None:                    # each batch's long legs: as long as its longest (a formation)
+        from idps.show.pads import batch_leg_times
+        ends = [drone_samples(d, pl, rate_hz, t0, t1) for d in show.drones]
+        up, down, wait = batch_leg_times(pads, ids, [S[0, 1:4] for S in ends], [S[-1, 1:4] for S in ends])
     for k, d in zip(ids, show.drones):
         S = drone_samples(d, pl, rate_hz, t0, t1)
         # with charging pads the drone's home is its pad slot (the show starts in the air)
         home = pads.home_ned(k) if pads is not None else S[0, 1:4]
         seq = dict(batch=pads.batch(k), n_batches=nb, batch_gap_s=pads.batch_gap_s,
                    climb_speed_mps=pads.climb_speed_mps, transfer_speed_mps=pads.transfer_speed_mps,
-                   hold_timeout_s=pads.hold_timeout_s, pad_facing_deg=pads.facing_deg) if pads is not None else {}
+                   hold_timeout_s=pads.hold_timeout_s, pad_facing_deg=pads.facing_deg,
+                   pad_clear_m=pads.clear_m(k), up_leg_s=up[k], down_leg_s=down[k],
+                   land_wait_s=wait[k]) if pads is not None else {}
         doc = {
             "format": FORMAT, "drone_id": k, "name": d.name, "frame": "NED",
             "frame_note": "metres from the venue origin (calibration square corner): N along its long arm, "

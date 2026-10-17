@@ -9,7 +9,9 @@ pads (placed in the Planner, or a pads section by hand). Show frame: x East, y N
 slot k of every pad, and the show starts and ends in the air in the layered grid: batch k at
 k metres, its drones in a row. The rows stand across the line from the pads to the middle of the
 area, batch 1 farthest from the pads and batch 4 the nearest, so no batch flies over another on
-its way in or out; in a row the drones keep their pads' order, so their paths do not cross.
+its way in or out; in a row the drones keep their pads' order, so their paths do not cross. The rows
+run along the pads' row (across the way the pads face), so a batch closes in from its 1.2 m
+spacing in the grid to the pads' spacing on its way down without coming any closer.
 
 Downwash by construction: each batch keeps to its own strip (ROW apart) for the whole show: it
 waves up and down and closes up within its strip, and the formation's turns are rigid (they keep
@@ -31,6 +33,7 @@ ROW = 1.1                           # rows (batches) apart: each batch's strip (
                                     # each batch lands after the one before is down, at a 5 s gap)
 WAVE = 0.3                          # up and down within the layer (m)
 WALL_MARGIN = 0.5                   # the formation keeps this far inside the area while turning
+GRID_AHEAD_M = 1.0                  # the grid's nearest row at least this far in front of the pads
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -54,12 +57,17 @@ class Layout:
         poly = _polygon(site["volume"])
         self.area_ne = frame.ne(poly)                                     # (V, 2)
         self.centre = self.area_ne.mean(0)
-        used = sorted({(d - 1) // SLOTS for d in range(1, n + 1)})
-        pads = lay.pads_ne[used].mean(0)
-        u = self.centre - pads
-        self.u = u / np.linalg.norm(u) if np.linalg.norm(u) > 1e-6 else np.array([1.0, 0.0])   # away from the pads
+        a = np.radians(lay.facing_deg)
+        self.u = np.array([np.cos(a), np.sin(a)])                         # the pads' front: away from them
         self.v = np.array([-self.u[1], self.u[0]])                       # along the rows
         self.layers = lay.layers_m
+        # the whole grid in front of the pads: no batch on its way down flies over another one
+        # still holding in the grid (pads under the middle of the area)
+        nearest = self.centre @ self.u - (SLOTS - 1) / 2 * ROW
+        ahead = lay.pads_ne @ self.u
+        need = float(ahead.max()) + GRID_AHEAD_M
+        if nearest < need:
+            self.centre = self.centre + self.u * (need - nearest)
 
     def grid(self, col: float = COL, wave=None) -> np.ndarray:
         """(n, 3) show-frame places (x East, y North, z up); wave: +1/-1 lifts alternate drones."""

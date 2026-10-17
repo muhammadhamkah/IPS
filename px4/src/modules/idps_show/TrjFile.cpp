@@ -2,6 +2,7 @@
 
 #include <crc32.h>
 #include <fcntl.h>
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -22,12 +23,12 @@ const char *TrjFile::open(const char *path, uint32_t &file_crc)
 		return "not an IDPS show file";
 	}
 
-	if (crc32part((const uint8_t *)&_hdr, 60, 0) != _hdr.header_crc) {
+	if (crc32part((const uint8_t *)&_hdr, offsetof(TrjHeader, header_crc), 0) != _hdr.header_crc) {
 		close();
 		return "header corrupt";
 	}
 
-	if (_hdr.version != 1 || _hdr.header_size != sizeof(TrjHeader) || _hdr.count < 2 || !(_hdr.rate_hz > 0.f)) {
+	if (_hdr.version != 2 || _hdr.header_size != sizeof(TrjHeader) || _hdr.count < 2 || !(_hdr.rate_hz > 0.f)) {
 		close();
 		return "unsupported show file";
 	}

@@ -97,16 +97,17 @@ private:
 	bool active() const;
 
 	// A move of minimum-jerk legs through points (NED), starting at t0 (PC clock, µs).
-	static constexpr int LEGS = 3;
+	static constexpr int LEGS = 4;           // take-off: climb, clear, long (+ 0); landing: long, wait, step, down
 	struct Path {
 		int64_t t0{0};
 		float p[LEGS + 1][3] {};
 		float T[LEGS] {};
-		int64_t end() const { return t0 + (int64_t)((T[0] + T[1] + T[2]) * 1e6f); }
+		int64_t end() const { return t0 + (int64_t)((T[0] + T[1] + T[2] + T[3]) * 1e6f); }
 	};
 	static constexpr float CLEAR_M = 0.5f;   // after the climb, this far forward over the pad's empty
 	                                         // slots first (as idps/show/pads.py CLEAR_M)
 	void forward(float f[3]) const;
+	float clear_m() const;
 	static float leg_time(float dist, float speed);
 	void path_setpoint(const Path &path, int64_t t_pc, trajectory_setpoint_s &sp) const;
 	void publish(const trajectory_setpoint_s &sp, hrt_abstime now);

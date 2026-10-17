@@ -10,7 +10,7 @@ without parsing:
     8  u16      version (1)
    10  u16      header size (64)
    12  u16      drone ID (= PX4 MAV_SYS_ID; the module refuses a file for another drone)
-   14  u16      flags (0)
+   14  u16      clear step (cm): after the climb, how far forward before the long leg (0: 50)
    16  f32      sample rate (Hz)
    20  u32      sample count
    24  f32      show time of the first sample (s)
@@ -23,6 +23,10 @@ without parsing:
    52  u16      climb speed (mm/s), 54 u16 transfer speed (mm/s): see idps.show.pads
    56  u16      hold timeout (s): no start this long after the last batch took off: land
    58  u16      pad facing (0.01°): the way its pad's front points, clockwise from North
+   60  u16      take-off long leg (ms): as long as the longest in its batch (0: from its distance)
+   62  u16      landing long leg (ms): likewise
+   64  u16      landing wait (ms): in front of its slot until the batch beside it is down
+   66  u16      reserved (0)
    60  u32      CRC-32 of bytes 0..59
 
   samples, 40 bytes each, at the sample rate from the first sample's time
@@ -43,11 +47,12 @@ from pathlib import Path
 import numpy as np
 
 MAGIC = b"IDPSTRJ1"
-VERSION = 1
-HEADER = struct.Struct("<8sHHHHfIf3ffIBBHHHHH")      # 60 bytes, then the header CRC
+VERSION = 2
+HEADER = struct.Struct("<8sHHHHfIf3ffIBBHHHHHHHHH")  # 68 bytes, then the header CRC
 HEADER_SIZE = HEADER.size + 4
+HEADER_V1 = struct.Struct("<8sHHHHfIf3ffIBBHHHHH")   # version 1: 60 bytes + CRC
 SAMPLE = np.dtype([("pos", "<f4", 3), ("vel", "<f4", 3), ("acc", "<f4", 3), ("rgb", "u1", 3), ("pad", "u1")])
-assert HEADER_SIZE == 64 and SAMPLE.itemsize == 40
+assert HEADER_SIZE == 72 and SAMPLE.itemsize == 40
 
 
 def crc32(data: bytes, crc: int = 0) -> int:
@@ -73,6 +78,10 @@ class Trj:
     transfer_speed_mps: float = 0.0
     hold_timeout_s: float = 0.0
     pad_facing_deg: float = 0.0
+    pad_clear_m: float = 0.0       # 0: the default step (0.5 m)
+    up_leg_s: float = 0.0          # 0: timed by its own distance
+    down_leg_s: float = 0.0
+    land_wait_s: float = 0.0
 
     @property
     def duration(self) -> float:
@@ -85,32 +94,38 @@ def to_bytes(t: Trj) -> bytes:
     s["pos"], s["vel"], s["acc"] = t.pos, t.vel, t.acc
     s["rgb"] = np.clip(np.rint(t.rgb), 0, 255).astype(np.uint8)
     body = s.tobytes()
-    head = HEADER.pack(MAGIC, VERSION, HEADER_SIZE, int(t.drone_id), 0, float(t.rate_hz), n, float(t.t0),
+    head = HEADER.pack(MAGIC, VERSION, HEADER_SIZE, int(t.drone_id), int(round(t.pad_clear_m * 100)),
+                       float(t.rate_hz), n, float(t.t0),
                        *[float(x) for x in t.home], float(t.yaw_rad), crc32(body), int(t.batch), int(t.n_batches),
                        int(round(t.batch_gap_s * 1000)), int(round(t.climb_speed_mps * 1000)),
                        int(round(t.transfer_speed_mps * 1000)), int(round(t.hold_timeout_s)),
-                       int(round((t.pad_facing_deg % 360.0) * 100)) % 36000)
+                       int(round((t.pad_facing_deg % 360.0) * 100)) % 36000,
+                       int(round(t.up_leg_s * 1000)), int(round(t.down_leg_s * 1000)),
+                       int(round(t.land_wait_s * 1000)), 0)
     return head + struct.pack("<I", crc32(head)) + body
 
 
 def from_bytes(b: bytes) -> Trj:
-    if len(b) < HEADER_SIZE or b[:8] != MAGIC:
+    if len(b) < 64 or b[:8] != MAGIC:
         raise ValueError("not an IDPS .trj file")
-    head = b[:HEADER.size]
-    (crc_h,) = struct.unpack_from("<I", b, HEADER.size)
+    ver = struct.unpack_from("<H", b, 8)[0]
+    st = {1: HEADER_V1, 2: HEADER}.get(ver)
+    if st is None:
+        raise ValueError(f".trj version {ver} not supported")
+    head = b[:st.size]
+    (crc_h,) = struct.unpack_from("<I", b, st.size)
     if crc32(head) != crc_h:
         raise ValueError(".trj header CRC mismatch")
-    _, ver, hsize, did, _, rate, n, t0, hn, he, hd, yaw, crc_s, batch, nb, gap, climb, xfer, hold, facing = \
-        HEADER.unpack(head)
-    if ver != VERSION:
-        raise ValueError(f".trj version {ver} not supported")
+    f = st.unpack(head)
+    _, ver, hsize, did, clear, rate, n, t0, hn, he, hd, yaw, crc_s, batch, nb, gap, climb, xfer, hold, facing = f[:20]
+    up, down, wait = (f[20], f[21], f[22]) if ver >= 2 else (0, 0, 0)
     body = b[hsize:hsize + n * SAMPLE.itemsize]
     if len(body) != n * SAMPLE.itemsize or crc32(body) != crc_s:
         raise ValueError(".trj samples truncated or corrupt")
     s = np.frombuffer(body, SAMPLE)
     return Trj(did, rate, t0, np.array([hn, he, hd]), yaw, s["pos"].astype(float), s["vel"].astype(float),
                s["acc"].astype(float), s["rgb"].astype(float), batch, nb, gap / 1000, climb / 1000, xfer / 1000,
-               float(hold), facing / 100)
+               float(hold), facing / 100, (clear / 100 if ver >= 2 else 0.0), up / 1000, down / 1000, wait / 1000)
 
 
 def write_trj(path, t: Trj) -> bytes:

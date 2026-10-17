@@ -16,7 +16,7 @@ struct TrjHeader {
 	uint16_t version;
 	uint16_t header_size;
 	uint16_t drone_id;
-	uint16_t flags;
+	uint16_t pad_clear_cm;    // after the climb, this far forward before the long leg (0: 50 cm)
 	float rate_hz;
 	uint32_t count;
 	float t0;
@@ -30,9 +30,13 @@ struct TrjHeader {
 	uint16_t transfer_mm_s;
 	uint16_t hold_timeout_s;  // no start this long after the last batch took off: land
 	uint16_t pad_facing_cdeg; // the pad's front, 0.01° clockwise from North (take-off steps that way)
+	uint16_t up_leg_ms;       // the long take-off leg: as long as the longest in its batch (0: by distance)
+	uint16_t down_leg_ms;     // the long landing leg, likewise
+	uint16_t land_wait_ms;    // wait in front of its slot until the batch beside it is down
+	uint16_t reserved;
 	uint32_t header_crc;
 };
-static_assert(sizeof(TrjHeader) == 64, "TrjHeader must be 64 bytes");
+static_assert(sizeof(TrjHeader) == 72, "TrjHeader must be 72 bytes");
 
 struct TrjSample {
 	float pos[3];
