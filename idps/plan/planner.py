@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from idps.core.noise import P95_PER_RMS
-from idps.coverage.fisher import contributions, rms_mm
+from idps.coverage.fisher import contributions, guaranteed_visible, rms_mm
 from idps.coverage.volume import EvalGrid, distance_to_polygon, volume_grid
 from idps.plan.candidates import CandidateSet, generate_candidates
 from idps.plan.model import Plan, PlannedCamera, install_angles
@@ -30,7 +30,12 @@ class Evaluation:
 
 
 def site_grid(site: Site) -> EvalGrid:
-    return volume_grid(site.volume, site.eval_spacing_m, site.eval_inset_m)
+    """The points the layout must cover: the volume's grid, its boundary ring, then the charging
+    pads (each drone on its slot and its climb to its layer)."""
+    g = volume_grid(site.volume, site.eval_spacing_m, site.eval_inset_m)
+    if len(site.pad_points):
+        g.points = np.vstack([g.points, site.pad_points])
+    return g
 
 
 def evaluate(site: Site, cameras: list[PlannedCamera]) -> Evaluation:
@@ -85,6 +90,148 @@ def evaluate(site: Site, cameras: list[PlannedCamera]) -> Evaluation:
     return Evaluation(grid, n, p95, meets, critical, robust, summary)
 
 
+def fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_000, finest_m: float = 0.25,
+               cancel=None, resolution_m: float = 0.01) -> dict:
+    return _fine_check(site, cameras, max_points, finest_m, cancel, resolution_m)[0]
+
+
+def _fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_000, finest_m: float = 0.25,
+                cancel=None, resolution_m: float = 0.01, zoom_budget: int = 3_000_000):
+    """Re-check a finished layout on a much denser grid than the optimiser uses.
+
+    The planner works on a coarse grid (metres) because coverage only changes where a point
+    crosses the edge of a camera's view; this pass looks between those samples for holes the
+    coarse grid could have missed. The spacing is as fine as `finest_m` allows within
+    `max_points`. Returns a summary dict (also stored in the plan summary as "fine_check")."""
+    req = site.requirements
+    vol = site.volume.volume_m3
+    spacing = max(finest_m, (vol / max_points) ** (1 / 3))
+    spacing = float(np.ceil(spacing * 20) / 20)                      # round up to 5 cm
+    grid = volume_grid(site.volume, spacing, site.eval_inset_m)
+    pts = np.vstack([grid.points, site.pad_points]) if len(site.pad_points) else grid.points
+    out = {"spacing_m": spacing, "points": int(len(pts)), "failing": 0, "fraction_meeting": 1.0,
+           "failing_volume_m3": 0.0, "worst_spots": [], "unproven": 0, "guaranteed": False,
+           "guarantee_radius_m": 0.0}
+    if not cameras or not len(pts):
+        return out, pts
+    pos = np.array([c.position_m for c in cameras])
+    R = np.array([c.R for c in cameras])
+    f_px = np.array([site.sensor.f_px(c.lens_mm) for c in cameras])
+    fail = np.zeros(len(pts), bool)
+    unproven = np.zeros(len(pts), bool)
+    # every point of the volume lies within this distance of a sample (half the cell diagonal)
+    radius = spacing * np.sqrt(3) / 2
+    chunk = max(1000, 3_000_000 // max(len(cameras), 1))
+    for a in range(0, len(pts), chunk):
+        if cancel is not None and cancel():
+            break
+        P = pts[a:a + chunk]
+        vis, inf = contributions(pos, R, f_px, P, site.sensor, req.noise, site.limits)
+        n = vis.sum(0)
+        p95 = rms_mm(inf.sum(0)) * P95_PER_RMS
+        fail[a:a + chunk] = ~((n >= req.min_cameras) & (p95 <= req.p95_mm))
+        sure = guaranteed_visible(pos, R, f_px, P, site.sensor, site.limits, radius).sum(0)
+        unproven[a:a + chunk] = ~fail[a:a + chunk] & (sure < req.min_cameras)
+    g = slice(0, grid.n_grid)
+    out["guarantee_radius_m"] = float(radius)
+    out["unproven_before_zoom"] = int(unproven.sum())
+    # Zoom into the cells that are not proven (a camera's view edge passes through them): split each
+    # in eight, again and again, down to cells under resolution_m. Every piece is either proven
+    # (fully inside enough views) or, at the finest level, checked directly.
+    region = (float(grid.zs[0]), float(grid.zs[-1]), float(site.eval_inset_m))   # the volume the requirement covers
+    leaves_bad, n_leaves, exhausted = _zoom(site, pos, R, f_px, pts[unproven], spacing / 2, resolution_m,
+                                            zoom_budget, cancel, region)
+    out["resolution_m"] = resolution_m
+    out["zoom_cells_checked"] = n_leaves
+    out["zoom_failing"] = int(len(leaves_bad))
+    out["zoom_incomplete"] = bool(exhausted)
+    out["unproven"] = int(unproven.sum()) if exhausted else 0
+    out["guaranteed"] = bool(not fail.any() and not len(leaves_bad) and not exhausted)
+    out["failing"] = int(fail.sum()) + int(len(leaves_bad))
+    out["fraction_meeting"] = float(1 - fail.mean())
+    leaf = spacing / 2 ** int(np.ceil(np.log2(spacing / resolution_m)))      # edge of the finest zoom cell
+    out["failing_volume_m3"] = (float(fail[g].mean() * vol) if grid.n_grid else 0.0) + len(leaves_bad) * leaf ** 3
+    bad_pts = np.vstack([pts[fail], leaves_bad]) if len(leaves_bad) else pts[fail]
+    if len(bad_pts):                                 # where: group failing points into ~2 m cells
+        P = bad_pts
+        cells: dict = {}
+        for p in P:
+            cells.setdefault(tuple(np.floor(p / 2.0).astype(int)), []).append(p)
+        spots = sorted(cells.values(), key=len, reverse=True)[:5]
+        out["worst_spots"] = [{"n": float(site.frame.ne(np.mean(c, 0)[:2])[0]),
+                               "e": float(site.frame.ne(np.mean(c, 0)[:2])[1]),
+                               "z_min": float(np.min(c, 0)[2]), "z_max": float(np.max(c, 0)[2]),
+                               "points": len(c)} for c in spots]
+    return out, bad_pts
+
+
+def _zoom(site, pos, R, f_px, centres, half, resolution_m, budget, cancel, region):
+    """Adaptive check of cubes (centre, half-size) that a single sample could not prove.
+    Only the part of each cube inside the required region (the volume less its inset from the
+    walls, floor-layer to top-layer) is checked. Returns (failing leaf centres, cells checked,
+    budget exhausted)."""
+    from idps.coverage.volume import distance_to_polygon
+    req = site.requirements
+    vol = site.volume
+    z_lo, z_hi, inset = region
+    bad, n_checked = [], 0
+    cubes = np.asarray(centres, float).reshape(-1, 3)
+    offs = np.array([[i, j, k] for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)], float)
+    while len(cubes):
+        if cancel is not None and cancel():
+            return np.zeros((0, 3)), n_checked, True
+        half = half / 2
+        kids = (cubes[:, None, :] + offs[None] * half).reshape(-1, 3)
+        inside = (kids[:, 2] >= z_lo - 1e-9) & (kids[:, 2] <= z_hi + 1e-9) & vol.contains_xy(kids[:, :2])
+        if inside.any() and inset > 0:
+            d, _, _ = distance_to_polygon(kids[inside, :2], vol.polygon)
+            inside[np.nonzero(inside)[0][d < inset * 0.999]] = False
+        kids = kids[inside]
+        n_checked += len(kids)
+        if n_checked > budget:
+            return np.zeros((0, 3)), n_checked, True
+        leaf = 2 * half <= resolution_m + 1e-9
+        nxt = []
+        for a in range(0, len(kids), 20000):
+            K = kids[a:a + 20000]
+            sure = guaranteed_visible(pos, R, f_px, K, site.sensor, site.limits, half * np.sqrt(3)).sum(0)
+            open_ = sure < req.min_cameras
+            if leaf:                                   # cell under the resolution: check it directly
+                vis, inf = contributions(pos, R, f_px, K[open_], site.sensor, req.noise, site.limits)
+                p95 = rms_mm(inf.sum(0)) * P95_PER_RMS
+                ok = (vis.sum(0) >= req.min_cameras) & (p95 <= req.p95_mm)
+                bad.append(K[open_][~ok])
+            else:
+                nxt.append(K[open_])
+        cubes = np.vstack(nxt) if nxt else np.zeros((0, 3))
+    return (np.vstack(bad) if bad else np.zeros((0, 3))), n_checked, False
+
+
+def fine_check_text(fc: dict) -> str:
+    sp = fc["spacing_m"]
+    res = fc.get("resolution_m", sp) * 100
+    head = f"Fine check every {sp * 100:.0f} cm ({fc['points']:,} points)"
+    zoom = fc.get("unproven_before_zoom", 0)
+    if zoom and not fc.get("zoom_incomplete"):
+        head += (f", zooming to {res:.0f} cm at the {zoom:,} spots where a camera's view edge passes close "
+                 f"({fc.get('zoom_cells_checked', 0):,} cells)")
+    head += ":"
+    if not fc["failing"]:
+        if fc.get("guaranteed"):
+            return (f"{head} every point meets the requirement, and the camera count is proven for the whole "
+                    f"volume down to {res:.0f} cm and finer.")
+        return (f"{head} every point meets the requirement, but {fc.get('unproven', 0):,} spots near camera view "
+                f"edges could not be fully zoomed into (too many to check): the coverage tiles count them as covered.")
+    where = "; ".join(f"N {s['n']:.1f}, E {s['e']:.1f}, {s['z_min']:.1f}–{s['z_max']:.1f} m high"
+                      for s in fc["worst_spots"][:3])
+    n_zoom = fc.get("zoom_failing", 0)
+    n_grid = fc["failing"] - n_zoom
+    found = ", ".join(x for x in (f"{n_grid:,} of the {sp * 100:.0f} cm points" if n_grid else "",
+                                  f"{n_zoom:,} cells of {res:.0f} cm found by zooming" if n_zoom else "") if x)
+    return (f"{head} about {fc['failing_volume_m3']:,.2f} m³ falls short of the requirement ({found}), "
+            f"mostly near {where}.")
+
+
 def _outside_note(site: Site, x: float, y: float) -> str:
     """Installer-friendly location relative to the drawn volume outline."""
     d, e, along = distance_to_polygon(np.array([[x, y]]), site.volume.polygon)
@@ -98,19 +245,20 @@ def build_cameras(site: Site, cands: CandidateSet, selected: list[int]) -> list[
     trusses = {t.id: t for t in site.trusses}
     cams = []
     for i in selected:
-        base, pan, tilt = install_angles(float(cands.az[i]), float(cands.el[i]))
+        f = site.frame
+        base, pan, tilt = install_angles(float(cands.az[i]), float(cands.el[i]), north_deg=f.north_deg)
         x, y, z = (float(v) for v in cands.pos[i])
         if cands.mount_type[i] == "truss":
             t = trusses[cands.mount_id[i]]
             s = float(cands.along_m[i])
-            note = (f"Truss {t.id}: {s:.2f} m from its start end ({t.start[0]:.1f}, {t.start[1]:.1f}),"
+            note = (f"Truss {t.id}: {s:.2f} m from its start end ({f.fmt_ne(t.start, 1)}),"
                     f" camera hung {site.candidates.truss_drop_m:.2f} m below the truss")
             along = s
         else:
-            note = (f"Tripod (zone {cands.mount_id[i]}) at X {x:.2f}, Y {y:.2f};"
+            note = (f"Tripod (zone {cands.mount_id[i]}) at {f.fmt_ne((x, y))};"
                     f" {_outside_note(site, x, y)}; camera at {z:.2f} m on the mast")
             along = None
-        note += f"; gimbal pan-zero towards azimuth {base:.0f} deg"
+        note += f"; gimbal pan-zero towards heading {f.heading(base):.0f}° (from North, clockwise)"
         cams.append(PlannedCamera(
             id="", mount_type=str(cands.mount_type[i]), mount_id=str(cands.mount_id[i]),
             position_m=[x, y, z], azimuth_deg=float(cands.az[i]), elevation_deg=float(cands.el[i]),
@@ -160,16 +308,92 @@ def _neighbour_spacing(cams: list[PlannedCamera]) -> None:
                                      if others else None)
 
 
+PAD_MIN_SEP_PX = 8.0           # a camera tells a pad's 4 drones apart if no two are closer than this in its image
+
+
+def pad_coverage(site: Site, cameras: list[PlannedCamera]) -> list[dict]:
+    """Per charging pad: the cameras that see all 4 of its drones standing on it far enough apart in
+    the image to tell them apart (PAD_MIN_SEP_PX between the closest two). Drones 0.2 m apart seen
+    from far away, or only edge-on, merge or get mixed up, and the start, which waits until every
+    drone is tracked on its own slot, never comes. Simulated: 2 such cameras failed, 3 worked."""
+    out = []
+    if not site.pad_slots or not cameras:
+        return out
+    req = site.requirements
+    pos = np.array([c.position_m for c in cameras])
+    R = np.array([c.R for c in cameras])
+    f_px = np.array([site.sensor.f_px(c.lens_mm) for c in cameras])
+    for k, (_, slots) in enumerate(site.pad_slots):
+        vis, _ = contributions(pos, R, f_px, slots, site.sensor, req.noise, site.limits)
+        sees, sep = [], []
+        for i in np.nonzero(vis.all(axis=1))[0]:
+            X = (slots - pos[i]) @ R[i].T
+            uv = f_px[i] * X[:, :2] / X[:, 2:3]
+            d = min(float(np.linalg.norm(uv[a] - uv[b])) for a in range(4) for b in range(a + 1, 4))
+            sees.append(cameras[i].id)
+            if d >= PAD_MIN_SEP_PX:
+                sep.append(cameras[i].id)
+        out.append({"pad": k + 1, "cameras": len(sees), "resolving": len(sep), "ids": sep,
+                    "ok": len(sep) >= req.min_cameras})
+    return out
+
+
+def pad_coverage_text(rows: list[dict], min_cameras: int) -> list[str]:
+    lines = []
+    for r in rows:
+        if r["ok"]:
+            continue
+        lines.append(f"Charging pad {r['pad']}: only {r['resolving']} camera(s) see its 4 drones far enough apart to "
+                     f"tell them apart (needs {min_cameras}; {r['cameras']} see them at all). No drone takes off "
+                     "before every drone is tracked on its own slot: move the pad 1.5 m or more in from the edge, "
+                     "nearer the cameras, or add a mount (truss or tripod area) that looks down on it.")
+    return lines
+
+
 def optimise(site: Site, log=print, max_cameras: int | None = None, cancel=None):
     for w in site.warnings():
         log(f"warning: {w}")
     cands = generate_candidates(site)
     pts = site_grid(site).points
-    result = Optimiser(site, cands, pts, log=log).run(max_cameras=max_cameras, cancel=cancel)
-    cams = build_cameras(site, cands, result.selected)
+    extra = np.zeros((0, 3))
+    seconds = 0.0
+    result = None
+    prev: list = []
+    for rnd in range(4):
+        # The optimiser works on a coarse grid; the fine check looks between its samples. Any
+        # point found short there is added to the optimiser's points and the layout re-planned,
+        # until the fine check passes (or nothing more can be gained).
+        # later rounds keep the layout so far and only add what the gaps need
+        result = Optimiser(site, cands, np.vstack([pts, extra]), log=log).run(
+            max_cameras=max_cameras, cancel=cancel, initial=result.selected if rnd else ())
+        seconds += result.seconds
+        cams = build_cameras(site, cands, result.selected)
+        log("Fine check of the finished layout…")
+        fc, bad = _fine_check(site, cams, cancel=cancel)
+        log(fine_check_text(fc))
+        if not len(bad) or rnd == 3:
+            break
+        if rnd and sorted(result.selected) == prev:
+            log("No allowed camera position closes the remaining gaps: add mounts (a truss or tripod zone) "
+                "near them, allow more cameras per mount, or allow more tilt angles.")
+            break
+        prev = sorted(result.selected)
+        if len(bad) > 3000:
+            bad = bad[np.random.default_rng(rnd).choice(len(bad), 3000, replace=False)]
+        before = len(extra)
+        extra = np.unique(np.round(np.vstack([extra, bad]), 3), axis=0)
+        if len(extra) == before:
+            break                                       # the same points again: nothing more to gain
+        log(f"Re-planning with {len(extra):,} extra points where the fine check found gaps…")
     ev = evaluate(site, cams)
+    pads = pad_coverage(site, cams)
+    for line in pad_coverage_text(pads, site.requirements.min_cameras):
+        log("warning: " + line)
     summary = dict(ev.summary)
-    summary["optimiser"] = {"candidates": len(cands), "seconds": round(result.seconds, 1),
-                            "stopped_because": result.stopped_because}
-    plan = Plan(site.name, site.source_path, cams, summary)
+    if pads:
+        summary["pads"] = pads
+    summary["optimiser"] = {"candidates": len(cands), "seconds": round(seconds, 1),
+                            "stopped_because": result.stopped_because, "fine_check_rounds": rnd + 1}
+    summary["fine_check"] = ev.summary["fine_check"] = fc
+    plan = Plan(site.name, site.source_path, cams, summary, site.frame.to_dict())
     return plan, ev

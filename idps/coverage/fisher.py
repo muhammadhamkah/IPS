@@ -82,3 +82,28 @@ def rms_mm(info: np.ndarray) -> np.ndarray:
 def unpack(info6: np.ndarray) -> np.ndarray:
     a, b, c, d, e, f = np.moveaxis(info6, -1, 0)
     return np.stack([np.stack([a, b, c], -1), np.stack([b, d, e], -1), np.stack([c, e, f], -1)], -2)
+
+
+def guaranteed_visible(pos: np.ndarray, R: np.ndarray, f_px: np.ndarray, points: np.ndarray, sensor: Sensor,
+                       limits: VisibilityLimits, radius: float) -> np.ndarray:
+    """Cameras that see the *whole ball* of `radius` around each point (C, V) bool.
+
+    A camera's usable view is a pyramid (image edges minus the edge margin) cut by the
+    detection range. The ball is inside it when its centre is at least `radius` from every
+    side plane and from the near and far limits. If every evaluation point's ball is fully
+    seen by N cameras, then every point in the space between the samples is seen by at
+    least N cameras too, at any resolution: a guarantee, not a sample.
+    """
+    pos = np.atleast_2d(pos)
+    R = R.reshape(-1, 3, 3)
+    f_px = np.broadcast_to(np.asarray(f_px, float), (len(pos),))
+    d = points[None, :, :] - pos[:, None, :]
+    Xc = np.einsum("cij,cvj->cvi", R, d)
+    x, y, z = Xc[..., 0], Xc[..., 1], Xc[..., 2]
+    tw = (sensor.width_px / 2 * (1 - limits.edge_margin)) / f_px[:, None]     # tan of half-angles
+    th = (sensor.height_px / 2 * (1 - limits.edge_margin)) / f_px[:, None]
+    rng = np.linalg.norm(d, axis=-1)
+    ok = (z * tw - np.abs(x)) / np.sqrt(1 + tw ** 2) >= radius
+    ok &= (z * th - np.abs(y)) / np.sqrt(1 + th ** 2) >= radius
+    ok &= (rng + radius <= limits.max_range_m) & (rng - radius >= limits.min_range_m) & (z > radius)
+    return ok

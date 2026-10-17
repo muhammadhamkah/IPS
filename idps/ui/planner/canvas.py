@@ -15,17 +15,40 @@ from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, Q
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView
 
 from idps.coverage.volume import offset_ring
+from idps.show.pads import MIN_PAD_GAP_M, PAD_SIDE_M, SLOTS, site_facing_deg, slot_offset_ne
 from idps.ui import theme
+from idps.ui.planner.document import frame_of
+
+NEEDS_AREA = ("origin", "truss", "zone", "nogo", "pad")      # tools that need the performance area first
+NEEDS_MOUNTS = ("pad",)                                       # ... and the trusses or tripod areas
 
 TOOLS = {
     "select": "Select / move",
-    "volume": "Draw volume outline",
+    "volume": "Draw performance area",
+    "origin": "Place origin",
     "truss": "Draw truss",
     "zone": "Draw tripod area",
+    "pad": "Place charging pad",
     "nogo": "Draw no-go area",
+    "measure": "Measure distance",
 }
 HANDLE_PX = 7
 HIT_PX = 9
+
+
+VENUE_PARTS = {"origin": "the origin or North", "volume": "the performance area", "trusses": "the trusses",
+               "tripod_zones": "the tripod areas", "no_go_zones": "the no-go zones", "pads": "the charging pads",
+               "sensor": "the camera", "lenses_mm": "the lenses", "requirements": "the requirements",
+               "design": "the design settings", "visibility": "the visibility settings",
+               "evaluation": "the evaluation settings", "candidates": "the mounting settings",
+               "optimiser": "the optimiser settings"}
+
+
+def venue_changes(old: dict, new: dict) -> list[str]:
+    """The parts of the venue (plain words) that differ between two site dicts; the name does not count."""
+    keys = (set(old) | set(new)) - {"name"}
+    return [VENUE_PARTS.get(k, k) for k in sorted(keys, key=lambda k: list(VENUE_PARTS).index(k)
+                                                   if k in VENUE_PARTS else 99) if old.get(k) != new.get(k)]
 
 
 def _poly(pts) -> QPolygonF:
@@ -89,6 +112,7 @@ class PlanCanvas(QGraphicsView):
     selectionChanged = Signal(object)        # (kind, index) or None
     cursorMoved = Signal(float, float)
     message = Signal(str)
+    toolChanged = Signal(str)
 
     def __init__(self, doc, parent=None):
         super().__init__(parent)
@@ -116,9 +140,13 @@ class PlanCanvas(QGraphicsView):
 
         self.result = None               # (plan, evaluation) from the last planning run
         self.result_stale = False
+        self.result_site: dict | None = None     # the venue that run planned (doc.to_site_dict())
         self.overlay_mode = "count"      # "none" | "count" | "accuracy"
         self.overlay_level = 0
         self.highlight_camera: int | None = None
+        self.show_dimensions = True      # install measurements once a plan exists
+        self.preview = None              # advisor Recommendation being previewed
+        self.ruler: list = []            # Measure tool points
         self.overlay = OverlayItem()
 
         doc.changed.connect(self.rebuild)
@@ -144,6 +172,13 @@ class PlanCanvas(QGraphicsView):
             if "offset_m" in z and len(self.doc.data["volume"]["polygon"]) >= 3:
                 pts += offset_ring(np.array(self.doc.data["volume"]["polygon"], float),
                                    float(z["offset_m"][1]), 1e9).tolist()
+        if self.result is not None:
+            pts += [c.position_m[:2] for c in self.result[0].cameras]
+        if self.preview is not None:
+            pts.append(self.preview.new_camera.position_m[:2])
+        if self.doc.data.get("origin"):
+            pts.append(self.doc.data["origin"]["xy"])
+        pts += self._pads()
         if not pts:
             pts = [(-10, -10), (10, 10)]
         a = np.array(pts, float)
@@ -208,11 +243,6 @@ class PlanCanvas(QGraphicsView):
             while y <= rect.bottom():
                 p.drawLine(QLineF(rect.left(), y, rect.right(), y))
                 y += step
-        # origin = calibration square
-        L = 40 * self.px()
-        p.setPen(QPen(tok["axis"], 2 * self.px()))
-        p.drawLine(QLineF(0, 0, L, 0))
-        p.drawLine(QLineF(0, 0, 0, L))
 
     def _text(self, p: QPainter, pos: QPointF, text: str, colour: QColor, dx=6, dy=-6, bold=False,
               size=11):
@@ -240,9 +270,6 @@ class PlanCanvas(QGraphicsView):
         d = self.doc.data
         px = self.px()
         sel = self.selection
-        L = 40 * px
-        self._text(p, QPointF(L, 0), "+X", tok["axis"], dx=4, dy=4, size=10)
-        self._text(p, QPointF(0, L), "+Y", tok["axis"], dx=-6, dy=-4, size=10)
 
         # no-go areas
         for i, r in enumerate(d["no_go_zones"]):
@@ -335,6 +362,8 @@ class PlanCanvas(QGraphicsView):
                 self._handle(p, a, tok["select"])
                 self._handle(p, b, tok["select"])
 
+        self._draw_pads(p, tok)
+
         # planned cameras
         if self.result is not None:
             plan, _ = self.result
@@ -356,9 +385,23 @@ class PlanCanvas(QGraphicsView):
                 p.drawEllipse(QPointF(x, y), r, r)
                 if hl or len(plan.cameras) <= 40:
                     self._text(p, QPointF(x, y), cam.id, tok["text2"], dx=6, dy=12, size=9, bold=hl)
+            # several cameras sharing one mount spot: badge it, otherwise their aim lines look odd
+            from idps.ui.planner.view3d import mount_counts
+            for (x, y, _), n in mount_counts(plan.cameras).items():
+                if n > 1:
+                    self._text(p, QPointF(x, y), f"×{n}", tok["text"], dx=-22, dy=-6, size=10, bold=True)
+
+        if self.result is not None and self.show_dimensions:
+            self._draw_dimensions(p, tok)
+        self._draw_ruler(p, tok)
+        if self.preview is not None and self.result is not None:
+            self._draw_preview(p, tok)
+
+        if self.tool == "pad" and self.cursor_pt is not None:
+            self._draw_pad(p, tok, self.cursor_pt, len(self._pads()), ghost=True)
 
         # drawing preview
-        if self.tool != "select" and (self.pending or self.cursor_pt):
+        if self.tool not in ("select", "measure", "pad") and (self.pending or self.cursor_pt):
             c = QColor(tok["select"])
             p.setPen(QPen(c, 1.6 * px, Qt.PenStyle.DashLine))
             pts = list(self.pending) + ([self.cursor_pt] if self.cursor_pt else [])
@@ -375,7 +418,9 @@ class PlanCanvas(QGraphicsView):
                     a, b = np.array(self.pending[-1]), np.array(self.cursor_pt)
                     self._text(p, QPointF(*b), f"{np.linalg.norm(b - a):.2f} m", c, dx=10, dy=18, size=10)
 
-        if not vol and self.tool == "select" and not d["trusses"]:
+        self._draw_origin(p, tok)
+
+        if not vol and self.tool in ("select", "volume") and not d["trusses"] and not self.pending:
             p.save()
             p.resetTransform()
             f = QFont(self.font())
@@ -383,13 +428,229 @@ class PlanCanvas(QGraphicsView):
             p.setFont(f)
             p.setPen(tok["text2"])
             p.drawText(self.viewport().rect(), Qt.AlignmentFlag.AlignCenter,
-                       "Draw the flight volume: press P (or the Volume tool)\n"
-                       "and click the floor outline vertices. Return or click V0 to close.")
+                       "Step 1: draw the performance area (P).\n"
+                       "Click its floor outline corners; Return or click V0 to close.\n"
+                       "Step 2: place the origin (the calibration square) and point its N arrow North.\n"
+                       "Step 3: draw the trusses (T) or tripod areas (A).\n"
+                       "Step 4: place the charging pads (C).\n"
+                       "Step 5: Plan Cameras (⌘R).")
             p.restore()
 
+    # ------------------------------------------------------------- charging pads
+    def _pads(self) -> list:
+        return (self.doc.data.get("pads") or {}).get("centres") or []
+
+    def _pad_corners(self, centre, side=PAD_SIDE_M):
+        """A pad's square, its front facing where its drones fly (the slot 1-2 side first)."""
+        f = frame_of(self.doc.data)
+        c = np.asarray(centre, float)
+        offs = [slot_offset_ne(s, side, self._facing()) for s in (1, 2, 4, 3)]
+        return [c + f.n_hat * dn + f.e_hat * de for dn, de in offs]
+
+    def _facing(self) -> float:
+        d = self.doc.data
+        return site_facing_deg(d) if self._pads() else 0.0
+
+    def _slot_xy(self, centre, slot):
+        f = frame_of(self.doc.data)
+        dn, de = slot_offset_ne(slot, float((self.doc.data.get("pads") or {}).get("slot_spacing_m", 0.2)),
+                                self._facing())
+        return np.asarray(centre, float) + f.n_hat * dn + f.e_hat * de
+
+    def _draw_pads(self, p: QPainter, tok):
+        close = {k for i, j, _ in _pads_too_close(self._pads()) for k in (i, j)}
+        if self.result is not None and not self.result_stale:      # cameras that cannot tell its drones apart
+            close |= {r["pad"] - 1 for r in self.result[0].summary.get("pads", []) if not r["ok"]}
+        for i, c in enumerate(self._pads()):
+            self._draw_pad(p, tok, c, i, selected=self.selection == ("pad", i), warn=i in close)
+
+    def _draw_pad(self, p: QPainter, tok, centre, i, selected=False, ghost=False, warn=False):
+        """A charging pad: its square, its 4 drone slots (drone ID = 4 x (pad - 1) + slot; the
+        slot is the take-off batch) and its name."""
+        px = self.px()
+        col = QColor(tok["select"] if selected else tok["nogo"] if warn else tok["pad"])
+        if ghost:
+            col.setAlphaF(0.55)
+        fill = QColor(col)
+        fill.setAlphaF(0.14)
+        p.setPen(QPen(col, (2.4 if selected else 1.5) * px, Qt.PenStyle.DashLine if ghost else Qt.PenStyle.SolidLine))
+        p.setBrush(fill)
+        p.drawPolygon(_poly(self._pad_corners(centre)))
+        r = max(0.035, 2.5 * px)
+        show_ids = PAD_SIDE_M / px > 70
+        for slot in range(1, SLOTS + 1):
+            q = self._slot_xy(centre, slot)
+            p.setPen(QPen(tok["surface"], 0.8 * px))
+            p.setBrush(col)
+            p.drawEllipse(QPointF(*q), r, r)
+            if show_ids and not ghost:
+                self._text(p, QPointF(*q), str(SLOTS * i + slot), tok["text2"], dx=4, dy=-3, size=8)
+        corner = self._pad_corners(centre)[0]
+        self._text(p, QPointF(*corner), f"Pad {i + 1}", col, dx=2, dy=-4, size=10, bold=selected)
+        if selected:
+            self._handle(p, centre, col, selected=True)
+
+    # ------------------------------------------------------------- origin
+    ORIGIN_N_PX = 64                     # North arrow length on screen
+    ORIGIN_E_PX = 40
+
+    def _origin_geometry(self, origin=None):
+        """(origin xy, N tip, E tip) in scene coordinates, or None."""
+        o = origin if origin is not None else self.doc.data.get("origin")
+        if o is None:
+            return None
+        from idps.core.frames import Frame
+        f = Frame.from_dict(o)
+        c = np.array(f.origin_xy, float)
+        px = self.px()
+        return c, c + f.n_hat * self.ORIGIN_N_PX * px, c + f.e_hat * self.ORIGIN_E_PX * px
+
+    def _draw_origin(self, p: QPainter, tok):
+        origin = self.doc.data.get("origin")
+        ghost = False
+        if origin is None and self.tool == "origin" and self.cursor_pt is not None:
+            origin, ghost = {"xy": list(self.cursor_pt), "north_deg": 90.0}, True
+        g = self._origin_geometry(origin)
+        if g is None:
+            return
+        c, n_tip, e_tip = g
+        px = self.px()
+        sel = self.selection == ("origin", None)
+        col = QColor(tok["select"] if sel or ghost else tok["text"])
+        ncol = QColor(theme.STATUS[0])                         # North in red, like a compass needle
+        ecol = QColor(tok["volume"])
+        if ghost:
+            for q in (col, ncol, ecol):
+                q.setAlphaF(0.6)
+        for tip, colour, w in ((n_tip, ncol, 2.6), (e_tip, ecol, 2.0)):
+            p.setPen(QPen(colour, w * px))
+            p.drawLine(QPointF(*c), QPointF(*tip))
+            u = (tip - c) / max(np.linalg.norm(tip - c), 1e-12)
+            nrm = np.array([-u[1], u[0]])
+            head = 9 * px
+            p.setBrush(colour)
+            p.drawPolygon(_poly([tip, tip - u * head + nrm * head * 0.45, tip - u * head - nrm * head * 0.45]))
+        self._text(p, QPointF(*n_tip), "N", ncol, dx=4, dy=-4, bold=True, size=12)
+        self._text(p, QPointF(*e_tip), "E", ecol, dx=4, dy=-4, bold=True, size=11)
+        p.setPen(QPen(col, 2 * px))
+        p.setBrush(tok["surface"])
+        p.drawEllipse(QPointF(*c), 6 * px, 6 * px)
+        p.setBrush(col)
+        p.drawEllipse(QPointF(*c), 2.2 * px, 2.2 * px)
+        self._text(p, QPointF(*c), "Origin (D down)", col, dx=-30, dy=22, size=9, bold=sel)
+        if sel:                                               # rotate handle at the N tip
+            self._handle(p, n_tip, ncol, selected=True)
+
+    # ------------------------------------------------------------- dimensions
+    def _dim(self, p: QPainter, a, b, offset_px: float, label: str, colour: QColor):
+        """Architectural dimension: line between a and b shifted offset_px to the
+        left of a->b, extension lines back to the points, ticks, and a label."""
+        px = self.px()
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        d = b - a
+        L = float(np.linalg.norm(d))
+        if L < 1e-6:
+            return
+        u = d / L
+        nrm = np.array([-u[1], u[0]]) * offset_px * px
+        a2, b2 = a + nrm, b + nrm
+        p.setPen(QPen(colour, 1.0 * px))
+        p.drawLine(QPointF(*a2), QPointF(*b2))
+        ext = nrm / max(np.linalg.norm(nrm), 1e-12) * 4 * px
+        for q, q2 in ((a, a2), (b, b2)):
+            p.drawLine(QPointF(*q), QPointF(*(q2 + ext)))
+            t = (u + nrm / max(np.linalg.norm(nrm), 1e-12)) * 4 * px          # 45° tick
+            p.setPen(QPen(colour, 1.6 * px))
+            p.drawLine(QPointF(*(q2 - t)), QPointF(*(q2 + t)))
+            p.setPen(QPen(colour, 1.0 * px))
+        if L / px > 34:                                    # label only where it fits
+            mid = (a2 + b2) / 2 + nrm / max(np.linalg.norm(nrm), 1e-12) * 7 * px
+            v = self.mapFromScene(QPointF(*mid))
+            p.save()
+            p.resetTransform()
+            f = QFont(self.font())
+            f.setPointSizeF(9)
+            p.setFont(f)
+            w = p.fontMetrics().horizontalAdvance(label) + 6
+            r = QRectF(v.x() - w / 2, v.y() - 8, w, 16)
+            bg = QColor(theme.tokens()["surface"])
+            bg.setAlphaF(0.85)
+            p.fillRect(r, bg)
+            p.setPen(colour)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+            p.restore()
+
+    def _draw_dimensions(self, p: QPainter, tok):
+        """Chained install measurements: truss start -> each camera mount, and
+        volume vertex -> each tripod along its nearest edge (+ offset out)."""
+        from idps.plan.measure import chains
+        plan, _ = self.result
+        col = QColor(tok["text2"])
+        for ch in chains(self.doc.data["trusses"], self.doc.data["volume"]["polygon"], plan.cameras):
+            o, u = np.array(ch.origin), np.array(ch.direction)
+            prev = 0.0
+            side = 26 if ch.kind == "truss" else -22        # edges: inside the volume, away from tripods
+            for s, ids, off in ch.stations:
+                self._dim(p, o + u * prev, o + u * s, side, f"{s - prev:.2f}", col)
+                if ch.kind == "edge" and off > 0:
+                    foot = o + u * s
+                    out = np.array([u[1], -u[0]])
+                    cam = next(c for c in plan.cameras if c.id == ids[0])
+                    if np.dot(np.array(cam.position_m[:2]) - foot, out) < 0:
+                        out = -out
+                    if s < 0 or s > ch.length:
+                        p.setPen(QPen(col, 1.0 * self.px(), Qt.PenStyle.DotLine))     # edge line extended
+                        p.drawLine(QPointF(*o), QPointF(*foot))
+                    self._dim(p, foot, foot + out * off, 0, f"{off:.2f}", col)
+                prev = s
+            self._text(p, QPointF(*o), "0", col, dx=-10, dy=-10, size=8)
+
+    def _draw_preview(self, p: QPainter, tok):
+        """Advisor suggestion: dashed ghost camera at the new spot and aim, with an
+        arrow from the old position for a move."""
+        r = self.preview
+        px = self.px()
+        c = QColor(tok["select"])
+        new = r.new_camera
+        x, y = new.position_m[0], new.position_m[1]
+        if r.camera_id:
+            old = next((k for k in self.result[0].cameras if k.id == r.camera_id), None)
+            if old is not None and r.kind == "move":
+                p.setPen(QPen(c, 2 * px, Qt.PenStyle.DashLine))
+                p.drawLine(QPointF(*old.position_m[:2]), QPointF(x, y))
+                self._dim(p, old.position_m[:2], (x, y), 18,
+                          f"{np.linalg.norm(np.subtract(new.position_m[:2], old.position_m[:2])):.2f} m", c)
+        az, el = math.radians(new.azimuth_deg), math.radians(new.elevation_deg)
+        L = 40 * px * max(0.25, math.cos(el))
+        p.setPen(QPen(c, 2.4 * px))
+        if math.cos(el) > 0.05:
+            p.drawLine(QPointF(x, y), QPointF(x + L * math.cos(az), y + L * math.sin(az)))
+        p.setPen(QPen(c, 2.2 * px, Qt.PenStyle.DashLine))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(x, y), 11 * px, 11 * px)
+        self._text(p, QPointF(x, y), ("+ " if r.kind == "add" else "") + f"{new.id} (suggested)", c,
+                   dx=14, dy=-12, size=10, bold=True)
+
+    def _draw_ruler(self, p: QPainter, tok):
+        pts = list(self.ruler)
+        if self.tool == "measure" and len(pts) == 1 and self.cursor_pt:
+            pts.append(self.cursor_pt)
+        if len(pts) < 2:
+            if pts:
+                self._handle(p, pts[0], QColor(tok["select"]), selected=True)
+            return
+        a, b = np.array(pts[0]), np.array(pts[1])
+        c = QColor(tok["select"])
+        p.setPen(QPen(c, 2 * self.px()))
+        p.drawLine(QPointF(*a), QPointF(*b))
+        for q in (a, b):
+            self._handle(p, q, c, selected=True)
+        self._dim(p, a, b, 0, f"{np.linalg.norm(b - a):.3f} m", c)
+
     # ------------------------------------------------------------- results
-    def set_result(self, plan, ev):
+    def set_result(self, plan, ev, site_dict: dict | None = None):
         self.result = (plan, ev)
+        self.result_site = site_dict if site_dict is not None else self.doc.to_site_dict()
         self.result_stale = False
         self.highlight_camera = None
         self.overlay_level = min(self.overlay_level, len(ev.grid.zs) - 1)
@@ -397,8 +658,15 @@ class PlanCanvas(QGraphicsView):
             self.scene().addItem(self.overlay)
         self.update_overlay()
 
+    def stale_reasons(self) -> list[str]:
+        """What changed in the venue since the cameras were planned (empty: the plan still holds)."""
+        if self.result is None or self.result_site is None:
+            return []
+        return venue_changes(self.result_site, self.doc.to_site_dict())
+
     def clear_result(self):
         self.result = None
+        self.result_site = None
         if self.overlay.scene() is not None:
             self.scene().removeItem(self.overlay)
         self.viewport().update()
@@ -444,16 +712,33 @@ class PlanCanvas(QGraphicsView):
 
     # --------------------------------------------------------------- editing
     def set_tool(self, tool: str):
+        if tool in NEEDS_AREA and len(self.doc.data["volume"]["polygon"]) < 3:
+            self.message.emit("Draw the performance area first: click its floor outline corners, "
+                              "then Return.")
+            tool = "volume"
+        elif tool in NEEDS_MOUNTS and not self.doc.data["trusses"] and not self.doc.data["tripod_zones"]:
+            self.message.emit("Place the trusses (T) or tripod areas (A) first: the charging pads come after the "
+                              "camera mounts, then Plan Cameras.")
+            tool = "truss"
         self.tool = tool
         self.pending = []
+        self.toolChanged.emit(tool)
         self.setCursor(Qt.CursorShape.ArrowCursor if tool == "select" else Qt.CursorShape.CrossCursor)
         hints = {
             "select": "Click to select; drag vertices to move them; double-click an outline edge to add a vertex.",
-            "volume": "Click the floor outline vertices. Return, double-click or click V0 to finish. Esc cancels.",
+            "volume": "Click the performance area's floor corners. Return, double-click or click V0 to finish. "
+                      "Esc cancels.",
+            "origin": "Click where the calibration square's corner (the origin) will be. Then drag the red N "
+                      "arrow to point North.",
             "truss": "Click the truss start, then its end.",
             "zone": "Click the tripod area corners. Return or double-click to finish.",
             "nogo": "Click the no-go area corners. Return or double-click to finish.",
+            "pad": f"Click where each charging pad stands (4 drones, 2 × 2; pads at least {MIN_PAD_GAP_M:g} m "
+                   "apart). Pad 1 holds drones 1–4, pad 2 drones 5–8, … Esc when done.",
+            "measure": "Click two points to measure (snaps to vertices, truss ends and cameras). Esc clears.",
         }
+        if tool != "measure":
+            self.ruler = []
         self.message.emit(hints[tool] + "  (Shift: horizontal/vertical, Option: no snapping)")
         self.viewport().update()
 
@@ -465,7 +750,9 @@ class PlanCanvas(QGraphicsView):
 
     def rebuild(self):
         if self.result is not None:
-            self.result_stale = True
+            # stale only while the venue differs from the one planned: a change undone, or a
+            # pad dragged and put back, keeps the plan
+            self.result_stale = bool(self.stale_reasons())
             self.update_overlay()
         # drop a selection that no longer exists
         s = self.selection
@@ -473,7 +760,8 @@ class PlanCanvas(QGraphicsView):
         if s and ((s[0] == "vertex" and s[1] >= len(d["volume"]["polygon"]))
                   or (s[0] == "truss" and s[1] >= len(d["trusses"]))
                   or (s[0] == "zone" and s[1] >= len(d["tripod_zones"]))
-                  or (s[0] == "nogo" and s[1] >= len(d["no_go_zones"]))):
+                  or (s[0] == "nogo" and s[1] >= len(d["no_go_zones"]))
+                  or (s[0] == "pad" and s[1] >= len(self._pads()))):
             self.set_selection(None)
         self.viewport().update()
 
@@ -496,6 +784,8 @@ class PlanCanvas(QGraphicsView):
 
     def _all_points(self):
         d = self.doc.data
+        if d.get("origin"):
+            yield d["origin"]["xy"]
         yield from d["volume"]["polygon"]
         for t in d["trusses"]:
             yield t["start"]
@@ -504,12 +794,23 @@ class PlanCanvas(QGraphicsView):
             yield from z.get("polygon", [])
         for r in d["no_go_zones"]:
             yield from r
+        yield from self._pads()
+        if self.result is not None:             # measure from / to planned cameras
+            for c in self.result[0].cameras:
+                yield c.position_m[:2]
 
     def _hit(self, x: float, y: float):
         """What is under the cursor: (kind, index, vertex-or-None)."""
         d = self.doc.data
         tol = HIT_PX * self.px()
         sel = self.selection
+        g = self._origin_geometry()
+        if g is not None:                                  # origin: N tip turns it, the centre moves it
+            c, n_tip, _ = g
+            if math.hypot(n_tip[0] - x, n_tip[1] - y) < tol * 1.4:
+                return ("origin", None, "rotate")
+            if math.hypot(c[0] - x, c[1] - y) < tol * 1.2:
+                return ("origin", None, "move")
         # handles of the selected item first
         if sel and sel[0] == "truss":
             t = d["trusses"][sel[1]]
@@ -521,6 +822,13 @@ class PlanCanvas(QGraphicsView):
                 for k, v in enumerate(pts):
                     if math.hypot(v[0] - x, v[1] - y) < tol:
                         return (kind, idx, k)
+        f = frame_of(d)
+        a = math.radians(self._facing())
+        for i, c in enumerate(self._pads()):              # a pad: grab it anywhere to move it
+            dn, de = f.ne((x, y)) - f.ne(c)
+            front, right = dn * math.cos(a) + de * math.sin(a), -dn * math.sin(a) + de * math.cos(a)
+            if max(abs(front), abs(right)) <= PAD_SIDE_M / 2 + tol:
+                return ("pad", i, 0)
         if self.result is not None:
             for k, c in enumerate(self.result[0].cameras):
                 if math.hypot(c.position_m[0] - x, c.position_m[1] - y) < tol:
@@ -579,6 +887,11 @@ class PlanCanvas(QGraphicsView):
         if self.tool == "select":
             hit = self._hit(x, y)
             kind, idx, vtx = hit
+            if kind == "origin":
+                self.drag = ("origin", None, vtx)
+                self.drag_before = self.doc.snapshot()
+                self.set_selection(("origin", None))
+                return
             if vtx is not None:
                 self.drag = (kind, idx, vtx)
                 self.drag_before = self.doc.snapshot()
@@ -587,6 +900,28 @@ class PlanCanvas(QGraphicsView):
                 self.set_selection((kind, idx))
             return
         pt = self._snap(x, y, e.modifiers())
+        if self.tool == "origin":
+            north = float((self.doc.data.get("origin") or {}).get("north_deg", 90.0))
+            self.doc.edit("Place origin", lambda d: d.__setitem__("origin", {"xy": list(pt), "north_deg": north}))
+            self.cursor_pt = None
+            self.set_tool("select")
+            self.set_selection(("origin", None))
+            self.message.emit("Origin placed. Drag the red N arrow to point North (snaps to 15°; hold Option "
+                              "for any angle). Drag the centre to move it. All coordinates are North-East-Down "
+                              "from here.")
+            return
+        if self.tool == "pad":
+            self.place_pad(pt)
+            return
+        if self.tool == "measure":
+            # two clicks measure; a third click starts a new measurement
+            self.ruler = [pt] if len(self.ruler) != 1 else self.ruler + [pt]
+            if len(self.ruler) == 2:
+                a, b = np.array(self.ruler[0]), np.array(self.ruler[1])
+                dn, de = frame_of(self.doc.data).ne(b) - frame_of(self.doc.data).ne(a)
+                self.message.emit(f"Distance {np.linalg.norm(b - a):.3f} m  (ΔN {dn:+.3f} m, ΔE {de:+.3f} m)")
+            self.viewport().update()
+            return
         if self.tool == "truss":
             self.pending.append(pt)
             if len(self.pending) == 2:
@@ -609,11 +944,24 @@ class PlanCanvas(QGraphicsView):
             return
         if self.drag is not None:
             kind, idx, vtx = self.drag
+            if kind == "origin" and vtx == "rotate":
+                o = self.doc.data["origin"]["xy"]
+                ang = math.degrees(math.atan2(sp.y() - o[1], sp.x() - o[0]))
+                if not e.modifiers() & Qt.KeyboardModifier.AltModifier:
+                    ang = round(ang / 15.0) * 15.0
+                self.doc.set_live(lambda data: data["origin"].__setitem__("north_deg", round(ang % 360.0, 3)))
+                self.message.emit(f"North points {(90 - ang) % 360:.0f}° clockwise from the top of the plan")
+                return
             pt = list(self._snap(sp.x(), sp.y(), e.modifiers()))
 
             def move(data):
+                if kind == "origin":
+                    data["origin"]["xy"] = pt
+                    return
                 if kind == "truss":
                     data["trusses"][idx]["start" if vtx == 0 else "end"] = pt
+                elif kind == "pad":
+                    data["pads"]["centres"][idx] = pt
                 else:
                     self._points_of(data, kind, idx)[vtx] = pt
             self.doc.set_live(move)
@@ -628,7 +976,11 @@ class PlanCanvas(QGraphicsView):
             self.setCursor(Qt.CursorShape.ArrowCursor if self.tool == "select" else Qt.CursorShape.CrossCursor)
             return
         if self.drag is not None:
-            self.doc.commit("Move vertex", self.drag_before)
+            what = {"move": "Move origin", "rotate": "Turn North"}.get(self.drag[2], "Move vertex") \
+                if self.drag[0] == "origin" else "Move charging pad" if self.drag[0] == "pad" else "Move vertex"
+            if self.drag[0] == "pad":
+                self._warn_close_pads()
+            self.doc.commit(what, self.drag_before)
             self.drag = None
             self.drag_before = None
 
@@ -660,7 +1012,9 @@ class PlanCanvas(QGraphicsView):
     def keyPressEvent(self, e):
         key = e.key()
         if key == Qt.Key.Key_Escape:
-            if self.pending:
+            if self.ruler:
+                self.ruler = []
+            elif self.pending:
                 self.pending = []
             else:
                 self.set_tool("select")
@@ -695,28 +1049,77 @@ class PlanCanvas(QGraphicsView):
                                         "height_m": float(d["volume"]["z"][1]) + 1.5})
             self.doc.edit("Add truss", add)
             self.set_selection(("truss", len(self.doc.data["trusses"]) - 1))
+            self.set_tool("select")
         elif tool in ("volume", "zone", "nogo") and len(pts) >= 3:
             if tool == "volume":
-                self.doc.edit("Draw volume", lambda data: data["volume"].__setitem__("polygon", pts))
-                self.set_selection(("volume", None))
-                self.set_tool("select")
+                self.doc.edit("Draw performance area", lambda data: data["volume"].__setitem__("polygon", pts))
                 self.zoom_to_fit()
+                if "origin" not in self.doc.data:           # step 2: where is the calibration square?
+                    self.set_selection(None)
+                    self.set_tool("origin")
+                else:
+                    self.set_selection(("volume", None))
+                    self.set_tool("select")
             elif tool == "zone":
                 def add(data):
                     n = len(data["tripod_zones"]) + 1
                     data["tripod_zones"].append({"id": f"area{n}", "polygon": pts, "height_m": [2.0, 20.0]})
                 self.doc.edit("Add tripod area", add)
                 self.set_selection(("zone", len(self.doc.data["tripod_zones"]) - 1))
+                self.set_tool("select")
             else:
                 self.doc.edit("Add no-go area", lambda data: data["no_go_zones"].append(pts))
                 self.set_selection(("nogo", len(self.doc.data["no_go_zones"]) - 1))
+                self.set_tool("select")
         self.viewport().update()
 
     def delete_selection(self):
-        s = self.selection
-        if not s:
-            return
-        kind, idx = s
+        if self.selection:
+            self.delete_item(*self.selection)
+
+    def item_name(self, kind, idx) -> str:
+        d = self.doc.data
+        if kind == "truss":
+            return f"Truss {d['trusses'][idx]['id']}"
+        if kind == "zone":
+            z = d["tripod_zones"][idx]
+            return ("Tripod strip " if "offset_m" in z else "Tripod area ") + z["id"]
+        if kind == "nogo":
+            return f"No-go area {idx + 1}"
+        if kind == "vertex":
+            return f"Vertex V{idx}"
+        if kind == "pad":
+            return f"Charging pad {idx + 1}"
+        if kind == "origin":
+            return "Origin"
+        return "Performance area"
+
+    def contextMenuEvent(self, e):
+        """Right-click / two-finger click: delete the item under the pointer."""
+        menu = self.context_menu_at(e.pos())
+        if menu is not None:
+            menu.exec(e.globalPos())
+
+    def context_menu_at(self, pos):
+        from PySide6.QtWidgets import QMenu
+        sp = self.mapToScene(pos)
+        hit = self._hit(sp.x(), sp.y())
+        if hit is None or hit[0] in ("camera", "origin"):
+            return None
+        kind, idx, vtx = hit
+        if kind == "volume" and vtx is not None:
+            kind, idx = "vertex", vtx
+        elif kind == "truss" or vtx is None:
+            pass
+        else:
+            vtx = None                                   # zone / no-go vertex: act on the whole item
+        self.set_selection((kind, idx))
+        menu = QMenu(self)
+        act = menu.addAction(f"Delete {self.item_name(kind, idx)}")
+        act.triggered.connect(lambda: self.delete_item(kind, idx))
+        return menu
+
+    def delete_item(self, kind, idx):
         if kind == "vertex":
             if len(self.doc.data["volume"]["polygon"]) <= 3:
                 self.message.emit("The volume outline needs at least 3 vertices.")
@@ -728,6 +1131,40 @@ class PlanCanvas(QGraphicsView):
             self.doc.edit("Delete tripod zone", lambda d: d["tripod_zones"].pop(idx))
         elif kind == "nogo":
             self.doc.edit("Delete no-go area", lambda d: d["no_go_zones"].pop(idx))
+        elif kind == "pad":
+            self.doc.edit("Delete charging pad", lambda d: d["pads"]["centres"].pop(idx))
+            if idx < len(self._pads()):
+                self.message.emit("Pads after it moved up one: their drone IDs are 4 lower now.")
         elif kind == "volume":
             self.doc.edit("Clear volume", lambda d: d["volume"].__setitem__("polygon", []))
         self.set_selection(None)
+
+    def place_pad(self, pt) -> bool:
+        """Add a charging pad at pt (drawing XY), unless it would stand too close to another."""
+        pads = self._pads()
+        near = [k for k, c in enumerate(pads) if math.hypot(c[0] - pt[0], c[1] - pt[1]) < MIN_PAD_GAP_M - 1e-9]
+        if near:
+            self.message.emit(f"Too close to pad {near[0] + 1}: pads stand at least {MIN_PAD_GAP_M:g} m apart "
+                              "(centre to centre).")
+            return False
+
+        def add(data):
+            data.setdefault("pads", {}).setdefault("centres", []).append([float(pt[0]), float(pt[1])])
+        self.doc.edit("Place charging pad", add)
+        k = len(self._pads())
+        self.set_selection(("pad", k - 1))
+        self.message.emit(f"Pad {k} placed: drones {SLOTS * (k - 1) + 1}–{SLOTS * k} (slot = take-off batch). "
+                          "Click to place the next; Esc when done, then Plan Cameras (⌘R).")
+        self.viewport().update()
+        return True
+
+    def _warn_close_pads(self):
+        for i, j, dist in _pads_too_close(self._pads()):
+            self.message.emit(f"Pads {i + 1} and {j + 1} are {dist:.2f} m apart: keep pads at least "
+                              f"{MIN_PAD_GAP_M:g} m apart.")
+            return
+
+
+def _pads_too_close(centres):
+    from idps.show.pads import too_close
+    return too_close(centres)

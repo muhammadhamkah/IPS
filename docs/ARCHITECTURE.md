@@ -37,10 +37,10 @@ Companion documents: [PROTOCOL.md](PROTOCOL.md), [RISKS.md](RISKS.md),
             \                                   /
              v                                 v
   +------------------------------------------------------------+
-  |  Camera Station  x N        (Raspberry Pi 4B + OV9281)      |
+  |  Camera Station  x N        (Raspberry Pi 5 + OV9281, PoE+) |
   |  idps-edge (C++)  : capture -> detect -> timestamp -> UDP   |
   |  idps-agent       : control, gimbal, snapshots, health      |
-  |  ptp4l / chrony   : clock discipline                        |
+  |  ptp4l -H + phc2sys : clock discipline (hardware PTP)       |
   +------------------------------------------------------------+
         | UDP observations (data plane)     ^ TCP/ZeroMQ control
         v                                   |
@@ -50,7 +50,7 @@ Companion documents: [PROTOCOL.md](PROTOCOL.md), [RISKS.md](RISKS.md),
   |                triangulate -> track -> identify -> QA       |
   |  idps-record : raw packet + state logging (MCAP)            |
   |  idps-calib  : intrinsics, wand bundle adjustment, re-pose  |
-  |  PTP grandmaster (or dedicated sync master)                 |
+  |  (PTP grandmaster: camera 1's Pi 5, not the PC)             |
   +------------------------------------------------------------+
         | ZeroMQ PUB (state @120 Hz)        ^ ZeroMQ REQ (commands)
         v                                   |
@@ -65,7 +65,8 @@ Companion documents: [PROTOCOL.md](PROTOCOL.md), [RISKS.md](RISKS.md),
 
 The **sync master** handles time synchronisation, and ROADMAP Phase 5 decides its final form:
 
-* Option A: Ethernet PTP. Software timestamping on the Pi 4B; this NIC capability still needs verifying.
+* Option A (**chosen**, decision D16): Ethernet PTP with the Pi 5's hardware timestamps.
+  Simulated skew between stations is about 0.8 µs p95 (docs/NETWORK_TIMING.md).
 * Option B: a wired hardware trigger line to each camera's FSIN input.
 * Option C: a radio broadcast sync pulse that drives each camera's trigger. The same pulse can
   also drive the drone LEDs (see PROTOCOL.md §6).
@@ -77,14 +78,14 @@ The **sync master** handles time synchronisation, and ROADMAP Phase 5 decides it
 | Item | Convention |
 |---|---|
 | Units | SI everywhere: metres, radians, seconds. Wire timestamps are `int64` nanoseconds. |
-| World frame `W` | Right-handed, Z up, origin and axes defined by the surveyed reference beacons or the L-frame. |
+| World frame `W` (decision D18) | **North-East-Down (NED)**, the local frame flight controllers (PX4, ArduPilot) use. Origin = the calibration square's marked corner on the floor; **N** along its long arm (the drone yaw-0 direction), **E** along its short arm (90° clockwise from N seen from above), **D** down (a point 10 m up has D = −10). Positions sent to drones, logged, shown and exported are NED. Internally the planner computes in the *drawing frame* (the plan as drawn, Z up) and converts with `idps.core.frames.Frame` (origin + direction of North, stored in the site file as `origin: {xy, north_deg}`). Headings are degrees from North, clockwise. |
 | Camera frame `C` | OpenCV convention: +X right, +Y down, +Z along the optical axis. |
 | Extrinsics | `T_CW` (world→camera) stored as rotation vector + translation, with a 6×6 covariance. |
 | Intrinsics | OpenCV pinhole plus a distortion model (Brown-Conrady k1..k3, p1, p2; fisheye model for lenses beyond ~90° HFOV). |
 | Pixel coordinates | Stations transmit **distorted** (raw) subpixel coordinates. Undistortion happens on the PC, so recorded data can be reprocessed after re-calibrating intrinsics. |
 | Time base | One system time: PTP/TAI nanoseconds disciplined to the sync master. Every observation timestamp is the **mid-exposure instant** in this time base. |
-| Drone body frame `B` | Origin at the drone **reference point** (the point flight control steers). +X forward, +Y left, +Z up. |
-| Drone yaw | **Fixed for the whole flight** and set at takeoff: `yaw_ref` per drone, normally 0, i.e. body +X along world +X. Drones roll and pitch, but do not yaw. |
+| Drone body frame `B` | Origin at the drone **reference point** (the point flight control steers). +X forward, +Y left, +Z up (the simulator's convention; marker offsets are given in it). |
+| Drone yaw | **Fixed for the whole flight** and set at takeoff: `yaw_ref` per drone, normally 0, i.e. facing **North** (the square's long arm). Drones roll and pitch, but do not yaw. |
 | Marker offset | Each marker's position in `B` is stored in the drone configuration (`markers: [{id, offset_m: [x, y, z]}]`). Reported drone position = reference point, not marker (§5.1, *Drone model*). |
 
 ---
@@ -144,7 +145,8 @@ parameter block or a Unix socket.
 
 ### 4.3 Benchmark harness (`edge/bench`)
 
-The harness establishes the Pi 4B capability *before* any design depends on it:
+The harness establishes the Pi 5 capability *before* any design depends on it, on the first
+station and before the rest are ordered (docs/HARDWARE.md):
 
 * Raw capture rate at each sensor mode: 1280×800, 640×400, and cropped modes.
 * Detection time distribution (p50/p99/max) versus marker count (0, 1, 10, 50, 200).
@@ -180,6 +182,8 @@ The harness establishes the Pi 4B capability *before* any design depends on it:
 ---
 
 ## 5. Central positioning engine (`idps-engine`)
+
+*Implemented (v1): `idps/engine/`, with a C++ core, closed-loop tested with PX4 SITL drones; results and status in docs/ENGINE.md. Asynchronous per-camera updates and multi-marker drones are still to come.*
 
 ### 5.1 Stage pipeline
 
@@ -236,7 +240,7 @@ That is about 450k 2D observations/s into association and 18k triangulations/s.
 |---|---|---|
 | **6.1 Intrinsics** (per camera, once, in the lab) | ChArUco board viewed through the IR filter: backlit IR board, or filter removed with a fixed focus. Lens focus and aperture are locked with thread-locker before calibrating | `K`, distortion, RMS reprojection error (target < 0.1 px), coverage of the image corners |
 | **6.2 Extrinsics: wand** (initial, after installation) | A rigid wand with 3 collinear coded LEDs at known spacing is moved through the volume. Pairwise essential matrices give the initial guess; sparse bundle adjustment (`scipy.optimize.least_squares` with Jacobian sparsity, later Ceres) jointly refines all poses, optionally intrinsics, and wand points. Scale comes from the wand length | `T_CW` for all cameras with covariance, residual statistics, wand-length error distribution |
-| **6.3 World frame: calibration square** (OptiTrack/Vicon-style ground plane) | An L-frame with 1 m arms and 4 IR LEDs (origin, X 0.5 m, X 1.0 m, Y 1.0 m; the extra X LED breaks the X/Y symmetry) is placed on the floor at the planned origin. Its marked corner = (0, 0, 0), its X arm = +X (the drone yaw-0 direction), the floor = Z 0, +Z up. **At hall scale**, floor LEDs far along the +X/+Y lines (about 40–90 m), with distances measured by a laser distance meter, fix the axis directions, the floor plane and the global scale. A 1 m baseline alone gives about 30–100 mm error at 70 m (RISKS R18). The solution is aligned by a constrained similarity transform | Axis-angle and scale uncertainty; residuals per marker; wand versus laser scale agreement |
+| **6.3 World frame: calibration square** (OptiTrack/Vicon-style ground plane) | An L-frame with 1 m arms and 4 IR LEDs (origin, N 0.5 m, N 1.0 m, E 1.0 m; the extra LED on the North arm breaks the symmetry) is placed on the floor at the planned origin, its long arm pointing North as drawn in the planner. Its marked corner = NED (0, 0, 0), its North arm = +N (the drone yaw-0 direction), its East arm = +E (to the right when facing North), the floor = D 0, +D down. **At hall scale**, floor LEDs far along the +N/+E lines (about 40–90 m), with distances measured by a laser distance meter, fix the axis directions, the floor plane and the global scale. A 1 m baseline alone gives about 30–100 mm error at 70 m (RISKS R18). The solution is aligned by a constrained similarity transform | Axis-angle and scale uncertainty; residuals per marker; wand versus laser scale agreement |
 | **6.3b Beacon self-survey** | After 6.2/6.3, every fixed beacon is triangulated by all calibrated cameras that see it, averaged over tens of seconds, and refined in the bundle adjustment. No total station is needed for beacon positions. A total station remains the *independent* check in VALIDATION.md | Beacon position covariance (target ≤ 1–2 mm) |
 | **6.3c Aim to plan** | *Coarse:* before calibration, servos go to the planned pan/tilt, so aim error equals base-orientation error plus servo error (about 1–3°). *Fine:* after calibration, each camera's true pose gives the exact servo correction to reach its planned view direction; live re-pose updates the rotation | Planned-versus-actual view direction per camera |
 | **6.4 Live re-pose** (servo gimbals, always on) | Each station sees **≥ 9–16 fixed beacons spread across its image, mostly ≥ 40 m away** (RISKS R3). The camera position comes from the gimbal kinematic model (§4.4) plus the bundle adjustment. The camera **rotation is re-estimated continuously** by a rotation-only PnP filter over the beacon observations, averaged over 0.1–1 s. The engine uses these time-varying extrinsics. A beacon is identified by predicting where it should appear in the image; beacons shine at constant brightness. After a move, the commanded servo angles seed the solve | Rotation covariance per station (target ≤ 0.03–0.05 mrad); the station is used only while its covariance is below the threshold |

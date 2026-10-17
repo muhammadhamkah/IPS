@@ -21,10 +21,13 @@ DEFAULT_SITE = {
     "trusses": [],
     "tripod_zones": [],
     "no_go_zones": [],
+    # charging pads (after the trusses, before planning): centres on the plan + the sequence
+    "pads": {"centres": [], "slot_spacing_m": 0.2, "layers_m": [4.0, 3.0, 2.0, 1.0], "batch_gap_s": 5.0,
+             "hold_timeout_s": 60.0, "climb_speed_mps": 1.5, "transfer_speed_mps": 1.5, "facing": "auto"},
     "candidates": {
-        "truss_step_m": 3.0, "truss_drop_m": 0.3, "truss_elevations_deg": [-90, -60, -35],
-        "tripod_step_m": 3.0, "tripod_heights_m": [3, 10, 18], "tripod_elevations_deg": [0, 25, 50],
-        "azimuth_step_deg": 30, "max_cameras_per_mount": 3,
+        "truss_step_m": 3.0, "truss_drop_m": 0.3, "truss_elevations_deg": [-90, -60, -35, -15, 0],
+        "tripod_step_m": 3.0, "tripod_heights_m": [3, 10, 18], "tripod_elevations_deg": [0, -15, -30, -50],
+        "azimuth_step_deg": 30, "max_cameras_per_mount": 1, "min_camera_spacing_m": 1.5,
     },
     "optimiser": {"max_cameras": 200},
 }
@@ -58,7 +61,19 @@ def normalise(d: dict) -> dict:
             r = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
         nogo.append(r)
     out["no_go_zones"] = nogo
+    # Origin (calibration-square corner) and North. A venue drawn before origins existed keeps
+    # its old frame: origin at drawing (0, 0), North along drawing +X. A new venue has none
+    # until it is placed after drawing the performance area.
+    if "origin" not in out and out["volume"]["polygon"]:
+        out["origin"] = {"xy": [0.0, 0.0], "north_deg": 0.0}
     return out
+
+
+def frame_of(data: dict):
+    """The document's NED frame. Until the origin is placed: drawing origin, North up the plan
+    (what the Origin tool starts with)."""
+    from idps.core.frames import Frame
+    return Frame.from_dict(data.get("origin") or {"xy": [0.0, 0.0], "north_deg": 90.0})
 
 
 class _Snapshot(QUndoCommand):
@@ -82,7 +97,10 @@ class SiteDocument(QObject):
         self.data = normalise({})
         self.path: Path | None = None
         self.undo = QUndoStack(self)
-        self.undo.cleanChanged.connect(lambda _: self.pathChanged.emit(self.title()))
+        self.undo.cleanChanged.connect(self._clean_changed)
+
+    def _clean_changed(self, _clean: bool):
+        self.pathChanged.emit(self.title())
 
     # --- state -------------------------------------------------------
     def _set(self, d: dict):

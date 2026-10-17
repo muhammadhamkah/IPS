@@ -1,7 +1,9 @@
 # Show hall: 100 x 100 x 30 m flight volume. Overhead trusses at 31.5 m every
-# 12.5 m, one with a missing section and one extra truss line; tripod zones
-# (up to 20 m masts) in 2 m strips just outside the volume.
+# 12.5 m, one with a missing section and one extra truss line. Cameras are always
+# above the drones, so with a 30 m ceiling tripods (masts up to 20 m) cannot be
+# used: trusses only.
 name: Show hall (example)
+origin: {xy: [0, 0], north_deg: 0}   # calibration square at the floor centre
 volume: {min: [-50, -50, 0], max: [50, 50, 30]}
 sensor: OV9281
 lenses_mm: [2.8]
@@ -30,22 +32,11 @@ trusses:
   - {id: T9, start: [-55, 50], end: [55, 50], height_m: 31.5}
   - {id: X1, start: [0, -55], end: [0, 55], height_m: 32.0}      # additional (hired) truss line
 
-tripod_zones:
-  - {id: north, rect: [-54, 52, 54, 54], height_m: [2, 20]}
-  - {id: south, rect: [-54, -54, 54, -52], height_m: [2, 20]}
-  - {id: east,  rect: [52, -50, 54, 50], height_m: [2, 20]}
-  - {id: west,  rect: [-54, -50, -52, 50], height_m: [2, 20]}
-
-no_go_zones:
-  - [-54, -10, -52, 10]          # main doors on the west side
 
 candidates:
   truss_step_m: 5
   truss_drop_m: 0.3
   truss_elevations_deg: [-90, -60, -35]
-  tripod_step_m: 6
-  tripod_heights_m: [4, 12, 20]
-  tripod_elevations_deg: [0, 25, 50, 75]
   azimuth_step_deg: 30
   max_cameras_per_mount: 3
 

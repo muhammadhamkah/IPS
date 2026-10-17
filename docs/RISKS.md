@@ -184,6 +184,10 @@ lenses, or a revised requirement.
     accurate*;
   * acquisition timestamps (never arrival times);
   * the Wi-Fi reorder buffer.
+* **Simulation** (`idps.sim.clocksync`, docs/NETWORK_TIMING.md):
+  * Wi-Fi with chrony: about 2 ms skew (p95), about 5 mm at 5 m/s.
+  * Wired software PTP: about 12 µs (Pi 5), 60 µs (Pi 3B).
+  * Wired hardware PTP on the Pi 5 (the chosen setup): under 1 µs.
 * **Earliest test:** Phase 3/5. The LED-strobe timing rig measures per-station timestamp
   error under S0, S1 and S2. **Decision:** Wi-Fi remains a development convenience only,
   unless it achieves σ ≤ 100 µs in that test.
@@ -245,26 +249,50 @@ architecture supports this, with the constraints below.
   * **If it fails:** upgrade the same gimbal design to worm-gear servos or add a brake. The
     software does not change.
 
-### R4: Raspberry Pi 4B sustained 120 FPS (M)
+### R4: Raspberry Pi 5 sustained 120 FPS (M)
 
-* **Evidence:**
-  * The OV9281 sensor supports 1280×800 at up to 120 FPS; whether the Pi 4B libcamera
-    raw path sustains it with our processing on top must be **benchmarked**.
-  * A 1 MP frame at 120 FPS is 123 Mpix/s. One full-frame read at ~4 GB/s effective memory
-    bandwidth is about 0.3 ms, so a sparse NEON detector should fit in 2–4 ms of the
-    8.33 ms budget.
-  * Risks: unpacking RAW10, buffer-copy overhead, thermal throttling in an enclosure, and
-    interrupt latency affecting timestamps.
-* **Mitigation:**
-  * 8-bit raw mode if the driver offers it;
-  * zero-copy dmabuf access;
-  * core pinning;
-  * a heatsink and fan;
-  * cropped or binned modes at long focal lengths;
-  * Pi 5 or CM4 as a drop-in upgrade, since the edge code is portable.
-* **Earliest test:** Phase 2 benchmark (ARCHITECTURE §4.3). **Decision:** if p99 processing
-  exceeds 6 ms, or drops exceed 0.01 % over 30 minutes, choose among a cropped mode, a Pi 5,
-  or 90 FPS.
+**Station hardware (decision D16): Raspberry Pi 5 (2 GB) + OV9281 per camera**, chosen over the
+Pi 3B before any hardware was bought. The reasons:
+
+* **CPU.** The Pi 5's Cortex-A76 cores are roughly 2–3× a Pi 4B and far beyond a Pi 3B, so
+  full-resolution detection is expected to fit.
+* **Fewer cameras.** A Pi 3B would have needed the OV9281's binned 640×400 mode, which halves the
+  angular resolution. Planned layouts with full resolution need about 4 fewer cameras:
+  * a 30 × 16 × 9 m venue: 14 instead of 18;
+  * the 50 × 20 × 20 m example: 17 instead of 21.
+* **Network.** Native gigabit Ethernet with **hardware PTP timestamps**: simulated skew between
+  stations is about 0.8 µs p95, against 60 µs for a Pi 3B (docs/NETWORK_TIMING.md).
+* **Power.** A PoE+ HAT gives one cable per station (docs/HARDWARE.md). The Pi 3B has no PoE
+  header.
+
+**The 120 FPS evidence:**
+
+* **Sensor and pixel rate.** The OV9281 supports 1280×800 at up to 120 FPS. A 1 MP frame at
+  120 FPS is 123 Mpix/s.
+* **Detector time.** One full-frame read at the Pi 5's memory bandwidth takes a fraction of a
+  millisecond, so a sparse NEON detector should fit in 1–3 ms of the 8.33 ms budget.
+* **Remaining risks:**
+  * unpacking RAW10;
+  * buffer-copy overhead;
+  * **thermal throttling**: the Pi 5 needs its active cooler, especially in an enclosure;
+  * interrupt latency affecting timestamps.
+
+**Mitigation:**
+* 8-bit raw mode if the driver offers it;
+* zero-copy dmabuf access;
+* core pinning;
+* the active cooler;
+* cropped or binned modes at long focal lengths.
+
+**Mounting the Pi on the gimbal** adds moving mass, heat and cable stiffness to the servos (R3).
+Put only the camera on the gimbal, with a 30–50 cm camera cable to a fixed Pi (the Pi 5 uses
+the smaller 22-pin camera connector: docs/HARDWARE.md).
+
+**Earliest test:** Phase 2 benchmark on the first Pi 5 + OV9281, *before ordering the rest*
+(ARCHITECTURE §4.3). **Decision:** if p99 processing exceeds 6 ms, or drops exceed 0.01 % over
+30 minutes, choose a cropped mode or 90 FPS. Also confirm `ethtool -T eth0` lists hardware
+timestamping. If it does not, the stations run software PTP, which simulates to about 12 µs
+and is still fine.
 
 ### R5: Network scale with 150–260 stations (M)
 
@@ -404,7 +432,10 @@ architecture supports this, with the constraints below.
 ### R13: OV9281 / Raspberry Pi driver capabilities (M)
 
 * **To verify on real hardware:**
-  * a raw 8-bit or 10-bit mode at 120 FPS through libcamera on the Pi 4B;
+  * a raw 8-bit or 10-bit mode at 120 FPS through libcamera on the Pi 5;
+  * the camera cable: the Pi 5 has 22-pin camera connectors, and most OV9281 modules ship with a
+    15-pin cable, so a 22-to-15-pin cable is needed;
+  * hardware PTP timestamps on the Pi 5's Ethernet (`ethtool -T eth0`);
   * **external trigger (FSIN) support** in the kernel driver and module (some vendor modules
     expose a trigger pin, others do not);
   * accuracy and latency of `SensorTimestamp`;
@@ -435,7 +466,7 @@ architecture supports this, with the constraints below.
 
 ### R16: Drone reference point versus marker position (M)
 
-* **Context:** drones take off at a specified yaw (normally 0, i.e. facing +X) and do not
+* **Context:** drones take off at a specified yaw (normally 0, i.e. facing North) and do not
   yaw in flight. They still **roll and pitch** to accelerate, typically 10–25° at 4 m/s
   manoeuvres.
 * **Evidence:**
@@ -475,7 +506,7 @@ architecture supports this, with the constraints below.
   room, so it matters.
 * **Mitigation:**
   * Keep the 1 m square for the origin.
-  * Add long-baseline floor markers along +X and +Y, measured with a laser distance meter,
+  * Add long-baseline floor markers along North and East, measured with a laser distance meter,
     for axes, floor plane and scale (WORKFLOW step 4, item 3).
   * Verify with the independent total-station check (VALIDATION G4).
 * **Earliest test:** Phase 9. Compare the scale and axes from the square plus wand against
@@ -525,6 +556,31 @@ architecture supports this, with the constraints below.
 * **Earliest test:** Phase 9. Accelerometer + beacon log on a guyed 20 m mast: sway amplitude
   and spectrum, and settle time after a servo move.
 
+### R20: Drone heading without a magnetometer or a measured yaw (M)
+
+* **Context (D20):** one IR marker per drone, so IDPS measures position but not heading.
+  Drones never yaw and always face North, and the magnetometer is off (steel trusses and
+  motors make it unreliable indoors).
+* **Evidence:**
+  * PX4's EKF2 needs a heading source: a magnetometer, GPS or external vision. Its
+    no-magnetometer yaw estimator works from GPS velocity, not from vision.
+  * A heading error `ψ` turns every correction the position controller makes by `ψ`. A few
+    degrees costs a little tracking accuracy; tens of degrees make the drone circle around
+    its setpoint.
+* **Mitigation:**
+  * Put each drone down **facing North** on its home pad. Each pad is marked with an arrow,
+    or uses a jig, aligned to the calibration square.
+  * The PC sends heading 0 (North) with every position in `ODOMETRY`, with an uncertainty of
+    about 3° that covers the placement. PX4 fuses it as external-vision yaw (`EKF2_EV_CTRL`
+    yaw bit), and its gyros hold the heading between updates.
+  * **Heading monitor (to build):** IDPS knows each drone's commanded acceleration (the
+    setpoints it sends) and measures the acceleration it actually gets. A consistent angle
+    between the two is the heading error. Alert, or refuse take-off, above a threshold such
+    as 10°.
+* **Earliest test:** PX4 SITL with the magnetometer off. Fly a show with heading errors of
+  0, 5, 15 and 30° injected at placement, and measure the tracking error. On the first drone,
+  log the heading drift over a 10-minute hover.
+
 ---
 
 ## 2. Decisions
@@ -535,14 +591,21 @@ architecture supports this, with the constraints below.
 | D2 | Ground-truth equipment (total station rental, rotating-arm rig, linear rail) | Open. Recommended: rotating arm + rail now; total station for Phase 8/9 |
 | D3 | Prototype station count and budget beyond S$200 | Open. Recommended: 4 stations for Phase 4 |
 | D4 | Ethernet/PoE for anything beyond 3 Wi-Fi prototype stations | Open. Recommended: yes, and **mandatory for the full-volume requirement** (timing ≤ 0.05 ms) |
-| D5 | Markers per drone | Open. Depends on R16: 1 marker if it can sit at the reference point; otherwise 2–3 to measure roll and pitch |
+| D5 | Markers per drone | **Decided:** 1 marker (D20). Mount it at the drone's reference point (top centre, over the centre of mass); any remaining offset is declared to PX4 (`EKF2_EV_POS_X/Y/Z`), which corrects it with its own attitude (R16) |
 | D6 | Gimbal type | **Decided:** servo pan/tilt, with live beacon re-pose and movement detection (R3). Upgrade path: worm-gear or braked servo if Phase 6 stability fails |
-| D7 | Drone yaw convention | **Decided:** fixed yaw set at takeoff (normally 0 = facing +X); no yaw in flight |
+| D7 | Drone yaw convention | **Decided:** fixed yaw set at takeoff (normally 0 = facing North, the square's long arm); no yaw in flight |
 | D8 | Drone reference point and marker offset | Open. See R16 |
-| D9 | Site workflow | **Decided:** planner → install from the plan → one-click aim to plan → wand + calibration square at origin (0,0,0; X arm = +X) → fly. See WORKFLOW.md |
+| D9 | Site workflow | **Decided:** planner → install from the plan → one-click aim to plan → wand + calibration square at origin (0,0,0; long arm = North) → fly. See WORKFLOW.md |
 | D10 | Minimum cameras per point | **Decided:** ≥ 3 everywhere (planner constraint, alongside p95 ≤ 10 mm) |
 | D11 | Mounting options | **Decided:** overhead trusses and tripods (up to 20 m); no wall mounts |
 | D13 | Calibrating the upper volume | **Decided:** wand only the walkable height (OptiTrack practice), then a continuous-calibration drone flight over the whole volume; continuous calibration may stay on during operation |
 | D14 | Bumped tripod recovery | **Decided:** return the tripod to its taped marks → gimbal to the saved angles → reload the saved calibration → automatic 6-DOF beacon re-pose and verification; no re-wand |
+| D16 | Station hardware | **Decided:** Raspberry Pi 5 (2 GB, active cooler) + OV9281 per camera, the camera on the servo pan/tilt and the Pi fixed beside it; powered and networked by one PoE+ cable to a gigabit PoE+ switch; PTP with hardware timestamps, camera 1's Pi as grandmaster. Chosen over the Pi 3B (no hardware bought yet): full-resolution sensor (about 4 fewer cameras), hardware PTP, PoE. See R4, docs/HARDWARE.md, docs/NETWORK_TIMING.md |
 | D15 | Planner mounting inputs | **Decided:** volume; truss lines with height, usable and missing segments, additional trusses; tripod floor zones with height up to 20 m |
-| D12 | Calibration tools | **Decided:** OptiTrack-style wand + ground square at origin. Proposed: 1 m × 1 m L-frame with 4 LEDs (origin, X 0.5, X 1.0, Y 1.0). **Proposed for the hall:** long-baseline floor markers + laser distance meter (R18) |
+| D18 | Coordinate frame | **Decided:** North-East-Down (NED) from the origin = the calibration square's corner; North = its long arm = drone yaw 0; E 90° clockwise; D down. The planner asks for the performance area first, then the origin (dragged on the plan, N arrow turned to North). Everything shown, exported and sent to drones is NED; headings are from North, clockwise |
+| D19 | Show design and drone firmware | **Decided:** shows designed in Skybrush Studio for Blender (.skyc / CSV export); drones run PX4. IDPS checks shows against the venue and coverage, exports one NED trajectory file per drone (by drone ID, D21), and each drone flies its own (D22, docs/SHOW.md) |
+| D20 | Drone onboard set-up | **Decided:** no companion computer. The flight controller has Wi-Fi itself (or a few-gram Wi-Fi MAVLink bridge), and the PC talks to every drone over Wi-Fi: positions in (`ODOMETRY`, marked VISION so EKF2 fuses it), clock sync, start and abort; the drone flies its own file (D22). One IR marker per drone. Drones never yaw and face North (+X in NED), so the PC sends heading 0 as their heading source and the magnetometer stays off (R20) |
+| D21 | Drone identity | **Decided:** every drone has a fixed ID 1–255. The same number is its PX4 `MAV_SYS_ID`, its IR marker ID and its label. The show's "Drone N" is flown by the drone with ID N, from `drone_NNN.trj`, standing on Drone N's home spot. Before take-off IDPS reads the marker IDs on the ground and blocks arming if a drone is missing, on another drone's spot or off its own, or if an unknown marker is in the area; every `idps-show` drone command refuses a link whose `MAV_SYS_ID` doesn't match, and each drone refuses to start more than 0.5 m from its own spot |
+| D22 | Show playback | **Decided:** each drone flies its own show file from its SD card. A PX4 module (`px4/src/modules/idps_show`, built in as an external module, stock PX4 unchanged) loads `idps_show.trj`, checks its CRC and drone ID, and on the PC's start command counts down on the PC's clock: OFFBOARD at −3 s, arm at −2 s, fly at 0, land at the end. The PC uploads files over MAVLink FTP (`idps-show upload`), sends clock sync 5 times a second and one start time (`idps-show start`; if any drone refuses, all abort), and can abort (all land in place). Chosen over streaming setpoints from the PC: half the Wi-Fi packets, and the path survives short Wi-Fi drops. Tested in PX4 v1.16 SITL with 3 drones (px4/README.md) |
+| D17 | Cameras vs drones height | **Decided:** drones always fly below the cameras. Every camera is at or above the flight ceiling (plus an optional margin) and looks level or down; trusses and tripod masts that can't reach the ceiling are not used. A volume taller than the 20 m tripods (e.g. the 30 m hall) is trusses only |
+| D12 | Calibration tools | **Decided:** OptiTrack-style wand + ground square at origin. Proposed: 1 m × 1 m L-frame with 4 LEDs (origin, N 0.5, N 1.0, E 1.0). **Proposed for the hall:** long-baseline floor markers + laser distance meter (R18) |

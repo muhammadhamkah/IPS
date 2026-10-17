@@ -1,0 +1,19 @@
+module_name: idps_show
+parameters:
+  - group: IDPS show
+    definitions:
+      IDPS_ACC_LEAD:
+        description:
+          short: Show acceleration feed-forward lead
+          long: |
+            The acceleration in each setpoint is taken this far ahead in the show, so the drone
+            starts to tilt before it has to accelerate. Set it to the airframe's lag from
+            acceleration setpoint to acceleration (attitude and rate loops, motors): about 0.05 s
+            for the micro60 SITL profile. 0 disables it.
+        type: float
+        default: 0.0
+        unit: s
+        min: 0.0
+        max: 0.3
+        decimal: 3
+        increment: 0.005

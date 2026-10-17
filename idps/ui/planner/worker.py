@@ -37,6 +37,38 @@ class PlanWorker(QObject):
             self.failed.emit(f"{exc}\n\n{traceback.format_exc(limit=3)}")
 
 
+class FnWorker(QObject):
+    """Runs fn(progress, cancel) off the UI thread; emits its return value."""
+    progress = Signal(str)
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        try:
+            self.finished.emit(self.fn(self.progress.emit, self._stop.is_set))
+        except Exception as exc:
+            self.failed.emit(f"{exc}\n\n{traceback.format_exc(limit=3)}")
+
+
+def start_fn_worker(parent, fn):
+    thread = QThread(parent)
+    worker = FnWorker(fn)
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    for sig in (worker.finished, worker.failed):
+        sig.connect(thread.quit)
+    thread.start()
+    return thread, worker
+
+
 def start_worker(parent, site_dict, source_path):
     thread = QThread(parent)
     worker = PlanWorker(site_dict, source_path)

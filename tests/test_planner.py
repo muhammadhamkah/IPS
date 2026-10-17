@@ -48,7 +48,29 @@ def test_candidates_respect_usable_segments_and_no_go():
 
 def test_site_warnings():
     site = small_site(trusses=[{"id": "low", "start": [0, 0], "end": [1, 0], "height_m": 1.0}])
-    assert any("inside the flight volume" in w for w in site.warnings())
+    assert any("below the flight ceiling" in w for w in site.warnings())
+
+
+def test_cameras_always_above_the_drones():
+    """Decision D17: drones never fly higher than a camera. No candidate sits below the
+    volume top, none looks up, and short masts / low trusses are left out with a warning."""
+    from idps.plan.candidates import generate_candidates
+    site = small_site(trusses=[{"id": "low", "start": [-3, 0], "end": [3, 0], "height_m": 1.5},
+                               {"id": "high", "start": [-3, 1], "end": [3, 1], "height_m": 3.0}],
+                      tripod_zones=[{"id": "short", "rect": [-3, 2.5, 3, 3], "height_m": [1.0, 1.8]},
+                                    {"id": "tall", "rect": [-3, -3, 3, -2.5], "height_m": [1.0, 4.0]}],
+                      candidates={"truss_step_m": 1, "tripod_step_m": 1, "tripod_heights_m": [1.5, 3.0],
+                                  "tripod_elevations_deg": [20, 0, -20], "azimuth_step_deg": 90})
+    c = generate_candidates(site)
+    assert (c.pos[:, 2] >= site.volume.z_max - 1e-9).all()
+    assert (c.el <= 0).all()
+    assert set(c.mount_id) == {"high", "tall"}
+    assert sorted(set(c.pos[c.mount_id == "tall", 2])) == [2.0, 3.0]      # from the ceiling up
+    w = " ".join(site.warnings())
+    assert "truss low" in w and "tripod zone short" in w
+    site2 = small_site(trusses=[], tripod_zones=[{"id": "short", "rect": [-3, 2.5, 3, 3], "height_m": [1, 1.8]}])
+    with pytest.raises(ValueError, match="above the drones"):
+        generate_candidates(site2)
 
 
 def test_optimise_small_site_meets_requirements_and_roundtrips(tmp_path):
@@ -128,3 +150,210 @@ def test_design_margin_is_used_and_validated():
     assert ev.summary["design_margin"] == {"min_cameras": 4, "p95_mm": 7.0}
     with pytest.raises(ValueError):
         small_site(design={"min_cameras": 2})
+
+
+def test_min_spacing_between_mounts():
+    site = small_site(candidates={"truss_step_m": 0.5, "tripod_step_m": 0.5, "tripod_heights_m": [2.0],
+                                  "tripod_elevations_deg": [-20, 0], "azimuth_step_deg": 45,
+                                  "max_cameras_per_mount": 1, "min_camera_spacing_m": 2.0})
+    plan, ev = optimise(site, log=lambda *a: None)
+    P = np.array([c.position_m for c in plan.cameras])
+    d = np.linalg.norm(P[:, None] - P[None], axis=-1)
+    np.fill_diagonal(d, np.inf)
+    assert d.min() >= 2.0 - 1e-9
+
+
+def test_measurement_chains_truss_and_corner_tripod():
+    from idps.plan.measure import chains, describe
+    from idps.plan.model import PlannedCamera
+    poly = [[0, 0], [10, 0], [10, 6], [0, 6]]
+    trusses = [{"id": "T1", "start": [-1, 7], "end": [11, 7]}]
+    cams = [PlannedCamera("C1", "truss", "T1", [2, 7, 9], 0, -60, 2.8, along_truss_m=3.0),
+            PlannedCamera("C2", "truss", "T1", [5, 7, 9], 0, -60, 2.8, along_truss_m=6.0),
+            PlannedCamera("C3", "tripod", "s", [-2, -2, 3], 45, 0, 2.8),       # corner, beyond V0
+            PlannedCamera("C4", "tripod", "s", [4, -1.5, 3], 90, 0, 2.8)]
+    chs = {c.ref: c for c in chains(trusses, poly, cams)}
+    t = chs["T1"]
+    assert [s for s, _, _ in t.stations] == [3.0, 6.0] and t.segments() == [3.0, 3.0]
+    e0 = chs["E0 (V0->V1)"]
+    assert e0.stations[0][0] == pytest.approx(-2.0) and e0.stations[0][2] == pytest.approx(2.0)   # 2 before V0, 2 out
+    assert e0.stations[1][0] == pytest.approx(4.0) and e0.stations[1][2] == pytest.approx(1.5)
+    assert "before V0" in describe(e0)
+
+
+def test_cli_writes_measurements(tmp_path):
+    from idps.plan.cli import main
+    assert main(["optimise", str(LAB), "-o", str(tmp_path)]) == 0
+    rows = (tmp_path / "measurements.csv").read_text().splitlines()
+    assert rows[0].startswith("reference,measure_from") and len(rows) > 1
+    assert "Install measurements" in (tmp_path / "report.html").read_text()
+
+
+def _short_venue():
+    d = {
+        "name": "short", "volume": {"polygon": [[-10, -5], [-10, 7], [17.5, 7], [17.5, -5]], "z": [0, 10]},
+        "lenses_mm": [2.8], "requirements": {"min_cameras": 3, "p95_mm": 10, "noise": "tight"},
+        "design": {"min_cameras": 4, "p95_mm": 7}, "visibility": {"max_range_m": 80},
+        "evaluation": {"spacing_m": [2, 2, 2], "inset_m": 0.5},
+        "trusses": [{"id": "T1", "start": [-9.5, 7.5], "end": [17.5, 7.5], "height_m": 11.5},
+                    {"id": "T2", "start": [-11, -5.5], "end": [18, -5.5], "height_m": 11.5}],
+        "candidates": {"truss_step_m": 3, "tripod_step_m": 3, "tripod_heights_m": [3, 10, 18],
+                       "truss_elevations_deg": [-90, -60, -35],          # steep only: top layer comes up short
+                       "tripod_elevations_deg": [0, -15, -30, -50], "azimuth_step_deg": 30,
+                       "max_cameras_per_mount": 1, "min_camera_spacing_m": 1.5},
+        "optimiser": {"max_cameras": 200},
+    }
+    return d
+
+
+def test_advisor_recommendations_are_real_improvements():
+    from idps.plan.advisor import Advisor, apply
+    d = _short_venue()
+    plan, ev = optimise(site_from_dict(d), log=lambda *a: None)
+    d["tripod_zones"] = [{"id": "s", "offset_m": [1, 3], "height_m": [2, 20]}]
+    site = site_from_dict(d)
+    adv = Advisor(site, plan.cameras)
+    h = adv.health()
+    assert h.failing > 0 and h.worst_camera is not None
+    recs = adv.recommend(top=6)
+    assert recs and recs[0].points_fixed > 0
+    for r in recs:                                    # every claim checks out when applied
+        e2 = evaluate(site, apply(plan.cameras, r))
+        assert int((~e2.meets).sum()) == r.failing_after
+        assert r.detail
+    kinds = {r.kind for r in recs}
+    assert "add" in kinds
+    add = next(r for r in recs if r.kind == "add")
+    assert "tripod" in add.detail and " m out from the edge" in add.detail
+    P = np.array([c.position_m for c in plan.cameras])
+    assert np.linalg.norm(P - np.array(add.new_camera.position_m), axis=1).min() >= 1.5 - 1e-9   # spacing kept
+
+
+def test_auto_fix_reaches_full_coverage():
+    from idps.plan.advisor import auto_fix
+    d = _short_venue()
+    plan, _ = optimise(site_from_dict(d), log=lambda *a: None)
+    d["tripod_zones"] = [{"id": "s", "offset_m": [1, 3], "height_m": [2, 20]}]
+    site = site_from_dict(d)
+    steps, cams = auto_fix(site, plan.cameras)
+    assert steps and steps[-1].failing_after == 0
+    assert all(a.failing_after == b.failing_before for a, b in zip(steps, steps[1:]))
+    assert evaluate(site, cams).summary["fraction_meeting_all_requirements"] == pytest.approx(1.0)
+
+
+def test_reaim_prefers_servo_move_from_existing_base():
+    from idps.plan.advisor import SERVO_PAN_LIMIT_DEG, Advisor
+    d = _short_venue()
+    plan, _ = optimise(site_from_dict(d), log=lambda *a: None)
+    adv = Advisor(site_from_dict(d), plan.cameras)
+    for r in adv.recommend(top=10, kinds=("reaim",)):
+        old = next(c for c in plan.cameras if c.id == r.camera_id)
+        if r.new_camera.base_heading_deg == old.base_heading_deg:
+            assert abs(r.new_camera.pan_deg) <= SERVO_PAN_LIMIT_DEG and "No physical move" in r.detail
+        else:
+            assert "Turn the gimbal base" in r.detail
+
+
+def test_shallow_truss_tilts_cover_the_top_layer():
+    """Cameras hang just above the drones (D17); without near-level tilts the top of the volume
+    falls above every view cone. The default tilts include them."""
+    d = _short_venue()
+    d["candidates"].pop("truss_elevations_deg", None)
+    d["candidates"]["tripod_elevations_deg"] = [0, -15, -30, -50]
+    plan, ev = optimise(site_from_dict(d), log=lambda *a: None)
+    assert ev.summary["fraction_meeting_all_requirements"] == pytest.approx(1.0)
+
+
+def test_fine_check_finds_gaps_between_grid_samples():
+    """The coarse planning grid can miss a thin gap; the dense re-check after planning finds it,
+    and the planner re-plans until it passes."""
+    from idps.plan.planner import fine_check, fine_check_text
+    d = {"name": "gap", "volume": {"polygon": [[-15, -8], [15, -8], [15, 8], [-15, 8]], "z": [0, 8]},
+         "lenses_mm": [2.8], "requirements": {"min_cameras": 4, "p95_mm": 10, "noise": "tight"},
+         "design": {"min_cameras": 4, "p95_mm": 7}, "visibility": {"max_range_m": 80},
+         "evaluation": {"spacing_m": [2, 2, 2], "inset_m": 0.5},
+         "trusses": [{"id": "T1", "start": [-15.5, 8], "end": [15.5, 8], "height_m": 11.5},
+                     {"id": "T2", "start": [-15.5, -8], "end": [15.5, -8], "height_m": 11.5}],
+         "candidates": {"truss_step_m": 3, "truss_elevations_deg": [-90, -60, -35], "azimuth_step_deg": 30,
+                        "max_cameras_per_mount": 1, "min_camera_spacing_m": 1.5},
+         "optimiser": {"max_cameras": 200}}
+    plan, ev = optimise(site_from_dict(d), log=lambda *a: None)
+    fc = plan.summary["fine_check"]
+    assert fc["spacing_m"] <= 0.5 and fc["points"] > 10 * ev.summary["evaluation_points"]
+    # steep tilts leave thin gaps up top that the 2 m grid misses: the fine check finds them (also by
+    # zooming to 1 cm at view edges), the planner re-plans with them, and says so when no mount can help
+    assert plan.summary["optimiser"]["fine_check_rounds"] > 1
+    assert fc["zoom_failing"] > 0 and fc["resolution_m"] == 0.01 and not fc["guaranteed"]
+    assert "falls short" in fine_check_text(fc) and fc["worst_spots"]
+    # with near-level tilts allowed, the same venue is proven down to 1 cm
+    d["candidates"]["truss_elevations_deg"] = [-90, -60, -35, -15, 0]
+    plan2, _ = optimise(site_from_dict(d), log=lambda *a: None)
+    fc2 = plan2.summary["fine_check"]
+    assert fc2["guaranteed"] and fc2["failing"] == 0 and "proven" in fine_check_text(fc2)
+    lab = load_site(ROOT / "examples" / "sites" / "lab.yaml")
+    ok = fine_check(lab, Plan.load(ROOT / "examples" / "plans" / "lab.yaml").cameras)
+    assert ok["failing"] == 0 and "every point meets" in fine_check_text(ok)
+
+
+def test_guaranteed_visibility_is_conservative():
+    """A ball counted as fully seen really is: random points inside it are all visible."""
+    from idps.coverage.fisher import contributions, guaranteed_visible
+    site = load_site(ROOT / "examples" / "sites" / "lab.yaml")
+    cams = Plan.load(ROOT / "examples" / "plans" / "lab.yaml").cameras
+    pos = np.array([c.position_m for c in cams])
+    R = np.array([c.R for c in cams])
+    f = np.array([site.sensor.f_px(c.lens_mm) for c in cams])
+    rng = np.random.default_rng(0)
+    centres = rng.uniform([-3, -3, 0.2], [3, 3, 3], size=(300, 3))
+    r = 0.3
+    sure = guaranteed_visible(pos, R, f, centres, site.sensor, site.limits, r)
+    assert sure.any()
+    for _ in range(20):
+        u = rng.normal(size=(len(centres), 3))
+        u *= (r * rng.uniform(0, 1, (len(centres), 1)) ** (1 / 3)) / np.linalg.norm(u, axis=1, keepdims=True)
+        vis, _ = contributions(pos, R, f, centres + u, site.sensor, site.requirements.noise, site.limits)
+        assert not (sure & ~vis).any()
+
+
+def test_ned_frame_and_compass_headings():
+    from idps.core.frames import Frame, pan_display
+    from idps.plan.model import install_angles
+    f = Frame((2.0, 3.0), 90.0)                      # North = up the plan, East = right
+    assert f.ned([2, 13, 0]) == pytest.approx([10, 0, 0])
+    assert f.ned([7, 3, 4]) == pytest.approx([0, 5, -4])              # 4 m up = D -4
+    P = np.random.default_rng(0).uniform(-20, 20, (50, 3))
+    assert f.from_ned(f.ned(P)) == pytest.approx(P)
+    # right-handed: N x E = D
+    n, e = np.array([*f.n_hat, 0]), np.array([*f.e_hat, 0])
+    assert np.cross(n, e) == pytest.approx([0, 0, -1])
+    assert f.heading(90) == pytest.approx(0) and f.heading(0) == pytest.approx(90)   # +X = East
+    g = Frame((0, 0), 30.0)
+    for az in (0, 37, 200, 359):
+        base, pan, _ = install_angles(az, -20, north_deg=g.north_deg)
+        hb = g.heading(base)
+        assert hb % 45 == pytest.approx(0) or hb % 45 == pytest.approx(45)          # compass steps from North
+        assert (g.heading(az) - (hb + pan_display(pan))) % 360 == pytest.approx(0, abs=1e-9)
+
+
+def test_plan_exports_ned(tmp_path):
+    import csv
+    site = load_site(ROOT / "examples" / "sites" / "lab.yaml")
+    d = {**yaml_load(ROOT / "examples" / "sites" / "lab.yaml"), "origin": {"xy": [1.0, -2.0], "north_deg": 90.0}}
+    site = site_from_dict(d)
+    plan, _ = optimise(site, log=lambda *a: None)
+    assert plan.frame == {"xy": [1.0, -2.0], "north_deg": 90.0}
+    c = plan.cameras[0]
+    nf = plan.ned_fields(c)
+    assert nf["ned_m"] == pytest.approx([c.position_m[1] + 2, c.position_m[0] - 1, -c.position_m[2]], abs=1e-3)
+    assert "N " in c.install_note and "heading" in c.install_note and "X " not in c.install_note
+    plan.save(tmp_path / "p.yaml")
+    back = Plan.load(tmp_path / "p.yaml")
+    assert back.frame == plan.frame and back.cameras[0].position_m == pytest.approx(c.position_m)
+    plan.write_csv(tmp_path / "c.csv")
+    row = next(csv.DictReader(open(tmp_path / "c.csv")))
+    assert float(row["north_m"]) == pytest.approx(nf["ned_m"][0], abs=0.01) and "down_m" in row
+
+
+def yaml_load(p):
+    import yaml
+    return yaml.safe_load(open(p))

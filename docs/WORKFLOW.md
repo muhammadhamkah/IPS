@@ -26,19 +26,44 @@ supports each step. It is the user-facing view of ARCHITECTURE §4.4, §6 and §
 ## Step 1: Planning (software only, before going on site)
 
 The **IDPS Planner** (`idps-plan`, built on the coverage simulator in ARCHITECTURE §7) takes
-the following inputs.
+the following inputs. In the dashboard the order is fixed:
+
+1. **Draw the performance area** (the floor outline of the flight volume, tool P). The mount
+   tools stay disabled until it is closed.
+2. **Place the origin** (tool O, offered automatically after step 1): click where the
+   calibration square's corner will be, then drag its red **N** arrow to point North (snaps to
+   15°, Option for any angle; or "North along edge E0" / "North = plan up", or type the origin's
+   offset from V0 measured on site). The origin can be dragged at any time.
+3. **Trusses and tripod zones** (tools T and A), and no-go areas (N).
+4. **Place the charging pads** (tool C, available once a truss or tripod zone exists): click where
+   each pad stands. A pad holds 4 drones in a 2 × 2 square; pad k holds drones 4k − 3 … 4k, and a
+   drone's slot is its take-off batch (docs/SHOW.md, "Charging pads"). Pads stand at least 0.5 m
+   apart; drag a pad to move it, ⌫ to delete it. The inspector sets the take-off and landing
+   sequence (batch gap, speeds, grid heights, hold timeout, which way the pads face) for every pad.
+5. **Plan Cameras** (⌘R). Planning without pads asks first: the cameras are planned to also see
+   every drone on its pad (its marker, so the start can check each drone is on its own spot) and
+   on its climb to its grid height, wherever the pads stand, and warns (red pad) where the cameras
+   would not tell a pad's 4 drones apart. The show tools read the pads from the saved venue file
+   (`idps-show check / export --pads venue.yaml`), and the dashboard's PX4 flight tab flies the
+   venue open in the Planner: its pads, and in the camera loop its planned cameras.
+
+All coordinates shown and exported are **North-East-Down from the origin** (decision D18):
+N and E on the floor, D down (a camera 11.2 m up has D = −11.2). Headings (gimbal base,
+camera view) are degrees from North, clockwise; servo pan is positive clockwise; tilt is
+negative downwards.
 
 | Input | Example | Why it is needed |
 |---|---|---|
-| Flight volume | **Drawn per venue:** the floor outline as XY vertices (any shape, e.g. a 50 × 20 m rectangle, an L-shape, a hexagon), extruded in Z to the flight ceiling (e.g. 0–20 m). Vertices are numbered V0, V1, …; edge Ek runs from Vk to Vk+1 | The region where every point must meet the accuracy and coverage target. Venues differ, so the volume is never assumed |
+| Performance area (flight volume) | **Drawn per venue:** the floor outline as vertices (any shape, e.g. a 50 × 20 m rectangle, an L-shape, a hexagon), extruded in Z to the flight ceiling (e.g. 0–20 m). Vertices are numbered V0, V1, …; edge Ek runs from Vk to Vk+1 | The region where every point must meet the accuracy and coverage target. Venues differ, so the volume is never assumed |
 | **Trusses** | For each truss: its line (start/end XY), height, and **which segments are usable**. Missing sections are marked, and **additional trusses** can be added (e.g. a hired truss line). Drawn on a plan view or imported from CSV/DXF | Cameras may only be placed on usable truss segments. Walls are not used (decision D11) |
-| **Tripod zones** | Either a **strip outside the drawn volume** (e.g. 1–3 m from its edges, optionally only along chosen edges), or explicit floor polygons. **Tripod height from 1 m up to 20 m** (per zone, or chosen by the optimiser within that range). Tripods are never placed inside the flight volume | Used where there is no truss, and for upward-looking coverage of the edges and corners. A strip follows any venue shape automatically |
+| **Tripod zones** | Either a **strip outside the drawn volume** (e.g. 1–3 m from its edges, optionally only along chosen edges), or explicit floor polygons. **Tripod height from 1 m up to 20 m** (per zone, or chosen by the optimiser within that range). Tripods are never placed inside the flight volume. **Cameras are always at or above the flight ceiling** (drones never fly higher than a camera, D17), so a mast must reach the volume's Top Z; shorter masts are not used | Used where there is no truss, looking level or down across the volume from its edges. A strip follows any venue shape automatically |
 | Design margin | e.g. ≥ 4 cameras and p95 ≤ 7 mm | What the optimiser aims for, stricter than the requirement, so the plan tolerates occlusion and a lost camera |
+| **Charging pads** | Pad centres on the plan (4 drones each, 0.5–1 m apart) and the take-off / landing sequence | The drones start and end there: the cameras must see them on their pads and climbing to the grid |
 | No-go zones | Doors, walkways, lights, emergency exits | Excluded from mounting |
 | Obstacles | Columns, nets, hanging equipment | Occlusion |
 | Hardware catalogue | Sensor (OV9281), lens options (2.8 / 3.6 / 4 / 6 / 8 mm), servo pan/tilt ranges, gimbal geometry | Field of view, resolution, aim limits |
 | Requirements | p95 ≤ 10 mm everywhere; **≥ 3 cameras everywhere** (configurable) | Optimisation constraints |
-| Origin and axes | Where the calibration square will sit and which way its X arm points | All planned coordinates are given in this frame, which is the same frame as tracking |
+| Origin and North | Where the calibration square's corner will sit and which way North (its long arm) points. Dragged on the plan | Every planned coordinate is North-East-Down from here: the same frame as tracking and as the drones' flight controllers |
 
 **Outputs (the install plan):**
 
@@ -78,6 +103,17 @@ the following inputs.
 
 The plan is saved as a versioned project file (`plan.yaml`). The same file drives the
 on-site aim step and is compared against the calibration result.
+
+
+**Check it in simulation (Simulate tab).** Before anything is bought or installed, the
+dashboard flies simulated drones through the planned layout: a formation, random paths, or the
+show itself from Blender. Simulated cameras film them, and the real positioning engine
+positions them. The tab reports:
+* whether the worst drone meets the accuracy requirement;
+* whether every drone was identified;
+* where accuracy drops (the 3D replay colours each marker by its error).
+
+If it falls short, adjust the plan (the Advisor's fixes) and run it again.
 
 ---
 
@@ -131,40 +167,40 @@ At this stage the aim is **coarse**: servo accuracy plus the base orientation er
    The dashboard shows live wand-sample coverage per camera and per floor region. Collection
    stops when every camera that can see the walkable layer has enough well-spread samples.
    The upper volume is calibrated by drone flight (item 6 below).
-   * Cameras aimed up at the upper edges and corners may **not see the walkable layer at all**,
-     and those cannot be wand-calibrated. In the 148-camera truss + tripod layout, 32 upward-
-     aimed tripod cameras are in this group. The planner lists them. They are calibrated by
-     one of:
+   * Cameras aimed level across the top of the volume may **not see the walkable layer at all**,
+     and those cannot be wand-calibrated. The planner lists them. They are calibrated by one of:
      * the **continuous-calibration flight** (item 6), from drone markers co-observed with
        already-calibrated cameras; or
      * **tilt-down wanding:** during wanding their servos tilt down to see the wand, and
        afterwards they return to the planned angle, with beacons re-measuring the rotation.
        This relies on the gimbal kinematic model for the small position change.
 2. **Calibration square on the floor at the origin.** This is the same wand + ground-square
-   method OptiTrack and Vicon use. It defines the world frame:
-   * Its marked corner is **(0, 0, 0)**.
-   * Its X arm defines **+X**. This is the direction drones face at yaw 0 (RISKS D7).
-   * Its Y arm defines +Y.
-   * The floor plane through it defines Z = 0, with +Z up.
+   method OptiTrack and Vicon use. It defines the world frame, North-East-Down (D18):
+   * Its marked corner is **(0, 0, 0)**, on the spot the planner shows as the origin.
+   * Its long arm points **North (+N)**, the way the planner's N arrow points. This is the
+     direction drones face at yaw 0 (RISKS D7).
+   * Its short arm points **East (+E)**: to the right when standing at the corner facing North.
+     (Laid the other way round, the frame would be mirrored: check before calibrating.)
+   * The floor plane through it is D = 0, with **+D down**.
 
-   **Proposed square (decision D12):** an L-frame with **1 m arms along X and Y**, with
+   **Proposed square (decision D12):** an L-frame with **1 m arms along N and E**, with
    4 IR LEDs:
    * one at the origin;
-   * one at X = 0.5 m;
-   * one at X = 1.0 m;
-   * one at Y = 1.0 m.
+   * one at N = 0.5 m;
+   * one at N = 1.0 m;
+   * one at E = 1.0 m.
 
-   The extra LED at X = 0.5 m makes the X arm distinguishable from the Y arm. With equal arms
+   The extra LED at N = 0.5 m makes the North arm distinguishable from the East arm. With equal arms
    and only 3 LEDs, the software could not tell them apart. The frame also needs levelling
    feet and a bubble level, a known LED height above the floor, and a rigid material such as
    aluminium box section.
 3. **Axis and scale extension markers (hall scale only).** A 1 m square is enough for the
    origin, but too short to fix the axis directions and scale over 100 m. Small errors grow
    with distance from the origin (RISKS R18). For the hall:
-   * Place 2 extra floor LEDs along the +X line, e.g. at about 40 m and 90 m. Place 1–2 along
-     the +Y line. Line them up with a laser line from the square.
+   * Place 2 extra floor LEDs along the North line, e.g. at about 40 m and 90 m. Place 1–2 along
+     the East line. Line them up with a laser line from the square.
    * Measure their distances from the origin with a **laser distance meter** (±1 mm class).
-   * The software uses these long baselines to fix +X and +Y, the floor plane (Z = 0) and the
+   * The software uses these long baselines to fix North and East, the floor plane (D = 0) and the
      overall scale. The wand then provides only the camera-to-camera geometry.
    * In a lab-sized room, the 1 m square and the wand are sufficient on their own.
 4. **Solve:** a bundle adjustment computes every camera's exact position and rotation, plus

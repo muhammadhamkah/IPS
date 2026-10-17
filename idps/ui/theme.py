@@ -16,13 +16,13 @@ LIGHT = {
     "surface": "#fcfcfb", "grid_minor": "#efeeea", "grid_major": "#dddbd5", "axis": "#8a8984",
     "text": "#0b0b0b", "text2": "#52514e", "volume": "#2a78d6", "truss": "#6b6a65",
     "truss_gap": "#c9c7c0", "zone": "#eb6834", "nogo": "#d03b3b", "select": "#6250d6",
-    "cam_truss": "#2a78d6", "cam_tripod": "#eb6834", "handle_fill": "#ffffff",
+    "cam_truss": "#2a78d6", "cam_tripod": "#eb6834", "handle_fill": "#ffffff", "pad": "#16916a",
 }
 DARK = {
     "surface": "#1a1a19", "grid_minor": "#252523", "grid_major": "#353532", "axis": "#8a8984",
     "text": "#f2f1ee", "text2": "#b4b2ab", "volume": "#3987e5", "truss": "#a3a19a",
     "truss_gap": "#4a4945", "zone": "#d95926", "nogo": "#e66767", "select": "#9085e9",
-    "cam_truss": "#3987e5", "cam_tripod": "#d95926", "handle_fill": "#1a1a19",
+    "cam_truss": "#3987e5", "cam_tripod": "#d95926", "handle_fill": "#1a1a19", "pad": "#35b98a",
 }
 
 
