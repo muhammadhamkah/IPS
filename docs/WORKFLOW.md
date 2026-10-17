@@ -34,7 +34,16 @@ the following inputs. In the dashboard the order is fixed:
    calibration square's corner will be, then drag its red **N** arrow to point North (snaps to
    15°, Option for any angle; or "North along edge E0" / "North = plan up", or type the origin's
    offset from V0 measured on site). The origin can be dragged at any time.
-3. Trusses, tripod zones, no-go areas, then **Plan**.
+3. **Trusses and tripod zones** (tools T and A), and no-go areas (N).
+4. **Place the charging pads** (tool C, available once a truss or tripod zone exists): click where
+   each pad stands. A pad holds 4 drones in a 2 × 2 square; pad k holds drones 4k − 3 … 4k, and a
+   drone's slot is its take-off batch (docs/SHOW.md, "Charging pads"). Pads stand at least 0.5 m
+   apart; drag a pad to move it, ⌫ to delete it. The inspector sets the take-off and landing
+   sequence (batch gap, speeds, grid heights, hold timeout) for every pad.
+5. **Plan Cameras** (⌘R). Planning without pads asks first: the cameras are planned to also see
+   every drone on its pad (its marker, so the start can check each drone is on its own spot) and
+   on its climb to its grid height, wherever the pads stand. The show tools read the pads from
+   the saved venue file (`idps-show check / export --pads venue.yaml`).
 
 All coordinates shown and exported are **North-East-Down from the origin** (decision D18):
 N and E on the floor, D down (a camera 11.2 m up has D = −11.2). Headings (gimbal base,
@@ -47,6 +56,7 @@ negative downwards.
 | **Trusses** | For each truss: its line (start/end XY), height, and **which segments are usable**. Missing sections are marked, and **additional trusses** can be added (e.g. a hired truss line). Drawn on a plan view or imported from CSV/DXF | Cameras may only be placed on usable truss segments. Walls are not used (decision D11) |
 | **Tripod zones** | Either a **strip outside the drawn volume** (e.g. 1–3 m from its edges, optionally only along chosen edges), or explicit floor polygons. **Tripod height from 1 m up to 20 m** (per zone, or chosen by the optimiser within that range). Tripods are never placed inside the flight volume. **Cameras are always at or above the flight ceiling** (drones never fly higher than a camera, D17), so a mast must reach the volume's Top Z; shorter masts are not used | Used where there is no truss, looking level or down across the volume from its edges. A strip follows any venue shape automatically |
 | Design margin | e.g. ≥ 4 cameras and p95 ≤ 7 mm | What the optimiser aims for, stricter than the requirement, so the plan tolerates occlusion and a lost camera |
+| **Charging pads** | Pad centres on the plan (4 drones each, 0.5–1 m apart) and the take-off / landing sequence | The drones start and end there: the cameras must see them on their pads and climbing to the grid |
 | No-go zones | Doors, walkways, lights, emergency exits | Excluded from mounting |
 | Obstacles | Columns, nets, hanging equipment | Occlusion |
 | Hardware catalogue | Sensor (OV9281), lens options (2.8 / 3.6 / 4 / 6 / 8 mm), servo pan/tilt ranges, gimbal geometry | Field of view, resolution, aim limits |

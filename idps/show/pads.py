@@ -42,6 +42,13 @@ LAND_HOVER_M = 0.0               # the last leg ends on the pad (at zero speed);
 TOUCHDOWN_S = 0.5                # ... which takes this long: still flying for the checks
 # slot -> (N, E) offset in units of half the slot spacing: 1 front-left, 2 front-right, 3 back-left, 4 back-right
 SLOT_UNITS = {1: (1, -1), 2: (1, 1), 3: (-1, -1), 4: (-1, 1)}
+PAD_SIDE_M = 0.45                # a pad as drawn: its 4 slots and half a drone around them
+MIN_PAD_GAP_M = 0.5              # pads stand 0.5-1 m apart, centre to centre
+MARKER_Z_M = 0.08                # a drone's marker standing on its pad
+# The venue (site) file's "pads": centres in the drawing frame like the trusses, plus the
+# sequence settings. idps-show reads it with --pads venue.yaml, as a pads file.
+SITE_DEFAULTS = {"centres": [], "slot_spacing_m": 0.2, "layers_m": [1.0, 2.0, 3.0, 4.0], "batch_gap_s": 5.0,
+                 "hold_timeout_s": 60.0, "climb_speed_mps": 1.5, "transfer_speed_mps": 1.5}
 
 
 @dataclass
@@ -84,9 +91,54 @@ class PadLayout:
                 "transfer_speed_mps": self.transfer_speed_mps}
 
 
+def pads_from_site(d: dict, source: str = "") -> PadLayout | None:
+    """The charging pads of a venue (site) dict, in its NED frame; None if it has none."""
+    from idps.core.frames import Frame
+    p = {**SITE_DEFAULTS, **(d.get("pads") or {})}
+    if not p["centres"]:
+        return None
+    f = Frame.from_dict(d.get("origin"))
+    ne = np.round(np.array([f.ne(c) for c in p["centres"]], float).reshape(-1, 2), 6) + 0.0   # (no -0.0)
+    return PadLayout(ne, float(p["slot_spacing_m"]), tuple(float(x) for x in p["layers_m"]), float(p["batch_gap_s"]),
+                     float(p["hold_timeout_s"]), float(p["climb_speed_mps"]), float(p["transfer_speed_mps"]), source)
+
+
+def coverage_points(lay: PadLayout, frame, step_m: float = 0.5) -> np.ndarray:
+    """Where the cameras must see the drones on and over the pads, in the drawing frame (x, y,
+    z up): each slot's marker on the pad (the start checks every drone is on its own spot) and
+    its climb, every step_m up to its batch's layer."""
+    out = []
+    for pad in range(len(lay.pads_ne)):
+        for slot in range(1, SLOTS + 1):
+            did = pad * SLOTS + slot
+            top = lay.layer_m(did) if slot <= len(lay.layers_m) else 0.0
+            zs = np.concatenate([[MARKER_Z_M], np.arange(step_m, top + 1e-9, step_m)])
+            ned = np.column_stack([np.repeat(lay.home_ned(did)[None, :2], len(zs), 0), -zs])
+            out.append(frame.from_ned(ned))
+    return np.concatenate(out) if out else np.zeros((0, 3))
+
+
+def too_close(centres, gap_m: float = MIN_PAD_GAP_M) -> list[tuple[int, int, float]]:
+    """Pairs of pads (indices) closer than gap_m, centre to centre, with their distance."""
+    c = np.asarray(centres, float).reshape(-1, 2)
+    out = []
+    for i in range(len(c)):
+        for j in range(i + 1, len(c)):
+            dist = float(np.linalg.norm(c[i] - c[j]))
+            if dist < gap_m - 1e-9:
+                out.append((i, j, dist))
+    return out
+
+
 def load_pads(path) -> PadLayout:
+    """A pads file, or a venue (site) file with charging pads placed on its plan."""
     import yaml
     d = yaml.safe_load(Path(path).read_text())
+    if isinstance(d.get("pads"), dict):
+        lay = pads_from_site(d, str(path))
+        if lay is None:
+            raise ValueError(f"{path}: no charging pads placed (Planner: Charging pad tool, C)")
+        return lay
     return PadLayout(np.array(d["pads"], float).reshape(-1, 2), float(d.get("slot_spacing_m", 0.2)),
                      tuple(float(x) for x in d.get("layers_m", (1, 2, 3, 4))), float(d.get("batch_gap_s", 5.0)),
                      float(d.get("hold_timeout_s", 60.0)), float(d.get("climb_speed_mps", 0.8)),

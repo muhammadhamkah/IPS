@@ -30,7 +30,12 @@ class Evaluation:
 
 
 def site_grid(site: Site) -> EvalGrid:
-    return volume_grid(site.volume, site.eval_spacing_m, site.eval_inset_m)
+    """The points the layout must cover: the volume's grid, its boundary ring, then the charging
+    pads (each drone on its slot and its climb to its layer)."""
+    g = volume_grid(site.volume, site.eval_spacing_m, site.eval_inset_m)
+    if len(site.pad_points):
+        g.points = np.vstack([g.points, site.pad_points])
+    return g
 
 
 def evaluate(site: Site, cameras: list[PlannedCamera]) -> Evaluation:
@@ -103,7 +108,7 @@ def _fine_check(site: Site, cameras: list[PlannedCamera], max_points: int = 400_
     spacing = max(finest_m, (vol / max_points) ** (1 / 3))
     spacing = float(np.ceil(spacing * 20) / 20)                      # round up to 5 cm
     grid = volume_grid(site.volume, spacing, site.eval_inset_m)
-    pts = grid.points
+    pts = np.vstack([grid.points, site.pad_points]) if len(site.pad_points) else grid.points
     out = {"spacing_m": spacing, "points": int(len(pts)), "failing": 0, "fraction_meeting": 1.0,
            "failing_volume_m3": 0.0, "worst_spots": [], "unproven": 0, "guaranteed": False,
            "guarantee_radius_m": 0.0}

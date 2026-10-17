@@ -15,10 +15,12 @@ from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, Q
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView
 
 from idps.coverage.volume import offset_ring
+from idps.show.pads import MIN_PAD_GAP_M, PAD_SIDE_M, SLOT_UNITS, SLOTS
 from idps.ui import theme
 from idps.ui.planner.document import frame_of
 
-NEEDS_AREA = ("origin", "truss", "zone", "nogo")      # tools that need the performance area first
+NEEDS_AREA = ("origin", "truss", "zone", "nogo", "pad")      # tools that need the performance area first
+NEEDS_MOUNTS = ("pad",)                                       # ... and the trusses or tripod areas
 
 TOOLS = {
     "select": "Select / move",
@@ -26,6 +28,7 @@ TOOLS = {
     "origin": "Place origin",
     "truss": "Draw truss",
     "zone": "Draw tripod area",
+    "pad": "Place charging pad",
     "nogo": "Draw no-go area",
     "measure": "Measure distance",
 }
@@ -159,6 +162,7 @@ class PlanCanvas(QGraphicsView):
             pts.append(self.preview.new_camera.position_m[:2])
         if self.doc.data.get("origin"):
             pts.append(self.doc.data["origin"]["xy"])
+        pts += self._pads()
         if not pts:
             pts = [(-10, -10), (10, 10)]
         a = np.array(pts, float)
@@ -342,6 +346,8 @@ class PlanCanvas(QGraphicsView):
                 self._handle(p, a, tok["select"])
                 self._handle(p, b, tok["select"])
 
+        self._draw_pads(p, tok)
+
         # planned cameras
         if self.result is not None:
             plan, _ = self.result
@@ -375,8 +381,11 @@ class PlanCanvas(QGraphicsView):
         if self.preview is not None and self.result is not None:
             self._draw_preview(p, tok)
 
+        if self.tool == "pad" and self.cursor_pt is not None:
+            self._draw_pad(p, tok, self.cursor_pt, len(self._pads()), ghost=True)
+
         # drawing preview
-        if self.tool not in ("select", "measure") and (self.pending or self.cursor_pt):
+        if self.tool not in ("select", "measure", "pad") and (self.pending or self.cursor_pt):
             c = QColor(tok["select"])
             p.setPen(QPen(c, 1.6 * px, Qt.PenStyle.DashLine))
             pts = list(self.pending) + ([self.cursor_pt] if self.cursor_pt else [])
@@ -405,8 +414,58 @@ class PlanCanvas(QGraphicsView):
             p.drawText(self.viewport().rect(), Qt.AlignmentFlag.AlignCenter,
                        "Step 1: draw the performance area (P).\n"
                        "Click its floor outline corners; Return or click V0 to close.\n"
-                       "Step 2: place the origin (the calibration square) and point its N arrow North.")
+                       "Step 2: place the origin (the calibration square) and point its N arrow North.\n"
+                       "Step 3: draw the trusses (T) or tripod areas (A).\n"
+                       "Step 4: place the charging pads (C).\n"
+                       "Step 5: Plan Cameras (⌘R).")
             p.restore()
+
+    # ------------------------------------------------------------- charging pads
+    def _pads(self) -> list:
+        return (self.doc.data.get("pads") or {}).get("centres") or []
+
+    def _pad_corners(self, centre, side=PAD_SIDE_M):
+        """A pad's square, its sides along North and East."""
+        f = frame_of(self.doc.data)
+        c, h = np.asarray(centre, float), side / 2
+        return [c + f.n_hat * a * h + f.e_hat * b * h for a, b in ((1, -1), (1, 1), (-1, 1), (-1, -1))]
+
+    def _slot_xy(self, centre, slot):
+        f = frame_of(self.doc.data)
+        un, ue = SLOT_UNITS[slot]
+        h = float((self.doc.data.get("pads") or {}).get("slot_spacing_m", 0.2)) / 2
+        return np.asarray(centre, float) + f.n_hat * un * h + f.e_hat * ue * h
+
+    def _draw_pads(self, p: QPainter, tok):
+        close = {k for i, j, _ in _pads_too_close(self._pads()) for k in (i, j)}
+        for i, c in enumerate(self._pads()):
+            self._draw_pad(p, tok, c, i, selected=self.selection == ("pad", i), warn=i in close)
+
+    def _draw_pad(self, p: QPainter, tok, centre, i, selected=False, ghost=False, warn=False):
+        """A charging pad: its square, its 4 drone slots (drone ID = 4 x (pad - 1) + slot; the
+        slot is the take-off batch) and its name."""
+        px = self.px()
+        col = QColor(tok["select"] if selected else tok["nogo"] if warn else tok["pad"])
+        if ghost:
+            col.setAlphaF(0.55)
+        fill = QColor(col)
+        fill.setAlphaF(0.14)
+        p.setPen(QPen(col, (2.4 if selected else 1.5) * px, Qt.PenStyle.DashLine if ghost else Qt.PenStyle.SolidLine))
+        p.setBrush(fill)
+        p.drawPolygon(_poly(self._pad_corners(centre)))
+        r = max(0.035, 2.5 * px)
+        show_ids = PAD_SIDE_M / px > 70
+        for slot in range(1, SLOTS + 1):
+            q = self._slot_xy(centre, slot)
+            p.setPen(QPen(tok["surface"], 0.8 * px))
+            p.setBrush(col)
+            p.drawEllipse(QPointF(*q), r, r)
+            if show_ids and not ghost:
+                self._text(p, QPointF(*q), str(SLOTS * i + slot), tok["text2"], dx=4, dy=-3, size=8)
+        corner = self._pad_corners(centre)[0]
+        self._text(p, QPointF(*corner), f"Pad {i + 1}", col, dx=2, dy=-4, size=10, bold=selected)
+        if selected:
+            self._handle(p, centre, col, selected=True)
 
     # ------------------------------------------------------------- origin
     ORIGIN_N_PX = 64                     # North arrow length on screen
@@ -626,6 +685,10 @@ class PlanCanvas(QGraphicsView):
             self.message.emit("Draw the performance area first: click its floor outline corners, "
                               "then Return.")
             tool = "volume"
+        elif tool in NEEDS_MOUNTS and not self.doc.data["trusses"] and not self.doc.data["tripod_zones"]:
+            self.message.emit("Place the trusses (T) or tripod areas (A) first: the charging pads come after the "
+                              "camera mounts, then Plan Cameras.")
+            tool = "truss"
         self.tool = tool
         self.pending = []
         self.toolChanged.emit(tool)
@@ -639,6 +702,8 @@ class PlanCanvas(QGraphicsView):
             "truss": "Click the truss start, then its end.",
             "zone": "Click the tripod area corners. Return or double-click to finish.",
             "nogo": "Click the no-go area corners. Return or double-click to finish.",
+            "pad": f"Click where each charging pad stands (4 drones, 2 × 2; pads at least {MIN_PAD_GAP_M:g} m "
+                   "apart). Pad 1 holds drones 1–4, pad 2 drones 5–8, … Esc when done.",
             "measure": "Click two points to measure (snaps to vertices, truss ends and cameras). Esc clears.",
         }
         if tool != "measure":
@@ -662,7 +727,8 @@ class PlanCanvas(QGraphicsView):
         if s and ((s[0] == "vertex" and s[1] >= len(d["volume"]["polygon"]))
                   or (s[0] == "truss" and s[1] >= len(d["trusses"]))
                   or (s[0] == "zone" and s[1] >= len(d["tripod_zones"]))
-                  or (s[0] == "nogo" and s[1] >= len(d["no_go_zones"]))):
+                  or (s[0] == "nogo" and s[1] >= len(d["no_go_zones"]))
+                  or (s[0] == "pad" and s[1] >= len(self._pads()))):
             self.set_selection(None)
         self.viewport().update()
 
@@ -695,6 +761,7 @@ class PlanCanvas(QGraphicsView):
             yield from z.get("polygon", [])
         for r in d["no_go_zones"]:
             yield from r
+        yield from self._pads()
         if self.result is not None:             # measure from / to planned cameras
             for c in self.result[0].cameras:
                 yield c.position_m[:2]
@@ -722,6 +789,11 @@ class PlanCanvas(QGraphicsView):
                 for k, v in enumerate(pts):
                     if math.hypot(v[0] - x, v[1] - y) < tol:
                         return (kind, idx, k)
+        f = frame_of(d)
+        for i, c in enumerate(self._pads()):              # a pad: grab it anywhere to move it
+            dn, de = np.abs(f.ne((x, y)) - f.ne(c))
+            if max(dn, de) <= PAD_SIDE_M / 2 + tol:
+                return ("pad", i, 0)
         if self.result is not None:
             for k, c in enumerate(self.result[0].cameras):
                 if math.hypot(c.position_m[0] - x, c.position_m[1] - y) < tol:
@@ -803,6 +875,9 @@ class PlanCanvas(QGraphicsView):
                               "for any angle). Drag the centre to move it. All coordinates are North-East-Down "
                               "from here.")
             return
+        if self.tool == "pad":
+            self.place_pad(pt)
+            return
         if self.tool == "measure":
             # two clicks measure; a third click starts a new measurement
             self.ruler = [pt] if len(self.ruler) != 1 else self.ruler + [pt]
@@ -850,6 +925,8 @@ class PlanCanvas(QGraphicsView):
                     return
                 if kind == "truss":
                     data["trusses"][idx]["start" if vtx == 0 else "end"] = pt
+                elif kind == "pad":
+                    data["pads"]["centres"][idx] = pt
                 else:
                     self._points_of(data, kind, idx)[vtx] = pt
             self.doc.set_live(move)
@@ -865,7 +942,9 @@ class PlanCanvas(QGraphicsView):
             return
         if self.drag is not None:
             what = {"move": "Move origin", "rotate": "Turn North"}.get(self.drag[2], "Move vertex") \
-                if self.drag[0] == "origin" else "Move vertex"
+                if self.drag[0] == "origin" else "Move charging pad" if self.drag[0] == "pad" else "Move vertex"
+            if self.drag[0] == "pad":
+                self._warn_close_pads()
             self.doc.commit(what, self.drag_before)
             self.drag = None
             self.drag_before = None
@@ -974,6 +1053,8 @@ class PlanCanvas(QGraphicsView):
             return f"No-go area {idx + 1}"
         if kind == "vertex":
             return f"Vertex V{idx}"
+        if kind == "pad":
+            return f"Charging pad {idx + 1}"
         if kind == "origin":
             return "Origin"
         return "Performance area"
@@ -1015,6 +1096,40 @@ class PlanCanvas(QGraphicsView):
             self.doc.edit("Delete tripod zone", lambda d: d["tripod_zones"].pop(idx))
         elif kind == "nogo":
             self.doc.edit("Delete no-go area", lambda d: d["no_go_zones"].pop(idx))
+        elif kind == "pad":
+            self.doc.edit("Delete charging pad", lambda d: d["pads"]["centres"].pop(idx))
+            if idx < len(self._pads()):
+                self.message.emit("Pads after it moved up one: their drone IDs are 4 lower now.")
         elif kind == "volume":
             self.doc.edit("Clear volume", lambda d: d["volume"].__setitem__("polygon", []))
         self.set_selection(None)
+
+    def place_pad(self, pt) -> bool:
+        """Add a charging pad at pt (drawing XY), unless it would stand too close to another."""
+        pads = self._pads()
+        near = [k for k, c in enumerate(pads) if math.hypot(c[0] - pt[0], c[1] - pt[1]) < MIN_PAD_GAP_M - 1e-9]
+        if near:
+            self.message.emit(f"Too close to pad {near[0] + 1}: pads stand at least {MIN_PAD_GAP_M:g} m apart "
+                              "(centre to centre).")
+            return False
+
+        def add(data):
+            data.setdefault("pads", {}).setdefault("centres", []).append([float(pt[0]), float(pt[1])])
+        self.doc.edit("Place charging pad", add)
+        k = len(self._pads())
+        self.set_selection(("pad", k - 1))
+        self.message.emit(f"Pad {k} placed: drones {SLOTS * (k - 1) + 1}–{SLOTS * k} (slot = take-off batch). "
+                          "Click to place the next; Esc when done, then Plan Cameras (⌘R).")
+        self.viewport().update()
+        return True
+
+    def _warn_close_pads(self):
+        for i, j, dist in _pads_too_close(self._pads()):
+            self.message.emit(f"Pads {i + 1} and {j + 1} are {dist:.2f} m apart: keep pads at least "
+                              f"{MIN_PAD_GAP_M:g} m apart.")
+            return
+
+
+def _pads_too_close(centres):
+    from idps.show.pads import too_close
+    return too_close(centres)

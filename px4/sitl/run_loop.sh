@@ -23,13 +23,14 @@ PY=${PYTHON:-python}                    # the IDPS python (the dashboard passes 
 "$PY" -c "import idps" 2>/dev/null || { echo "$PY cannot import idps: activate the IDPS venv (pip install -e .)"; exit 1; }
 N=${N:-5}; OUT=${OUT:-out/loop}; export EV_DELAY_MS=${EV_DELAY_MS:-28}
 [ "$N" -ge 1 ] && [ "$N" -le 20 ] 2>/dev/null || { echo "N must be 1 to 20 drones (got $N)"; exit 1; }
-# Charging pads (default): the drones take off in batches from examples/pads/show_8x8.yaml to the
+# Charging pads (default): the drones take off in batches from the venue's pads (the Planner's
+# Charging pad tool; examples/sites/show_8x8.yaml, as examples/pads/show_8x8.yaml) to the
 # show's layered air grid and land back (idps/show/pads.py). PADS=0: the 5-drone show from the ground.
 if [ "${PADS:-1}" = 0 ]; then
   [ "$N" -le 5 ] || { echo "PADS=0 flies the 5-drone ground show: N must be 1 to 5"; exit 1; }
   SHOW_CMD=(examples/shows/five_drones_sphere_square.py); PADS_ARG=()
 else
-  SHOW_CMD=(examples/shows/layers_from_pads.py); PADS_ARG=(--pads examples/pads/show_8x8.yaml)
+  SHOW_CMD=(examples/shows/layers_from_pads.py); PADS_ARG=(--pads examples/sites/show_8x8.yaml)
 fi
 PX4_DIR=${PX4_DIR:-$HOME/PX4-Autopilot}; B=$PX4_DIR/build/${PX4_BUILD:-px4_sitl_default}
 rm -rf "$OUT"; mkdir -p "$OUT"

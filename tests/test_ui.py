@@ -176,8 +176,8 @@ def test_plan_without_mounts_offers_tripod_strip(win, monkeypatch):
     monkeypatch.setattr(win, "_exec_dialog", lambda box: box.buttons()[-1].click())
     win.run_plan()
     assert not win.doc.data["tripod_zones"] and not started
-    # Accept: strip added and planning starts
-    monkeypatch.setattr(win, "_exec_dialog", lambda box: box.buttons()[0].click())
+    # Accept: strip added and planning starts (no charging pads: plan without them)
+    monkeypatch.setattr(win, "_exec_dialog", lambda box: next(b for b in box.buttons() if "Plan" in b.text()).click())
     win.run_plan()
     assert win.doc.data["tripod_zones"][0]["offset_m"] == [1.0, 3.0]
     assert started
@@ -327,7 +327,7 @@ def test_remove_all_and_item_delete_button(win, app):
     _venue_with_mounts(win)
     app.processEvents()
     [b for b in win.inspector.findChildren(QPushButton)
-     if b.text() == "Remove all tripod zones" and b.isVisible()][0].click()
+     if b.toolTip().startswith("Remove all tripod zones") and b.isVisible()][0].click()
     app.processEvents()
     assert win.doc.data["tripod_zones"] == []
     win.canvas.set_selection(("truss", 0))
@@ -843,3 +843,69 @@ def test_px4_runs_are_pruned_to_the_newest(tmp_path):
     (tmp_path / "notes").mkdir()                                       # not a run: left alone
     assert prune_runs(tmp_path, keep=2) == 2
     assert sorted(p.name for p in tmp_path.iterdir()) == ["20261015-120000", "20261016-080000", "notes"]
+
+
+def test_charging_pads_after_trusses_before_planning(win, app, monkeypatch, tmp_path):
+    """Order: performance area, origin, trusses, charging pads, then Plan Cameras. Pads are placed
+    with the C tool (4 drones each, at least 0.5 m apart), moved and deleted like the rest, and the
+    planner must cover them; the show tools read them from the venue file."""
+    c = win.canvas
+    c.resetTransform()
+    c.scale(40, -40)
+    draw_rect(win)
+    win.set_tool("pad")
+    assert c.tool == "truss"                                     # no mounts yet: trusses first
+    c.centerOn(0, 0)
+    click(c, -10, 7)
+    click(c, 10, 7)
+    assert len(win.doc.data["trusses"]) == 1
+    win.set_tool("pad")
+    assert c.tool == "pad"
+    c.centerOn(-3, -3)
+    click(c, -3, -3)
+    click(c, -3, -2.75)                                          # 0.25 m away: refused
+    click(c, -2, -3)
+    assert win.doc.data["pads"]["centres"] == [[-3.0, -3.0], [-2.0, -3.0]]
+    assert c.tool == "pad" and c.selection == ("pad", 1)
+    app.processEvents()
+    from PySide6.QtWidgets import QLabel
+    assert any("Drone 5: front-left, batch 1" in w.text() for w in win.inspector.findChildren(QLabel) if w.isVisible())
+    QTest.keyClick(c.viewport(), Qt.Key.Key_Escape)
+    assert c.tool == "select"
+    # drag pad 2 by its body
+    p0, p1 = c.mapFromScene(QPointF(-2.1, -3.0)), c.mapFromScene(QPointF(-1.1, -3.0))
+    QTest.mousePress(c.viewport(), Qt.MouseButton.LeftButton, pos=p0)
+    QTest.mouseMove(c.viewport(), p1)
+    QTest.mouseRelease(c.viewport(), Qt.MouseButton.LeftButton, pos=p1)
+    assert win.doc.data["pads"]["centres"][1] == pytest.approx([-1.0, -3.0])
+    win.grab()
+    win.show_view("3d")
+    win.view3d.grab()
+    win.show_view("2d")
+
+    # the planner covers each drone on its slot and climbing to its layer
+    from idps.plan.planner import site_grid
+    from idps.plan.site import site_from_dict
+    site = site_from_dict(win.doc.to_site_dict())
+    assert len(site.pad_points) == 2 * (4 + 2 + 4 + 6 + 8)        # marker, then every 0.5 m to 1/2/3/4 m
+    assert len(site_grid(site).points) > site_grid(site).n_grid + len(site.pad_points) - 1
+    # planning asks for pads when there are none
+    started = []
+    monkeypatch.setattr("idps.ui.main_window.start_worker", lambda *a: started.append(a) or (_FakeThread(), _FakeWorker()))
+    win.run_plan()
+    assert started                                                # pads placed: no question
+    win.thread = win.worker = None
+    win._running.clear()
+    c.delete_item("pad", 0)
+    c.delete_item("pad", 0)
+    asked = []
+    monkeypatch.setattr(win, "_exec_dialog", lambda box: asked.append(box.text()) or box.buttons()[0].click())
+    win.run_plan()
+    assert asked == ["Place the charging pads first?"] and c.tool == "pad" and len(started) == 1
+    # the show tools read the pads from the saved venue file
+    c.place_pad((0.0, 0.0))
+    win.doc.save(tmp_path / "venue.yaml")
+    from idps.show.pads import load_pads
+    lay = load_pads(tmp_path / "venue.yaml")
+    assert lay.pads_ne.shape == (1, 2) and lay.batch_gap_s == 5.0
+    assert lay.home_ned(1)[:2] == pytest.approx([0.1, -0.1])     # origin at the pad, North up: slot 1 front-left

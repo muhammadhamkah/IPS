@@ -101,6 +101,8 @@ class Site:
     notes: str = ""
     source_path: str | None = None
     frame: Frame = field(default_factory=Frame)    # origin + North: everything shown in NED
+    # charging pads: drones on their slots and climbing to their layers must be seen too
+    pad_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
 
     @property
     def volume_min(self) -> np.ndarray:
@@ -216,6 +218,9 @@ def site_from_dict(d: dict, source_path: str | None = None) -> Site:
     defaults = CandidateSettings()
     cand = CandidateSettings(**{k: c.get(k, getattr(defaults, k)) for k in defaults.__dataclass_fields__})
 
+    from idps.show.pads import coverage_points, pads_from_site
+    frame = Frame.from_dict(d.get("origin"))
+    pads = pads_from_site(d)
     return Site(
         name=str(d.get("name", "site")),
         volume=_volume(vol),
@@ -234,7 +239,8 @@ def site_from_dict(d: dict, source_path: str | None = None) -> Site:
         max_cameras=int(d.get("optimiser", {}).get("max_cameras", 400)),
         notes=str(d.get("notes", "")),
         source_path=source_path,
-        frame=Frame.from_dict(d.get("origin")),
+        frame=frame,
+        pad_points=coverage_points(pads, frame) if pads is not None else np.zeros((0, 3)),
     )
 
 

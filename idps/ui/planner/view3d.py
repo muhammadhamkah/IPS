@@ -119,6 +119,7 @@ class View3D(QWidget):
         pts = [[x, y, z] for x, y in vol for z in (z0, z1)]
         for t in d["trusses"]:
             pts += [[*t["start"], t["height_m"]], [*t["end"], t["height_m"]]]
+        pts += [[*c, 0.0] for c in (d.get("pads") or {}).get("centres") or []]
         if self.canvas.result is not None:
             pts += [c.position_m for c in self.canvas.result[0].cameras]
         return np.array(pts, float) if pts else np.zeros((0, 3))
@@ -377,6 +378,7 @@ class View3D(QWidget):
         self._volume(prims, tok)
         self._areas(prims, tok)
         self._trusses(prims, tok)
+        self._pads(prims, tok)
         self._coverage(prims)
         self._cameras(prims, tok)
         self._extra(prims, tok)
@@ -505,6 +507,30 @@ class View3D(QWidget):
                     pa, pb = a + (b - a) * (s0 / L), a + (b - a) * (min(s1, L) / L)
                     self._line(prims, (*pa, h), (*pb, h), QPen(colour, 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
             self._text(prims, (*a, h), f"{t['id']}  {h:g} m", tok["text2"], sel == ("truss", i), 10)
+
+    def _pads(self, prims, tok):
+        """Charging pads on the floor, with each slot's climb to its batch's grid height."""
+        from idps.show.pads import PAD_SIDE_M, SLOT_UNITS, SLOTS
+        from idps.ui.planner.document import frame_of
+        pads = self.doc.data.get("pads") or {}
+        f = frame_of(self.doc.data)
+        h = float(pads.get("slot_spacing_m", 0.2)) / 2
+        layers = pads.get("layers_m", [1, 2, 3, 4])
+        sel = self.canvas.selection
+        for i, c in enumerate(pads.get("centres") or []):
+            c = np.asarray(c, float)
+            col = QColor(tok["select"] if sel == ("pad", i) else tok["pad"])
+            fill = QColor(col)
+            fill.setAlphaF(0.25)
+            sq = [c + f.n_hat * a * PAD_SIDE_M / 2 + f.e_hat * b * PAD_SIDE_M / 2
+                  for a, b in ((1, -1), (1, 1), (-1, 1), (-1, -1))]
+            self._poly(prims, [(*q, 0.0) for q in sq], QPen(col, 1.5), fill)
+            for slot in range(1, SLOTS + 1):
+                un, ue = SLOT_UNITS[slot]
+                q = c + f.n_hat * un * h + f.e_hat * ue * h
+                if slot <= len(layers):
+                    self._line(prims, (*q, 0.0), (*q, float(layers[slot - 1])), QPen(col, 1, Qt.PenStyle.DotLine))
+            self._text(prims, (*sq[0], 0.0), f"Pad {i + 1}", col, sel == ("pad", i), 9)
 
     def _point_colour(self, ev, v, limit, measure):
         if measure == "accuracy":

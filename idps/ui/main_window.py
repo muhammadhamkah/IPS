@@ -22,7 +22,8 @@ from idps.ui.planner.results import ResultsPanel
 from idps.ui.planner.worker import start_worker
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "sites"
-TOOL_KEYS = {"select": "V", "volume": "P", "origin": "O", "truss": "T", "zone": "A", "nogo": "N", "measure": "M"}
+TOOL_KEYS = {"select": "V", "volume": "P", "origin": "O", "truss": "T", "zone": "A", "pad": "C", "nogo": "N",
+             "measure": "M"}
 
 
 def placeholder(text: str) -> QWidget:
@@ -473,6 +474,8 @@ class MainWindow(QMainWindow):
             box.setWindowModality(Qt.WindowModality.WindowModal)
             self._exec_dialog(box)
             return
+        if not (self.doc.data.get("pads") or {}).get("centres") and not self._ask_pads():
+            return
         self.results.running(True)
         self.a_run.setEnabled(False)
         self.thread, self.worker = start_worker(self, site_dict, str(self.doc.path) if self.doc.path else None)
@@ -530,6 +533,25 @@ class MainWindow(QMainWindow):
             return False
         self.inspector._add_strip()
         return True
+
+    def _ask_pads(self) -> bool:
+        """No charging pads yet: they come before planning, as the cameras must also see the
+        drones on their pads and climbing to the grid. True: plan anyway."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("Place the charging pads first?")
+        box.setInformativeText("The drones take off from charging pads, and the cameras must see them there and "
+                               "on their climb to the grid, so the pads go in before the cameras are planned. "
+                               "Click where each pad stands with the Charging pad tool (C).")
+        place = box.addButton("Place Pads", QMessageBox.ButtonRole.AcceptRole)
+        anyway = box.addButton("Plan Without Pads", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(place)
+        box.setWindowModality(Qt.WindowModality.WindowModal)
+        self._exec_dialog(box)
+        if box.clickedButton() is place:
+            self.set_tool("pad")
+        return box.clickedButton() is anyway
 
     def _exec_dialog(self, box):          # separate so tests can stub it
         return box.exec()

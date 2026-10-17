@@ -6,7 +6,7 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
+                               QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLayout, QLineEdit, QPushButton,
                                QScrollArea, QSizePolicy, QSpinBox, QTableWidget, QTableWidgetItem,
                                QTabWidget, QVBoxLayout, QWidget)
 
@@ -176,6 +176,8 @@ class Inspector(QTabWidget):
         self.setDocumentMode(True)
         self.sel_page = QWidget()
         self.sel_layout = QVBoxLayout(self.sel_page)
+        # the page is at least as tall as its contents, so the scroll area scrolls instead of squashing rows
+        self.sel_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         # No AlignTop here: with it, rows get their (underestimated) size hint and overlap;
         # a trailing stretch keeps content at the top while honouring minimum heights.
         self.addTab(self._scroll(self.sel_page), "Inspector")
@@ -220,6 +222,9 @@ class Inspector(QTabWidget):
             self.sel_layout.addWidget(self._zone_box(sel[1]))
         elif kind == "nogo" and sel[1] < len(d["no_go_zones"]):
             self.sel_layout.addWidget(self._nogo_box(sel[1]))
+        elif kind == "pad" and sel[1] < len((d.get("pads") or {}).get("centres") or []):
+            self.sel_layout.addWidget(self._pad_box(sel[1]))
+            self.sel_layout.addWidget(self._pads_settings_box())
         elif kind == "camera":
             self.sel_layout.addWidget(self._camera_box(sel[1]))
         self.sel_layout.addWidget(self._mounts_box())
@@ -309,7 +314,14 @@ class Inspector(QTabWidget):
             place.setToolTip("Where the calibration square's corner goes; its N arrow points North")
             place.clicked.connect(lambda: self.canvas.set_tool("origin"))
             lay.addWidget(place)
-        tips = QLabel("Trusses: T tool · Tripod areas: A tool · No-go areas: N tool · Origin: O tool")
+        if self.doc.data["trusses"] or self.doc.data["tripod_zones"]:
+            pads = QPushButton("Place the charging pads (C)…")
+            pads.setToolTip("Where the drones take off and land, 4 per pad; after the trusses, before planning")
+            pads.clicked.connect(lambda: self.canvas.set_tool("pad"))
+            lay.addWidget(pads)
+        tips = QLabel("Trusses: T tool · Tripod areas: A tool · Charging pads: C tool · No-go areas: N tool · "
+                      "Origin: O tool")
+        tips.setWordWrap(True)
         tips.setStyleSheet("color: palette(placeholder-text);")
         lay.addWidget(tips)
         return box
@@ -330,6 +342,8 @@ class Inspector(QTabWidget):
             what = (f"strip {z['offset_m'][0]:g}–{z['offset_m'][1]:g} m out" if "offset_m" in z else "drawn area")
             rows.append(("zone", i, f"Tripods {z['id']}", f"{what}, masts {z['height_m'][0]:g}–{z['height_m'][1]:g} m"))
         rows += [("nogo", i, f"No-go area {i + 1}", "") for i in range(len(d["no_go_zones"]))]
+        rows += [("pad", i, f"Charging pad {i + 1}", f"drones {4 * i + 1}–{4 * i + 4}")
+                 for i in range(len((d.get("pads") or {}).get("centres") or []))]
         if not rows:
             empty = QLabel("No trusses or tripod zones yet.")
             empty.setStyleSheet("color: palette(placeholder-text);")
@@ -351,13 +365,19 @@ class Inspector(QTabWidget):
             row.addWidget(rm)
             lay.addLayout(row)
         bulk = QHBoxLayout()
-        all_t = QPushButton("Remove all trusses")
-        all_t.setEnabled(bool(d["trusses"]))
-        all_t.clicked.connect(lambda: self.doc.edit("Remove all trusses", lambda dd: dd["trusses"].clear()))
-        all_z = QPushButton("Remove all tripod zones")
-        all_z.setEnabled(bool(d["tripod_zones"]))
-        all_z.clicked.connect(lambda: self.doc.edit("Remove all tripod zones", lambda dd: dd["tripod_zones"].clear()))
-        for b in (all_t, all_z):
+        bulk.addWidget(QLabel("Remove all:"))
+        for label, key, what in (("Trusses", "trusses", "trusses"), ("Tripod zones", "tripod_zones", "tripod zones"),
+                                 ("Pads", None, "charging pads")):
+            b = QPushButton(label)
+            b.setToolTip(f"Remove all {what} (⌘Z to undo)")
+            if key is None:
+                b.setEnabled(bool((d.get("pads") or {}).get("centres")))
+                b.clicked.connect(lambda: self.doc.edit("Remove all charging pads",
+                                                        lambda dd: dd["pads"]["centres"].clear()))
+            else:
+                b.setEnabled(bool(d[key]))
+                b.clicked.connect(lambda _=False, k=key, w=what: self.doc.edit(f"Remove all {w}",
+                                                                                lambda dd: dd[k].clear()))
             b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             bulk.addWidget(b)
         lay.addLayout(bulk)
@@ -486,8 +506,8 @@ class Inspector(QTabWidget):
                 cb.toggled.connect(lambda _=None: set_edges())
             form.addRow("Along edges", grid)
         else:
-            table = VertexTable(lambda r, c, v: self._set(("tripod_zones", i, "polygon", r, c), v))
-            table.load(z["polygon"], prefix="P")
+            table = VertexTable(lambda r, c, v: self._set_ne(("tripod_zones", i, "polygon", r), c, v))
+            table.load(z["polygon"], frame_of(self.doc.data), prefix="P")
             form.addRow(table)
         form.addRow(self._delete_button("zone", i))
         return box
@@ -495,11 +515,83 @@ class Inspector(QTabWidget):
     def _nogo_box(self, i):
         box = QGroupBox("No-go area")
         form = QFormLayout(box)
-        table = VertexTable(lambda r, c, v: self._set(("no_go_zones", i, r, c), v))
-        table.load(self.doc.data["no_go_zones"][i], prefix="P")
+        table = VertexTable(lambda r, c, v: self._set_ne(("no_go_zones", i, r), c, v))
+        table.load(self.doc.data["no_go_zones"][i], frame_of(self.doc.data), prefix="P")
         form.addRow(table)
         form.addRow(QLabel("No cameras or tripods are placed here (doors, walkways, exits)."))
         form.addRow(self._delete_button("nogo", i))
+        return box
+
+    # ---------------------------------------------------------------- pads
+    def _pad_box(self, i):
+        from idps.show.pads import MIN_PAD_GAP_M, too_close
+        d = self.doc.data
+        pads = d["pads"]
+        c = pads["centres"][i]
+        box = QGroupBox(f"Charging pad {i + 1}")
+        form = QFormLayout(box)
+        f = frame_of(d)
+        row = QHBoxLayout()
+        ne = f.ne(c)
+        for k in range(2):
+            sp = dspin(-10000, 10000)
+            sp.setPrefix("NE"[k] + " ")
+            sp.setValue(float(ne[k]))
+            sp.editingFinished.connect(lambda sp=sp, k=k: self._set_ne(("pads", "centres", i), k, sp.value()))
+            row.addWidget(sp)
+        form.addRow("Centre", row)
+        layers = pads.get("layers_m", [1, 2, 3, 4])
+        names = ("front-left", "front-right", "back-left", "back-right")
+        lines = [f"Drone {4 * i + s + 1}: {names[s]}, batch {s + 1}"
+                 + (f", grid at {layers[s]:g} m" if s < len(layers) else "") for s in range(4)]
+        who = QLabel("\n".join(lines))
+        who.setToolTip("Front = North. Batch k takes off k-th (slot k of every pad together) and lands "
+                       "(n - k + 1)-th: last up, first down")
+        form.addRow("Drones", who)
+        for a, b, dist in too_close(pads["centres"]):
+            if i in (a, b):
+                warn = QLabel(f"⚠︎ {dist:.2f} m from pad {(b if a == i else a) + 1}: keep pads at least "
+                              f"{MIN_PAD_GAP_M:g} m apart.")
+                warn.setStyleSheet("color: #d03b3b;")
+                warn.setWordWrap(True)
+                form.addRow(warn)
+        form.addRow(self._delete_button("pad", i))
+        return box
+
+    def _pads_settings_box(self):
+        """The take-off and landing sequence, shared by every pad (docs/SHOW.md, Charging pads)."""
+        p = self.doc.data["pads"]
+        box = QGroupBox("Charging pads: take-off and landing")
+        form = QFormLayout(box)
+        for key, label, lo, hi, dec, suffix, step in (
+                ("slot_spacing_m", "Drones apart on a pad", 0.1, 1.0, 2, " m", 0.05),
+                ("batch_gap_s", "Between batches", 1.0, 60.0, 1, " s", 0.5),
+                ("climb_speed_mps", "Climb and descent speed", 0.2, 5.0, 2, " m/s", 0.1),
+                ("transfer_speed_mps", "Speed to and from the grid", 0.2, 5.0, 2, " m/s", 0.1),
+                ("hold_timeout_s", "No start for this long: land", 5.0, 3600.0, 0, " s", 5.0)):
+            sp = dspin(lo, hi, dec, suffix, step)
+            sp.setValue(float(p.get(key, 0.0)))
+            sp.editingFinished.connect(lambda sp=sp, key=key: self._set(("pads", key), sp.value()))
+            form.addRow(label, sp)
+        lay_edit = QLineEdit(fmt_floats(p.get("layers_m", [1, 2, 3, 4])))
+        lay_edit.setToolTip("Batch 1, 2, 3, 4's height in the initial and final grid (the show's first and last frame)")
+
+        def set_layers():
+            try:
+                v = parse_floats(lay_edit.text())
+            except ValueError:
+                v = []
+            if len(v) != 4 or any(x <= 0 for x in v):
+                lay_edit.setStyleSheet("color: #d03b3b;")
+                return
+            self._set(("pads", "layers_m"), v)
+        lay_edit.editingFinished.connect(set_layers)
+        form.addRow("Grid heights, batch 1–4", lay_edit)
+        hint = QLabel("The cameras are planned to see every drone on its pad and on its climb to the grid. The "
+                      "show tools read the pads from this venue file: idps-show check / export --pads venue.yaml.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(placeholder-text);")
+        form.addRow(hint)
         return box
 
     def _camera_box(self, k):

@@ -143,7 +143,9 @@ marker), or rename the drone in the show.
 
 The drones stand on charging pads, 4 per pad in a 2 × 2 square (0.2 m apart). Drone ID =
 4 × (pad − 1) + slot, and the slot is the drone's **take-off batch**: batch 1 is slot 1 of every
-pad, and so on. Describe the pads in a file (`examples/pads/show_8x8.yaml`):
+pad, and so on. Place the pads in the Planner (Charging pad tool, C, after the trusses and before
+planning the cameras: docs/WORKFLOW.md); the venue file then carries them and `--pads venue.yaml`
+reads them from it. Or describe them in a file of their own (`examples/pads/show_8x8.yaml`):
 
 ```yaml
 pads: [[-3.2, -2.0], [-3.2, -1.0], [-3.2, 0.0]]   # pad centres, venue N and E (m), anywhere
