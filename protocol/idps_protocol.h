@@ -1,7 +1,7 @@
 /*
  * IDPS wire protocol v1 (docs/PROTOCOL.md). Little-endian, packed.
  * Mirrors idps/protocol/packets.py; golden vectors in protocol/vectors/.
- * Used by the camera-station code (edge/) when it is written.
+ * Used by the camera-station program (edge/, docs/STATION.md).
  */
 #ifndef IDPS_PROTOCOL_H
 #define IDPS_PROTOCOL_H

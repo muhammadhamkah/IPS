@@ -92,6 +92,8 @@ The **sync master** handles time synchronisation, and ROADMAP Phase 5 decides it
 
 ## 4. Camera station (edge)
 
+*Implemented (v0.1): `edge/` (`idps-station`), tested on synthetic and rendered images; not yet run on a Pi. Setup, first-day steps and status: docs/STATION.md. The control agent (§4.1) is still to come.*
+
 ### 4.1 Processes
 
 | Process | Language | Real-time? | Responsibility |
