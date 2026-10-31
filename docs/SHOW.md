@@ -228,8 +228,11 @@ in a row 0.5 m apart along an edge, in a corner and under the middle of a 20 × 
 ## 4. Upload, start, fly
 
 **On each drone** (D20), there is no companion computer, to save weight:
-* a PX4 flight controller with Wi-Fi: either built in, or a few-gram Wi-Fi-to-serial MAVLink
-  bridge such as an ESP32 or ESP8266 module (the bridge only relays, it runs nothing);
+* a PX4 flight controller with **5 GHz** Wi-Fi: a few-gram Wi-Fi-to-serial MAVLink bridge on
+  a flight-controller UART (921600 baud). It must do 5 GHz: the ESP8266 and most ESP32 chips
+  (ESP32, -S2, -S3, -C3, -C6) are 2.4 GHz only. The **ESP32-C5** is dual-band (2.4 and 5 GHz,
+  Wi-Fi 6), and the DroneBridge for ESP32 firmware lists it as supported. Test one on the
+  bench before fitting the fleet. The bridge only relays; it runs nothing;
 * PX4 built with the `idps_show` module (`px4/README.md`), started from `etc/extras.txt`;
 * **one** IDPS IR marker, at the drone's reference point (top centre, over the centre of
   mass). Declare any remaining offset to PX4 with `EKF2_EV_POS_X/Y/Z`;
@@ -318,16 +321,18 @@ Details are in `px4/README.md`.
 * a geofence matching the performance area.
 
 **Wi-Fi:** use a dedicated 5 GHz network for the drones, separate from the camera network
-(cameras are wired, D16). During a show each drone receives about 50 position messages a
-second (about 300 bytes each on air) plus 5 small clock-sync messages: around 50 packets and
-16 kB a second per drone. That is half the packets of streaming the path from the PC, and
-packets are what limit Wi-Fi. Latency and dropouts matter more than bandwidth; measure them
-in Phase 7.
+(cameras are wired, D16). During a show each drone receives a position for every engine
+update, about 120 a second (about 300 bytes each on air), plus 5 small clock-sync messages:
+around 125 packets and 36 kB a second per drone. For 8–16 drones one access point is plenty;
+at around 50 drones the number of packets (not the bytes) becomes the limit, so plan several
+access points on different channels or a lower position rate, and measure. Latency and
+dropouts matter more than bandwidth; measure them in Phase 7.
 
 ## Open questions
 
-* **Drone flight controller with Wi-Fi.** Choose the board (PX4 support, weight, Wi-Fi
-  range and latency), or a standard PX4 board plus a Wi-Fi MAVLink bridge.
+* **Drone flight controller with 5 GHz Wi-Fi.** Choose the board (PX4 support, weight), and
+  bench-test the 5 GHz MAVLink bridge (ESP32-C5 + DroneBridge): packet loss, the longest gap
+  between positions and latency, with as many drones as one access point will carry.
 * **Still to build:**
   * the engine's position stream (`Fleet.send_positions`), and the pre-flight check on live
     marker IDs;
