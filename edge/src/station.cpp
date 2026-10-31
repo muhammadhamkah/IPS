@@ -234,11 +234,12 @@ class Station {
                       "{\"fw\":\"%s\",\"uptime_s\":%.1f,\"fps_measured\":%.2f,\"frames_captured\":%llu,"
                       "\"frames_dropped\":%llu,\"proc_us_p50\":%.0f,\"proc_us_p99\":%.0f,\"latency_us_p99\":%.0f,"
                       "\"cpu_temp_c\":%.1f,\"throttled\":%ld,\"cpu_load\":[%s],\"ptp_state\":\"%s\","
-                      "\"ptp_offset_ns\":%lld,\"exposure_ns\":%d,\"gain\":%.2f,\"threshold\":%d,\"sync_state\":%d}",
+                      "\"ptp_offset_ns\":%lld,\"exposure_ns\":%d,\"gain\":%.2f,\"threshold\":%d,\"sync_state\":%d,"
+                      "\"send_errors\":%llu}",
                       VERSION_STR, (mono_ns() - t_start_mono_) * 1e-9, fps, (unsigned long long)frames_.load(),
                       (unsigned long long)dropped_total(), proc_.pct(50), proc_.pct(99), latency_.pct(99), temp, thr,
                       loads.c_str(), ptp.state.c_str(), ptp.offset_ns, o_.src.exposure_us * 1000, o_.src.gain,
-                      o_.det.threshold, (int)sync_state_.load());
+                      o_.det.threshold, (int)sync_state_.load(), (unsigned long long)send_errors_.load());
         send(encode_health((uint16_t)o_.station_id, seq_++, b, flags()));
     }
 
@@ -265,8 +266,10 @@ class Station {
 
     uint16_t flags() const { return o_.simulated ? IDPS_FLAG_SIMULATED : 0; }
 
+    // never blocks: a packet the network cannot take right now is dropped and counted (HEALTH
+    // send_errors); waiting would delay every later frame
     void send(const std::string &pkt) {
-        if (sock_ >= 0 && !pkt.empty()) ::send(sock_, pkt.data(), pkt.size(), MSG_DONTWAIT);
+        if (sock_ >= 0 && !pkt.empty() && ::send(sock_, pkt.data(), pkt.size(), MSG_DONTWAIT) < 0) send_errors_++;
     }
 
     void detect_loop() {
@@ -341,7 +344,7 @@ class Station {
     std::thread th_;
     int sock_ = -1;
     std::atomic<uint32_t> seq_{0};
-    std::atomic<uint64_t> frames_{0}, sensor_drops_{0}, saturated_{0};
+    std::atomic<uint64_t> frames_{0}, sensor_drops_{0}, saturated_{0}, send_errors_{0};
     std::atomic<uint8_t> sync_state_{IDPS_SYNC_FREE_RUN};
     bool was_locked_ = false;
     bool have_seq_ = false;

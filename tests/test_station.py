@@ -181,7 +181,7 @@ def test_station_sends_one_packet_per_frame_and_health(station_exe):
     period = np.median(np.diff([f.t_mid_ns for f in frames])) * 1e-9
     assert period == pytest.approx(1 / 120, rel=0.01)
     assert abs(time.time_ns() - frames[-1].t_mid_ns) < 2e9    # stamped in the system time base
-    assert health[-1]["fps_measured"] > 110 and health[-1]["frames_dropped"] == 0
+    assert health[-1]["fps_measured"] > 110 and health[-1]["frames_dropped"] == 0 and health[-1]["send_errors"] == 0
 
 
 def test_station_snapshot_and_bench(station_exe, tmp_path):
