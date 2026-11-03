@@ -1,0 +1,34 @@
+menu "IDPS marker"
+
+    config MARKER_IR_GPIO
+        int "IR LED GPIO"
+        default 1
+        help
+            The GPIO driving the IR LED (through a 100 ohm resistor for a 5 mm LED, or a MOSFET
+            for a high-power one). On the Seeed XIAO ESP32-C5, GPIO1 is pin D0 (check Seeed's
+            pinout for your board).
+
+    config MARKER_PREVIEW_GPIO
+        int "Preview LED GPIO (-1: none)"
+        default 27
+        help
+            A visible LED that shows the same code (HIGH on, LOW off), to see the marker working
+            without an IR camera. The XIAO ESP32-C5's user LED is GPIO27.
+
+    config MARKER_PREVIEW_ACTIVE_LOW
+        bool "Preview LED lights when its pin is low"
+        default y
+
+    config MARKER_DEFAULT_ID
+        int "Marker ID at first start (0-255; change later with the 'id' command)"
+        range 0 255
+        default 1
+
+    config MARKER_PWM_HZ
+        int "PWM frequency (Hz)"
+        default 200000
+        help
+            The HIGH and LOW levels are PWM duty cycles. It must be much faster than the camera
+            exposure (0.5 ms), so each exposure averages many cycles: 200 kHz gives 100.
+
+endmenu
