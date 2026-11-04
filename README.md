@@ -20,6 +20,7 @@ simulator drones through a show.
 | [px4/README.md](px4/README.md) | The `idps_show` PX4 module: each drone flies its own file from its SD card; build, set-up and simulator test |
 | [docs/STATION.md](docs/STATION.md) | The camera station program (`edge/`, `idps-station`): capture, dot detection, timestamps, packets; Pi setup script, first-day bench steps, what is still untested |
 | [docs/MARKER.md](docs/MARKER.md) | Test marker firmware (`marker/`, ESP32-C5): IR LED blinking a drone ID code; build, flash, console, wiring |
+| [docs/LINKTEST.md](docs/LINKTEST.md) | Radio link test (`linktest/`, two ESP32-C5): positions lost, longest gap, round trip on 5 GHz vs 2.4 GHz |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | Station parts list (Pi 5 + OV9281), PoE+ power budget, what to verify on the first station |
 | [docs/NETWORK_TIMING.md](docs/NETWORK_TIMING.md) | Pi-per-camera network, clock synchronisation options (simulated), ptp4l setup |
 | [docs/ADVISOR.md](docs/ADVISOR.md) | Health monitoring and guided fixes (re-aim / move / add camera) from planning to show |
