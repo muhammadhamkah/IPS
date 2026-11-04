@@ -1,0 +1,19 @@
+diff --git a/src/modules/simulation/simulator_sih/sih.cpp b/src/modules/simulation/simulator_sih/sih.cpp
+index 30ac027..c6bc1ca 100644
+--- a/src/modules/simulation/simulator_sih/sih.cpp
++++ b/src/modules/simulation/simulator_sih/sih.cpp
+@@ -530,9 +530,12 @@ void Sih::reconstruct_sensors_signals(const hrt_abstime &time_now_us)
+ 	Vector3f accel_noise;
+ 	Vector3f gyro_noise;
+ 
++	// SIH_NOISE_SCALE (environment): scales the in-flight IMU noise, which is a fixed-wing's
++	static const float noise_k = getenv("SIH_NOISE_SCALE") ? (float)atof(getenv("SIH_NOISE_SCALE")) : 1.f;
++
+ 	if (_T_B.longerThan(FLT_EPSILON)) {
+-		accel_noise = noiseGauss3f(0.5f, 1.7f, 1.4f);
+-		gyro_noise = noiseGauss3f(0.14f, 0.07f, 0.03f);
++		accel_noise = noiseGauss3f(0.5f * noise_k, 1.7f * noise_k, 1.4f * noise_k);
++		gyro_noise = noiseGauss3f(0.14f * noise_k, 0.07f * noise_k, 0.03f * noise_k);
+ 
+ 	} else {
+ 		// Lower noise when not armed

@@ -1,0 +1,48 @@
+diff --git a/src/modules/simulation/simulator_sih/sih.cpp b/src/modules/simulation/simulator_sih/sih.cpp
+--- a/src/modules/simulation/simulator_sih/sih.cpp
++++ b/src/modules/simulation/simulator_sih/sih.cpp
+@@ -43,6 +43,8 @@
+ #include "aero.hpp"
+ #include "sih.hpp"
+ 
++#include <chrono>
++
+ #include <px4_platform_common/getopt.h>
+ #include <px4_platform_common/log.h>
+ 
+@@ -122,6 +124,17 @@
+ 	PX4_INFO("Simulation loop with %d Hz (%d us sim time interval)", rate, sim_interval_us);
+ 	PX4_INFO("Simulation with %.1fx speedup. Loop with (%d us wall time interval)", (double)speed_factor, rt_interval_us);
+ 	uint64_t pre_compute_wall_time_us;
++	// IDPS: each step's wall time is kept on an absolute schedule, so time lost to oversleeping or a
++	// busy host is caught up (sim steps run back to back) instead of the simulated clock falling behind
++	// the wall clock for good (~3 % slow, with 50-100 ms jumps when the host stalls). Over a second
++	// behind (a debugger, a suspended laptop): start the schedule again from now. The schedule runs on
++	// the host's monotonic clock (the wall clock can be stepped back), and no step sleeps longer than
++	// one interval, so an odd clock can slow the simulation down but never stop it.
++	uint64_t next_wall_time_us = 0;
++	const auto steady_us = []() {
++		return (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
++			       std::chrono::steady_clock::now().time_since_epoch()).count();
++	};
+ 
+ 	while (!should_exit()) {
+ 		pre_compute_wall_time_us = micros();
+@@ -148,7 +161,16 @@
+ 		} else {
+ 			px4_lockstep_wait_for_components();
+ 			current_wall_time_us = micros();
+-			sleep_time = math::max(0, rt_interval_us - (int)(current_wall_time_us - pre_compute_wall_time_us));
++
++			const uint64_t steady_now_us = steady_us();
++
++			if (next_wall_time_us == 0 || steady_now_us > next_wall_time_us + 1000000) {
++				next_wall_time_us = steady_now_us;
++			}
++
++			next_wall_time_us += rt_interval_us;
++			sleep_time = (int)math::constrain((int64_t)next_wall_time_us - (int64_t)steady_now_us, (int64_t)0,
++							  (int64_t)rt_interval_us);
+ 		}
+ 
+ 		_achieved_speedup = 0.99f * _achieved_speedup + 0.01f * ((float)sim_interval_us / (float)(

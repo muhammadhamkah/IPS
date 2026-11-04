@@ -1,7 +1,9 @@
 # Irregular venue: a six-sided (L-shaped) floor outline extruded to 15 m.
 # No trusses: tripods only, in a strip 1-2 m outside the outline, except along
-# the glass wall (edge E1), where tripods are not allowed.
+# the glass wall (edge E1), where tripods are not allowed. Cameras sit at or
+# above the 15 m ceiling (drones always fly below the cameras) and look down.
 name: Irregular venue (L-shape)
+origin: {xy: [0, 0], north_deg: 0}   # calibration square at the inside corner V0; North along edge E0
 volume:
   polygon: [[0, 0], [40, 0], [40, 15], [20, 15], [20, 30], [0, 30]]
   z: [0, 15]
@@ -17,13 +19,13 @@ evaluation: {spacing_m: [4, 4, 3], inset_m: 0.5}
 tripod_zones:
   - id: outside
     offset_m: [1, 2]
-    height_m: [2, 15]
+    height_m: [2, 20]
     edges: [0, 2, 3, 4, 5]          # every edge except E1 (glass wall)
 
 candidates:
   tripod_step_m: 3
-  tripod_heights_m: [3, 8, 14]
-  tripod_elevations_deg: [0, 20, 40, 60]
+  tripod_heights_m: [15, 18]
+  tripod_elevations_deg: [0, -15, -30, -50]
   azimuth_step_deg: 30
   max_cameras_per_mount: 3
 

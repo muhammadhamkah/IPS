@@ -31,9 +31,12 @@ class CandidateSet:
 
 
 def _aims(elevations, az_step):
+    """Aims at or below horizontal: drones are always below the cameras, so looking up sees nothing."""
     azs = np.arange(0.0, 360.0, az_step)
     out = []
     for el in elevations:
+        if el > 1e-6:
+            continue
         if abs(abs(el) - 90.0) < 1e-6:
             out.append((0.0, float(el)))          # straight up/down: azimuth irrelevant
         else:
@@ -94,8 +97,11 @@ def generate_candidates(site: Site) -> CandidateSet:
         return any(points_in_polygon(p, r)[0] or distance_to_polygon(p, r)[0][0] < 1e-6
                    for r in site.no_go_zones)
 
+    ceiling = site.volume.z_max + cs.min_height_above_volume_m     # cameras never below the drones
     truss_aims = _aims(cs.truss_elevations_deg, cs.azimuth_step_deg)
     for t in site.trusses:
+        if t.height_m - cs.truss_drop_m < ceiling - 1e-9:
+            continue
         for s0, s1 in t.usable:
             for s in _samples(s0, s1, cs.truss_step_m):
                 xy = t.point_at(s)
@@ -109,9 +115,11 @@ def generate_candidates(site: Site) -> CandidateSet:
 
     tripod_aims = _aims(cs.tripod_elevations_deg, cs.azimuth_step_deg)
     for z in site.tripod_zones:
-        heights = [h for h in cs.tripod_heights_m if z.height_range_m[0] <= h <= z.height_range_m[1]]
-        if not heights:
-            heights = sorted({z.height_range_m[0], z.height_range_m[1]})
+        lo, hi = max(z.height_range_m[0], ceiling), z.height_range_m[1]
+        if lo > hi + 1e-9:
+            continue                                   # masts too short to reach above the drones
+        # the lowest allowed height (at the ceiling: closest to the drones) plus any listed heights above it
+        heights = sorted({round(lo, 3)} | {h for h in cs.tripod_heights_m if lo <= h <= hi})
         for x, y in tripod_positions(site, z):
             if blocked(x, y) or site.volume.contains_xy(np.array([[x, y]]))[0]:
                 continue
@@ -124,6 +132,9 @@ def generate_candidates(site: Site) -> CandidateSet:
                         rows.append(((x, y, h), az, el, lens, key, "tripod", z.id, np.nan))
 
     if not rows:
+        if site.trusses or site.tripod_zones:
+            raise ValueError(f"no mount reaches above the flight ceiling ({ceiling:g} m): cameras must be above "
+                             f"the drones. Raise the trusses or the tripod mast heights, or lower the volume top.")
         raise ValueError("no candidate mounts: add trusses or tripod zones to the site file")
     pos, az, el, lens, key, mtype, mid, along = zip(*rows)
     lens = np.array(lens, float)

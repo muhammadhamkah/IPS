@@ -4,12 +4,13 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QFrame, QHBoxLayout, QHeaderView, QLabel,
-                               QProgressBar, QPushButton, QSlider, QTableWidget, QTableWidgetItem,
+                               QProgressBar, QPushButton, QSizePolicy, QSlider, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
 from idps.ui import theme
+from idps.ui.flow import flow_row
 
-COLUMNS = ["ID", "Mount", "X (m)", "Y (m)", "Z (m)", "Base heading", "Pan", "Tilt", "Lens", "Spacing",
+COLUMNS = ["ID", "Mount", "N (m)", "E (m)", "D (m)", "Base heading", "Pan", "Tilt", "Lens", "Spacing",
            "Critical", "Install note"]
 
 
@@ -53,7 +54,6 @@ class ResultsPanel(QWidget):
         lay.setContentsMargins(8, 6, 8, 6)
 
         # --- run row
-        row = QHBoxLayout()
         self.run_btn = QPushButton("Plan cameras")
         self.run_btn.setDefault(True)
         self.run_btn.setToolTip("Find camera count, positions and pan/tilt (⌘R)")
@@ -77,26 +77,37 @@ class ResultsPanel(QWidget):
         self.report_btn.clicked.connect(self.reportRequested)
         for b in (self.export_btn, self.report_btn):
             b.setEnabled(False)
-        for w in (self.run_btn, self.cancel_btn, self.progress, self.status, self.stale):
-            row.addWidget(w)
-        row.addStretch(1)
-        row.addWidget(self.export_btn)
-        row.addWidget(self.report_btn)
-        lay.addLayout(row)
+        row_box, row = flow_row(self.run_btn, self.cancel_btn, self.progress, self.export_btn, self.report_btn)
+        lay.addWidget(row_box)
+        for w in (self.status, self.stale):        # long messages wrap instead of widening the window
+            w.setWordWrap(True)
+            w.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            lay.addWidget(w)
 
         # --- summary tiles
-        tiles = QHBoxLayout()
+        tiles_box, tiles = flow_row()
         self.t_cams = Tile("Cameras")
         self.t_meets = Tile("Meets requirement")
         self.t_cov = Tile("≥ N cameras")
         self.t_n1 = Tile("Survives a lost camera")
         self.t_acc = Tile("Predicted p95 error")
         for t in (self.t_cams, self.t_meets, self.t_cov, self.t_n1, self.t_acc):
+            t.setMinimumWidth(170)
             tiles.addWidget(t)
-        lay.addLayout(tiles)
+        lay.addWidget(tiles_box)
+        # dense re-check of the finished layout, between the planning grid's samples
+        self.fine = QLabel("")
+        self.fine.setObjectName("fine_check")
+        self.fine.setWordWrap(True)
+        self.fine.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.fine.setToolTip("The planner samples the volume every few metres. Coverage only changes where a "
+                             "point crosses the edge of a camera's view, so after planning the layout is "
+                             "re-checked on a much finer grid to catch any gap between those samples.")
+        self.fine.hide()
+        lay.addWidget(self.fine)
 
         # --- overlay controls
-        orow = QHBoxLayout()
+        orow_box, orow = flow_row()
         orow.addWidget(QLabel("Show on plan:"))
         self.mode_group = QButtonGroup(self)
         for i, (key, label) in enumerate((("none", "Layout only"), ("count", "Cameras per point"),
@@ -120,8 +131,7 @@ class ResultsPanel(QWidget):
         self.legend = QLabel("")
         orow.addSpacing(16)
         orow.addWidget(self.legend)
-        orow.addStretch(1)
-        lay.addLayout(orow)
+        lay.addWidget(orow_box)
 
         # --- camera table
         self.table = QTableWidget(0, len(COLUMNS))
@@ -154,6 +164,12 @@ class ResultsPanel(QWidget):
     def show_result(self, plan, ev):
         s = ev.summary
         req = s["requirements"]
+        fc = s.get("fine_check") or plan.summary.get("fine_check")
+        if fc:
+            from idps.plan.planner import fine_check_text
+            self.fine.setText(("✅ " if not fc["failing"] else "⚠️ ") + fine_check_text(fc))
+            self.fine.setStyleSheet("" if not fc["failing"] else "color: #b8860b;")
+        self.fine.setVisible(bool(fc))
 
         def pct(v):
             return f"{100 * v:.1f} %"
@@ -180,9 +196,11 @@ class ResultsPanel(QWidget):
         self._level(self.level.value())
         self.table.setRowCount(len(plan.cameras))
         for r, c in enumerate(plan.cameras):
-            x, y, z = c.position_m
-            vals = [c.id, f"{c.mount_type} {c.mount_id}", f"{x:.2f}", f"{y:.2f}", f"{z:.2f}",
-                    f"{c.base_heading_deg:.0f}°", f"{c.pan_deg:+.1f}°", f"{c.tilt_deg:+.1f}°", f"{c.lens_mm:g} mm",
+            nf = plan.ned_fields(c)
+            n, e, d = nf["ned_m"]
+            vals = [c.id, f"{c.mount_type} {c.mount_id}", f"{n:.2f}", f"{e:.2f}", f"{d:.2f}",
+                    f"{nf['base_heading_from_north_deg']:.0f}°", f"{nf['pan_clockwise_deg']:+.1f}°",
+                    f"{c.tilt_deg:+.1f}°", f"{c.lens_mm:g} mm",
                     "" if c.neighbour_spacing_m is None else f"{c.neighbour_spacing_m:.2f} m",
                     str(int(ev.critical[r])), c.install_note]
             for col, v in enumerate(vals):
@@ -213,7 +231,8 @@ class ResultsPanel(QWidget):
     def _level(self, k):
         self.canvas.overlay_level = k
         if self.canvas.result is not None:
-            self.level_label.setText(f"Z = {self.canvas.result[1].grid.zs[k]:.1f} m")
+            z = self.canvas.result[1].grid.zs[k]
+            self.level_label.setText(f"{z:.1f} m high (D {-z:.1f})")
         self.canvas.update_overlay()
 
     def _legend(self):

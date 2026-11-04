@@ -12,6 +12,7 @@ import numpy as np
 import yaml
 
 from idps.core.camera import SENSORS, Sensor
+from idps.core.frames import Frame
 from idps.core.noise import NoiseBudget, noise_from_config
 from idps.coverage.fisher import VisibilityLimits
 from idps.coverage.volume import Volume, distance_to_polygon, points_in_polygon
@@ -52,12 +53,18 @@ class TripodZone:
 class CandidateSettings:
     truss_step_m: float = 5.0
     truss_drop_m: float = 0.3
-    truss_elevations_deg: list[float] = field(default_factory=lambda: [-90.0, -60.0, -35.0])
+    # shallow tilts matter: cameras hang just above the drones (D17), and only a camera
+    # looking nearly level sees the top of the volume across the hall
+    truss_elevations_deg: list[float] = field(default_factory=lambda: [-90.0, -60.0, -35.0, -15.0, 0.0])
     tripod_step_m: float = 5.0
     tripod_heights_m: list[float] = field(default_factory=lambda: [4.0, 12.0, 20.0])
-    tripod_elevations_deg: list[float] = field(default_factory=lambda: [0.0, 25.0, 50.0, 75.0])
+    tripod_elevations_deg: list[float] = field(default_factory=lambda: [0.0, -15.0, -30.0, -50.0])
     azimuth_step_deg: float = 30.0
-    max_cameras_per_mount: int = 2
+    max_cameras_per_mount: int = 1
+    # Drones always fly below the cameras (decision D17): no camera is placed lower than the
+    # top of the flight volume plus this margin, and cameras only look level or down.
+    min_height_above_volume_m: float = 0.0
+    min_camera_spacing_m: float = 1.5      # between cameras on different mounts
 
 
 @dataclass
@@ -93,6 +100,10 @@ class Site:
     max_cameras: int
     notes: str = ""
     source_path: str | None = None
+    frame: Frame = field(default_factory=Frame)    # origin + North: everything shown in NED
+    # charging pads: drones on their slots and climbing to their layers must be seen too
+    pad_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    pad_slots: list = field(default_factory=list)          # per pad: (centre xy, its 4 markers (4, 3))
 
     @property
     def volume_min(self) -> np.ndarray:
@@ -106,9 +117,10 @@ class Site:
         out = []
         top = self.volume.z_max
         for t in self.trusses:
-            if t.height_m - self.candidates.truss_drop_m < top:
+            if t.height_m - self.candidates.truss_drop_m < top + self.candidates.min_height_above_volume_m:
                 out.append(f"truss {t.id}: cameras would hang at {t.height_m - self.candidates.truss_drop_m:.1f} m,"
-                           f" inside the flight volume (top {top:.1f} m)")
+                           f" below the flight ceiling ({top:.1f} m); cameras must be above the drones, so this "
+                           f"truss is not used")
             for s0, s1 in t.usable:
                 if s0 < 0 or s1 > t.length + 1e-6 or s1 <= s0:
                     out.append(f"truss {t.id}: usable segment [{s0}, {s1}] outside 0..{t.length:.1f} m")
@@ -123,6 +135,10 @@ class Site:
                 out.append(f"tripod zone {z.id}: edge index out of range (volume has {n_edges} edges)")
             if z.height_range_m[1] > 20.0:
                 out.append(f"tripod zone {z.id}: height above 20 m")
+            need = top + self.candidates.min_height_above_volume_m
+            if z.height_range_m[1] < need - 1e-9:
+                out.append(f"tripod zone {z.id}: masts reach only {z.height_range_m[1]:g} m, below the flight "
+                           f"ceiling ({need:g} m); cameras must be above the drones, so this zone is not used")
         if not self.trusses and not self.tripod_zones:
             out.append("no trusses or tripod zones: nowhere to mount cameras")
         return out
@@ -203,6 +219,9 @@ def site_from_dict(d: dict, source_path: str | None = None) -> Site:
     defaults = CandidateSettings()
     cand = CandidateSettings(**{k: c.get(k, getattr(defaults, k)) for k in defaults.__dataclass_fields__})
 
+    from idps.show.pads import coverage_points, pads_from_site
+    frame = Frame.from_dict(d.get("origin"))
+    pads = pads_from_site(d)
     return Site(
         name=str(d.get("name", "site")),
         volume=_volume(vol),
@@ -221,7 +240,19 @@ def site_from_dict(d: dict, source_path: str | None = None) -> Site:
         max_cameras=int(d.get("optimiser", {}).get("max_cameras", 400)),
         notes=str(d.get("notes", "")),
         source_path=source_path,
+        frame=frame,
+        pad_points=coverage_points(pads, frame) if pads is not None else np.zeros((0, 3)),
+        pad_slots=_pad_slots(pads, frame) if pads is not None else [],
     )
+
+
+def _pad_slots(pads, frame) -> list:
+    from idps.show.pads import MARKER_Z_M, SLOTS
+    out = []
+    for k in range(len(pads.pads_ne)):
+        ned = np.array([pads.home_ned(SLOTS * k + s) for s in range(1, SLOTS + 1)]) - [0, 0, MARKER_Z_M]
+        out.append((frame.xy(pads.pads_ne[k]), frame.from_ned(ned)))
+    return out
 
 
 def load_site(path: str | Path) -> Site:

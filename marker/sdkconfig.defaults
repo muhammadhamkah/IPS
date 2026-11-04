@@ -1,0 +1,3 @@
+CONFIG_IDF_TARGET="esp32c5"
+# the XIAO's USB-C port is the chip's own USB serial/JTAG: the console runs on it
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

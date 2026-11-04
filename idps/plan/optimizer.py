@@ -76,8 +76,10 @@ class Optimiser:
         new_def = self.obj.voxel_deficit(n[None, :] + vis, info[None, :, :] + inf)
         return (base_def[None, :] - new_def).sum(axis=1)
 
-    def run(self, max_cameras: int | None = None, batch: int = 256, cancel=None) -> OptimiseResult:
-        """cancel: optional callable; if it returns True the run raises Cancelled."""
+    def run(self, max_cameras: int | None = None, batch: int = 256, cancel=None, initial=()) -> OptimiseResult:
+        """cancel: optional callable; if it returns True the run raises Cancelled.
+        initial: candidate indices already chosen (e.g. the previous round's layout); the
+        optimiser keeps them and adds cameras from there."""
         def check():
             if cancel is not None and cancel():
                 raise Cancelled()
@@ -87,9 +89,11 @@ class Optimiser:
         V, N = len(self.pts), len(self.c)
         n = np.zeros(V, int)
         info = np.zeros((V, 6))
+        if len(initial):
+            n, info = self.state(list(initial))
         base_def = self.obj.voxel_deficit(n, info)
         total = float(base_def.sum())
-        res = OptimiseResult(selected=[], deficit_history=[total])
+        res = OptimiseResult(selected=list(initial), deficit_history=[total])
         self.log(f"optimiser: {N} candidates, {V} evaluation points, initial deficit {total:.1f}")
 
         # Initial (upper-bound) gains for every candidate.
@@ -105,6 +109,17 @@ class Optimiser:
         mount_use: dict[str, int] = {}
         cap = self.site.candidates.max_cameras_per_mount
         chosen_aims: set = set()
+        # Cameras on different mounts must be at least min_spacing apart: clustered
+        # cameras see points along near-parallel rays (poor triangulation) and are
+        # all blocked by the same obstruction.
+        spacing = float(self.site.candidates.min_camera_spacing_m)
+        blocked = np.zeros(N, bool)
+        for i in initial:
+            key = self.c.mount_key[i]
+            mount_use[key] = mount_use.get(key, 0) + 1
+            chosen_aims.add((key, self.c.az[i], self.c.el[i]))
+            if spacing > 0:
+                blocked |= (np.linalg.norm(self.c.pos - self.c.pos[i], axis=1) < spacing) & (self.c.mount_key != key)
         res.stopped_because = "no candidate improves the layout"
         while heap:
             if total <= 1e-9:
@@ -116,7 +131,8 @@ class Optimiser:
             check()
             _, i = heapq.heappop(heap)
             key = self.c.mount_key[i]
-            if mount_use.get(key, 0) >= cap or (key, self.c.az[i], self.c.el[i]) in chosen_aims:
+            if (blocked[i] or mount_use.get(key, 0) >= cap
+                    or (key, self.c.az[i], self.c.el[i]) in chosen_aims):
                 continue
             g = float(self._gains([i], n, info, base_def)[0])
             if g <= 1e-9:
@@ -133,6 +149,9 @@ class Optimiser:
             res.deficit_history.append(total)
             mount_use[key] = mount_use.get(key, 0) + 1
             chosen_aims.add((key, self.c.az[i], self.c.el[i]))
+            if spacing > 0:
+                near = np.linalg.norm(self.c.pos - self.c.pos[i], axis=1) < spacing
+                blocked |= near & (self.c.mount_key != key)
             if len(res.selected) % 10 == 0:
                 self.log(f"  {len(res.selected):4d} cameras  deficit {total:9.2f}"
                          f"  ({time.time() - t0:5.1f} s)")
