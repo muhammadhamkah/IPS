@@ -258,3 +258,58 @@ def test_timesync_responder_answers_with_the_camera_clock():
         assert ts.answered == 1
     finally:
         ts.stop()
+
+
+@pytest.fixture(scope="module")
+def parked_run(tmp_path_factory):
+    """Two drones parked side by side 0.2 m apart on the floor."""
+    from idps.sim.scenario import SimDrone
+    from idps.sim.trajectory import Hover
+    sc = load_scenario(ROOT / "examples" / "scenarios" / "lab_three_drones.yaml")
+    sc.duration_s = 12.0
+    sc.drones = [SimDrone(k + 1, 20 + k, Hover([0.0, 0.2 * k - 0.1, 0.0])) for k in range(2)]
+    sim = Simulation(sc)
+    sink = MemorySink()
+    d = tmp_path_factory.mktemp("parked")
+    sim.run(sink, truth_path=d / "truth.csv")
+    write_calibration(sim, d / "calibration.yaml")
+    return sink.packets, d
+
+
+@pytest.mark.parametrize("backend", ["python", "cpp"])
+def test_a_parked_drone_that_drops_out_is_found_again(parked_run, backend):
+    """One drone's marker vanishes for 0.8 s (someone walks past), then only two cameras see
+    it again (its neighbours hide it from the rest). It was standing still, so its spot is
+    remembered: two cameras are enough to find it there, it gets its ID back at once, and its dot
+    is not taken for a fixed reflection."""
+    if backend == "cpp":
+        pytest.importorskip("idps.engine._core")
+    packets, d = parked_run
+    cal = load_calibration(d / "calibration.yaml")
+    X = np.array([0.0, 0.1, 0.08])                        # drone 2's marker
+    def in_view(c):
+        u, v, z = c.project(X[None])
+        return z[0] > 0 and 0 <= u[0] < c.width and 0 <= v[0] < c.height
+    seen = [s for s in sorted(cal) if in_view(cal[s])]
+    keep = set(seen[:2])
+    eng, ing = Engine(cal, backend=backend), Ingest()
+    if eng.backend != backend:
+        pytest.skip("compiled core not available")
+    t0, out = None, []
+    for _, pkt in packets:
+        for f in ing.feed(pkt):
+            t0 = f.t_ns if t0 is None else t0
+            t = (f.t_ns - t0) * 1e-9
+            if t > 6.0 and (t < 6.8 or f.station_id not in keep):
+                u, v, _ = cal[f.station_id].project(X[None])
+                k = np.hypot(f.xy[:, 0] - u[0], f.xy[:, 1] - v[0]) > 4
+                f.xy, f.sum, f.peak, f.mflags = f.xy[k], f.sum[k], f.peak[k], f.mflags[k]
+            out += [(t, o) for o in eng.feed(f)]
+    mid = [(t, o) for t, o in out if o.marker_id == 21]
+    assert mid and min(t for t, _ in mid) < 5.0                   # identified before the drop-out
+    back = [t for t, o in mid if t > 6.8]
+    assert back and back[0] < 7.5, "not found again"              # back with its ID within 0.7 s
+    assert max(t for t, _ in out) - back[-1] < 0.1                # and kept to the end
+    assert all(np.linalg.norm(o.pos - X) < 0.02 for t, o in mid)
+    later = [o.n_cams for t, o in mid if t > 7.0]
+    assert max(later) == 2 and later.count(2) > 0.95 * len(later)    # from the two cameras that see it

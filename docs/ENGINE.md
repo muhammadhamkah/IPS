@@ -28,6 +28,9 @@ stations ──UDP──▶ ingest ─▶ 1/120 s slots ─▶ match to tracks �
      drones on charging pads 0.5 m apart, where a drone taking off rises in front of its
      neighbour, so one camera sees both in one line. Without this rule, the hidden drone's
      track took the climbing drone's dot, and the two IDs swapped.
+     Only a dot that a confirmed track could take counts. Before, a dot that no confirmed track
+     was near could still be called ambiguous, if its two nearest neighbours happened to be about
+     equally far away. That kept a drone found again on its pad from ever being confirmed.
    * A dot the station flags as two merged markers is left out when 3 other cameras see the
      drone.
 4. **Screening.** The engine finds the point closest to all of a track's lines of sight
@@ -47,6 +50,9 @@ stations ──UDP──▶ ingest ─▶ 1/120 s slots ─▶ match to tracks �
      others, or their dots are ambiguous) is still updated with that one line of sight. The
      update is skipped if the line misses the prediction by more than 5σ. Otherwise the track
      would coast on its last velocity and be lost, as drones on pads often are.
+     This applies only while the track is being followed (updated within the last 0.1 s). A
+     track that has been coasting longer is so uncertain that one camera's stray dot carried
+     it 2.6 m away.
    * The filter's process noise (q_accel) is 50 m²/s³, which still allows ~75 m/s² of
      acceleration from one slot to the next. It was 400. That made a 2 cm blip into a
      3–5 m/s velocity: two markers merging in a camera as a drone lands beside a parked
@@ -59,6 +65,12 @@ stations ──UDP──▶ ingest ─▶ 1/120 s slots ─▶ match to tracks �
    inside the volume, confirmed by a dot in a third camera.
    * Each camera's **fixed reflections** are learned: a leftover dot that stays within
      0.5 px for 2 s. They aren't used to start tracks.
+   * **Parked drones.** A named marker lost while standing still is remembered for 5 minutes:
+     it stayed within 5 cm of one spot for 1 s (a drone on its pad, say). Its dot there is
+     never learned as a fixed reflection. Two cameras are enough to start its track again
+     within 5 cm of that spot, and the track gets its ID back at once. Neighbours often hide
+     a parked drone from all but two cameras. Before this rule, a parked drone that dropped
+     out (someone walking past) was never found again until it moved.
 7. **IDs.** Every 0.5 s, each track's blink code is decoded from 2.5 s of brightness, taken
    from all the cameras that see it.
    * Each camera's slow brightness trend (distance, angle) is removed with an exact

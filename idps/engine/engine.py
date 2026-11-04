@@ -97,6 +97,8 @@ class EngineConfig:
     min_cams_init: int = 3            # cameras needed to start a track
     min_cams_update: int = 2          # cameras needed to update a track (triangulated) ...
     single_cam_update: bool = True    # ... but a confirmed track seen by one camera follows its line of sight
+    single_cam_max_gap_s: float = 0.1 # (only while it is being followed: a track that has been coasting longer is
+                                      # so uncertain that one camera's stray dot would carry it metres away)
     confirm_hits: int = 8             # updates needed (within confirm_window epochs) to confirm
     confirm_window: int = 16
     coast_s: float = 0.5              # delete a track not updated for this long
@@ -107,6 +109,11 @@ class EngineConfig:
     innov_max_rejects: int = 3        # ... unless it happens this many times in a row (then it is real motion)
     inherit_radius_m: float = 0.5     # a new track this close to a lost one takes over its ID ...
     inherit_within_s: float = 1.0     # ... if that track was lost less than this long ago
+    parked_keep_s: float = 300.0      # an identified marker lost while standing still (a drone on its pad) is
+                                      # remembered this long: its dot there is never taken for a fixed reflection,
+    parked_px: float = 3.0            # (within this many pixels of where it stood)
+    parked_radius_m: float = 0.05     # and two cameras are enough to find it again within this of that spot
+    parked_still_s: float = 1.0       # (standing still: it stayed within parked_radius_m of one spot this long)
     decode_every_s: float = 0.5       # read a track's blink code this often until it has an ID ...
     decode_every_named_s: float = 2.0 # ... and this often afterwards (to keep checking it)
     decodes_per_epoch: int = 2        # at most this many decodes per 1/120 s slot (spreads the work)
@@ -147,6 +154,7 @@ class Engine:
         self.n_tracks = 0
         self.sigma_ang = {sid: self.cfg.sigma_px / c.f_px for sid, c in cams.items()}
         self.static = {sid: StaticMask() for sid in cams}
+        self.parked: list[tuple] = []        # (time lost, marker id, position, id votes) of markers lost standing still
         self.stats = {"epochs": 0, "frames": 0, "unknown_station": 0, "tracks_started": 0, "outputs": 0}
         self._core = None
         if backend not in ("auto", "cpp", "python"):
@@ -274,6 +282,10 @@ class Engine:
         for fi, f in enumerate(frames):                 # fixed reflections, among the dots left over
             f.static = np.zeros(f.n, bool)
             free = np.nonzero(~used[fi])[0]
+            if len(free) and self.parked:              # (not where an identified marker was lost standing still)
+                u, v, z = self.cams[f.station_id].project(np.array([p[2] for p in self.parked]))
+                d = np.hypot(f.xy[free, 0, None] - u[None], f.xy[free, 1, None] - v[None])
+                free = free[~((d < cfg.parked_px) & (z[None] > 0.3)).any(1)]
             if len(free):
                 f.static[free] = self.static[f.station_id].classify(f.xy[free], times[fi])
         self._start_tracks(frames, times, T, used)
@@ -281,6 +293,9 @@ class Engine:
         # life cycle
         alive = []
         for i, tr in enumerate(self.tracks):
+            if tr.updated_epoch == self.stats["epochs"] and (
+                    tr.rest_pos is None or np.linalg.norm(tr.kf.pos - tr.rest_pos) > cfg.parked_radius_m):
+                tr.rest_pos, tr.rest_since = tr.kf.pos.copy(), T     # (velocity is too noisy to tell)
             if tr.state == TENTATIVE:
                 if tr.hits >= cfg.confirm_hits:
                     tr.state = CONFIRMED
@@ -289,10 +304,14 @@ class Engine:
             if T - tr.last_update > cfg.coast_s:
                 if tr.marker_id is not None:
                     self.lost.append((tr.last_update, tr.marker_id, tr.kf.pos.copy(), tr.kf.vel.copy(), dict(tr.id_votes)))
+                    if tr.rest_pos is not None and tr.last_update - tr.rest_since >= cfg.parked_still_s:
+                        self.parked.append((tr.last_update, tr.marker_id, tr.kf.pos.copy(), dict(tr.id_votes)))
                 continue
             alive.append(tr)
         self.tracks = alive
         self.lost = [l for l in self.lost if T - l[0] < cfg.inherit_within_s]
+        named = {tr.marker_id for tr in self.tracks}
+        self.parked = [p for p in self.parked if T - p[0] < cfg.parked_keep_s and p[1] not in named]
         for tr in list(self.tracks):                   # unnamed tracks where a named one was just lost
             if tr.marker_id is None and tr in self.tracks and tr.updated_epoch == self.stats["epochs"]:
                 self._inherit(tr, T)
@@ -389,7 +408,10 @@ class Engine:
                 # starts nothing, else the track of the hidden one takes it and the IDs swap
                 dc = np.where(vis[k][:, None] & confirmed[:, None], d, np.inf)
                 two = np.partition(dc, 1, axis=0)[:2]
-                amb = (two[1] < two[0] + cfg.ambiguous_px) & ok.any(0)
+                # (only a dot a confirmed track could take: a parked drone's dot that just a new,
+                # tentative track wants is not ambiguous because two farther neighbours happen to
+                # be about as far from it - that kept a re-found drone from ever being confirmed)
+                amb = (two[1] < two[0] + cfg.ambiguous_px) & (ok & confirmed[:, None]).any(0)
                 if amb.any():
                     ok &= ~amb[None, :]
                     used[fi][amb] = True
@@ -436,7 +458,8 @@ class Engine:
         single = []
         for ti, obs in assigned.items():
             if len(obs) < cfg.min_cams_update:
-                if len(obs) == 1 and cfg.single_cam_update and self.tracks[ti].state == CONFIRMED:
+                if (len(obs) == 1 and cfg.single_cam_update and self.tracks[ti].state == CONFIRMED
+                        and T - self.tracks[ti].last_update <= cfg.single_cam_max_gap_s):
                     single.append((ti, *obs[0]))
                 else:
                     for fi, di in obs:
@@ -583,7 +606,8 @@ class Engine:
                 j = int(np.argmin(d))
                 if d[j] < cfg.init_support_px:
                     support.append((c, free[c][j]))
-            if len({frames[c].station_id for c, _ in support}) >= cfg.min_cams_init:
+            ns = len({frames[c].station_id for c, _ in support})
+            if ns >= cfg.min_cams_init or (ns >= 2 and self._near_parked(X)):
                 scored.append((-len(support), gap, X, support))
         scored.sort(key=lambda r: (r[0], r[1]))
         taken = set()
@@ -592,7 +616,7 @@ class Engine:
                 continue
             O, D, F, S = self._rays(frames, support)
             p = triangulate(O, D, F, max(self.sigma_ang[s] for s in S), max_resid_px=cfg.max_resid_px * 2,
-                            min_cams=cfg.min_cams_init)
+                            min_cams=cfg.min_cams_init if len(set(S)) >= cfg.min_cams_init else 2)
             if p is None:
                 continue
             taken.update(support)
@@ -608,6 +632,11 @@ class Engine:
                     tr.add_brightness(times[fi], frames[fi].station_id, frames[fi].sum[di])
             self.tracks.append(tr)
             self.stats["tracks_started"] += 1
+
+    def _near_parked(self, X) -> bool:
+        """X is where an identified marker was lost standing still (a drone on its pad that some of
+        its neighbours hide from the cameras): two cameras are enough to start its track again."""
+        return any(np.linalg.norm(p[2] - X) < self.cfg.parked_radius_m for p in self.parked)
 
     def _inherit(self, tr: Track, T: float):
         """A new track where an identified marker was just lost (an occlusion, a sudden jump)
@@ -626,13 +655,18 @@ class Engine:
             d = np.linalg.norm(pos + vel * dt - tr.kf.pos)
             if d < cfg.inherit_radius_m + 4.0 * dt and (best is None or d < best[0]):
                 best = (d, mid, votes, None)
+        for _, mid, pos, votes in self.parked:              # a marker lost standing still, found again there
+            d = np.linalg.norm(pos - tr.kf.pos)
+            if d < cfg.parked_radius_m and (best is None or d < best[0]):
+                best = (d, mid, votes, None)
         if best is None or any(o.marker_id == best[1] and o is not best[3] for o in self.tracks):
             return
         _, mid, votes, old = best
         if old is not None:
             self.tracks.remove(old)
         self.lost = [l for l in self.lost if l[1] != mid]
-        tr.marker_id, tr.id_votes = mid, votes
+        self.parked = [p for p in self.parked if p[1] != mid]
+        tr.marker_id, tr.id_votes = mid, dict(votes)
         tr.hits = max(tr.hits, self.cfg.confirm_hits - 2)      # confirm quickly: it is a known marker
 
     def _dedupe(self):

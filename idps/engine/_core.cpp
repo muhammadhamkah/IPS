@@ -294,6 +294,9 @@ struct Track {
     int marker_id = -1;
     Votes votes;
     std::deque<Sample> samples;
+    bool has_rest = false;      // where it has stayed within parked_radius_m since rest_since
+    Vec3 rest_pos{0, 0, 0};
+    double rest_since = 0;
 
     Vec3 pos() const { return {x[0], x[1], x[2]}; }
     Vec3 vel() const { return {x[3], x[4], x[5]}; }
@@ -366,12 +369,14 @@ struct Track {
 };
 
 struct Lost { double t; int mid; Vec3 pos, vel; Votes votes; };
+struct Parked { double t; int mid; Vec3 pos; Votes votes; };    // an identified marker lost standing still
 
 struct Config {
     double reorder_s = 0.008, sigma_px = 0.15, gate_px = 4.0, max_resid_px = 3.0, init_gap_m = 0.03,
            init_support_px = 2.5, coast_s = 0.5, q_accel = 50.0, innov_gate = 25.0, inherit_radius_m = 0.5,
            inherit_within_s = 1.0, decode_every_s = 0.5, decode_every_named_s = 2.0, decode_window_s = 2.5,
-           ambiguous_px = 3.0, id_vote_decay = 0.7;
+           ambiguous_px = 3.0, id_vote_decay = 0.7, single_cam_max_gap_s = 0.1, parked_keep_s = 300.0,
+           parked_px = 3.0, parked_radius_m = 0.05, parked_still_s = 1.0;
     int min_cams_init = 3, min_cams_update = 2, confirm_hits = 8, confirm_window = 16, innov_max_rejects = 3,
         id_votes_needed = 2, decodes_per_epoch = 2, single_cam_update = 1;
 };
@@ -568,6 +573,7 @@ class Core {
     Vec3 lo, hi;
     std::vector<Track> tracks;
     std::vector<Lost> lost;
+    std::vector<Parked> parked;
     int n_tracks = 0, tracks_started = 0;
     long epochs = 0;
     double max_sigma = 0;
@@ -591,6 +597,7 @@ class Core {
             SETD(reorder_s) SETD(sigma_px) SETD(gate_px) SETD(max_resid_px) SETD(init_gap_m) SETD(init_support_px)
             SETD(coast_s) SETD(q_accel) SETD(innov_gate) SETD(inherit_radius_m) SETD(inherit_within_s)
             SETD(decode_every_s) SETD(decode_every_named_s) SETD(decode_window_s) SETD(ambiguous_px) SETD(id_vote_decay)
+            SETD(single_cam_max_gap_s) SETD(parked_keep_s) SETD(parked_px) SETD(parked_radius_m) SETD(parked_still_s)
             SETI(min_cams_init) SETI(min_cams_update) SETI(confirm_hits) SETI(confirm_window) SETI(innov_max_rejects)
             SETI(id_votes_needed) SETI(decodes_per_epoch) SETI(single_cam_update)
 #undef SETD
@@ -682,7 +689,7 @@ class Core {
                     // a dot that two confirmed tracks' predictions both come about as close to cannot
                     // tell them apart in this camera (engine.py _associate): it updates neither
                     double b0 = INFINITY, b1 = INFINITY;
-                    bool in_gate = false;
+                    bool in_gate = false;   // in a confirmed track's gate (only then can it be ambiguous)
                     size_t first = cand.size();
                     for (int ti = 0; ti < NT; ti++) {
                         if (pg[ti] < 0) continue;
@@ -692,7 +699,7 @@ class Core {
                         }
                         if (d < pg[ti] && !(moving[ti] && refl[a])) {
                             cand.push_back({d, ti, fi, (int)a});
-                            in_gate = true;
+                            if (tracks[ti].confirmed) in_gate = true;
                         }
                     }
                     if (cfg.ambiguous_px > 0 && in_gate && b1 < b0 + cfg.ambiguous_px) {
@@ -726,7 +733,8 @@ class Core {
                     if (fl(o.dot) & 4) used[o.dot] = 0;
                 obs = clean;
             }
-            bool single = obs.size() == 1 && cfg.single_cam_update && tracks[ti].confirmed;
+            bool single = obs.size() == 1 && cfg.single_cam_update && tracks[ti].confirmed &&
+                          T - tracks[ti].last_update <= cfg.single_cam_max_gap_s;
             if ((int)obs.size() < cfg.min_cams_update && !single) {
                 for (auto &o : obs) used[o.dot] = 0;
                 obs.clear();
@@ -827,8 +835,19 @@ class Core {
         for (int fi = 0; fi < F; fi++) {
             std::vector<std::array<double, 2>> pts;
             std::vector<int> ids;
-            for (int di : fdots[fi])
-                if (!used[di]) { pts.push_back({xy(di, 0), xy(di, 1)}); ids.push_back(di); }
+            std::vector<double> pu, pv;      // not where an identified marker was lost standing still
+            for (auto &p : parked) {
+                double u, v, z;
+                cams[fcam(fi)].project(p.pos, u, v, z);
+                if (z > 0.3) { pu.push_back(u); pv.push_back(v); }
+            }
+            for (int di : fdots[fi]) {
+                if (used[di]) continue;
+                bool exempt = false;
+                for (size_t k = 0; k < pu.size() && !exempt; k++)
+                    exempt = std::hypot(xy(di, 0) - pu[k], xy(di, 1) - pv[k]) < cfg.parked_px;
+                if (!exempt) { pts.push_back({xy(di, 0), xy(di, 1)}); ids.push_back(di); }
+            }
             if (pts.empty()) continue;
             auto s = masks[fcam(fi)].classify(pts, times[fi]);
             for (size_t a = 0; a < ids.size(); a++) stat[ids[a]] = s[a];
@@ -924,7 +943,8 @@ class Core {
                 int s = cams[fcam(o.frame)].station;
                 if (std::find(sts.begin(), sts.end(), s) == sts.end()) sts.push_back(s);
             }
-            if ((int)sts.size() >= cfg.min_cams_init) scored.push_back({-(int)support.size(), c.gap, c.X, support});
+            if ((int)sts.size() >= cfg.min_cams_init || (sts.size() >= 2 && near_parked(c.X)))
+                scored.push_back({-(int)support.size(), c.gap, c.X, support});
         }
         std::stable_sort(scored.begin(), scored.end(), [](const Scored &a, const Scored &b) {
             return std::tie(a.neg, a.gap) < std::tie(b.neg, b.gap);
@@ -937,8 +957,11 @@ class Core {
             if (clash) continue;
             std::vector<Vec3> O, D;
             std::vector<double> Fp;
+            std::vector<int> sts;
             double sig = 0;
             for (auto &o : s.support) {
+                int st_id = cams[fcam(o.frame)].station;
+                if (std::find(sts.begin(), sts.end(), st_id) == sts.end()) sts.push_back(st_id);
                 const Cam &c = cams[fcam(o.frame)];
                 O.push_back(c.pos); D.push_back(rays[o.dot]); Fp.push_back(c.f);
                 sig = std::max(sig, c.sigma_ang);
@@ -946,7 +969,8 @@ class Core {
             Vec3 X;
             double cov[9];
             std::vector<char> keep;
-            if (!triangulate(O, D, Fp, sig, cfg.max_resid_px * 2, cfg.min_cams_init, nullptr, 1 << 20, X, cov, keep))
+            int need = (int)sts.size() >= cfg.min_cams_init ? cfg.min_cams_init : 2;   // 2: found again where it was parked
+            if (!triangulate(O, D, Fp, sig, cfg.max_resid_px * 2, need, nullptr, 1 << 20, X, cov, keep))
                 continue;
             for (auto &o : s.support) taken[o.dot] = 1;
             Track tr;
@@ -970,6 +994,13 @@ class Core {
             tracks.push_back(std::move(tr));
             tracks_started++;
         }
+    }
+
+    // X is where an identified marker was lost standing still: two cameras are enough to start it again
+    bool near_parked(const Vec3 &X) const {
+        for (auto &p : parked)
+            if (norm(sub(p.pos, X)) < cfg.parked_radius_m) return true;
+        return false;
     }
 
     // a new track where an identified marker was just lost takes over its ID
@@ -999,12 +1030,20 @@ class Core {
                 best_d = d; best_mid = l.mid; best_track = -1; best_votes = &l.votes; best_lost = (int)i;
             }
         }
+        for (auto &pk : parked) {                       // lost standing still, found again there
+            double d = norm(sub(pk.pos, p));
+            if (d < cfg.parked_radius_m && d < best_d) {
+                best_d = d; best_mid = pk.mid; best_track = -1; best_votes = &pk.votes;
+            }
+        }
         if (best_mid < 0) return -1;
         for (size_t i = 0; i < tracks.size(); i++)
             if (&tracks[i] != &tr && tracks[i].marker_id == best_mid && (int)i != best_track) return -1;
         Votes votes = *best_votes;
         (void)best_lost;
         lost.erase(std::remove_if(lost.begin(), lost.end(), [&](const Lost &l) { return l.mid == best_mid; }), lost.end());
+        parked.erase(std::remove_if(parked.begin(), parked.end(), [&](const Parked &q) { return q.mid == best_mid; }),
+                     parked.end());
         tr.marker_id = best_mid;
         tr.votes = votes;
         tr.hits = std::max(tr.hits, cfg.confirm_hits - 2);
@@ -1015,12 +1054,19 @@ class Core {
         std::vector<Track> alive;
         alive.reserve(tracks.size());
         for (auto &tr : tracks) {
+            if (tr.updated_epoch == epochs && (!tr.has_rest || norm(sub(tr.pos(), tr.rest_pos)) > cfg.parked_radius_m)) {
+                tr.has_rest = true; tr.rest_pos = tr.pos(); tr.rest_since = T;
+            }
             if (!tr.confirmed) {
                 if (tr.hits >= cfg.confirm_hits) tr.confirmed = true;
                 else if (tr.epochs > cfg.confirm_window) continue;
             }
             if (T - tr.last_update > cfg.coast_s) {
-                if (tr.marker_id >= 0) lost.push_back({tr.last_update, tr.marker_id, tr.pos(), tr.vel(), tr.votes});
+                if (tr.marker_id >= 0) {
+                    lost.push_back({tr.last_update, tr.marker_id, tr.pos(), tr.vel(), tr.votes});
+                    if (tr.has_rest && tr.last_update - tr.rest_since >= cfg.parked_still_s)
+                        parked.push_back({tr.last_update, tr.marker_id, tr.pos(), tr.votes});
+                }
                 continue;
             }
             alive.push_back(std::move(tr));
@@ -1028,6 +1074,12 @@ class Core {
         tracks = std::move(alive);
         lost.erase(std::remove_if(lost.begin(), lost.end(), [&](const Lost &l) { return !(T - l.t < cfg.inherit_within_s); }),
                    lost.end());
+        parked.erase(std::remove_if(parked.begin(), parked.end(), [&](const Parked &q) {
+                         if (!(T - q.t < cfg.parked_keep_s)) return true;
+                         for (auto &tr : tracks)
+                             if (tr.marker_id == q.mid) return true;
+                         return false;
+                     }), parked.end());
         // unnamed tracks updated now, where a named one was just lost (by track id: inherit may erase)
         std::vector<int> ids;
         for (auto &tr : tracks)

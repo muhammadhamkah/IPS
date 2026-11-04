@@ -80,6 +80,8 @@ class Track:
     marker_id: int | None = None
     id_votes: dict = field(default_factory=dict)
     next_decode: float = 0.0
+    rest_pos: np.ndarray | None = None   # where it has stayed within EngineConfig.parked_radius_m ...
+    rest_since: float = 0.0              # ... since this time (standing still: a drone on its pad)
     # brightness samples for the blink-code decoder: (time s, station, log brightness)
     samples: deque = field(default_factory=lambda: deque(maxlen=6000))
 
