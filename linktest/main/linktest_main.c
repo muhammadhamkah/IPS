@@ -40,7 +40,7 @@ static const char *TAG = "linktest";
 #define LED_GPIO 27                  /* XIAO ESP32-C5 user LED, lit when low */
 
 enum { T_POS = 1, T_ECHO = 2, T_HELLO = 3 };
-enum { ROLE_NONE = 0, ROLE_GROUND = 1, ROLE_DRONE = 2 };
+enum { ROLE_NONE = 0, ROLE_GROUND = 1, ROLE_DRONE = 2, ROLE_SOLO = 3 };   /* solo: drone + access point, the Mac is the ground */
 
 /* Gap thresholds (ms): how long the drone went without a new position. 8.3 ms is normal at 120/s. */
 #define NGAP 4
@@ -91,7 +91,7 @@ static void load(void) {
     nvs_handle_t h;
     if (nvs_open("linktest", NVS_READONLY, &h) != ESP_OK) return;
     int32_t v;
-    if (nvs_get_i32(h, "role", &v) == ESP_OK && v >= 0 && v <= 2) cfg.role = v;
+    if (nvs_get_i32(h, "role", &v) == ESP_OK && v >= 0 && v <= 3) cfg.role = v;
     if (nvs_get_i32(h, "rate", &v) == ESP_OK && v >= 1 && v <= 1000) cfg.rate = v;
     if (nvs_get_i32(h, "size", &v) == ESP_OK && v >= (int)sizeof(pkt_t) && v <= 1400) cfg.size = v;
     if (nvs_get_i32(h, "chan", &v) == ESP_OK && v >= 1 && v <= 177) cfg.channel = v;
@@ -294,11 +294,13 @@ static void drone_task(void *arg) {
     struct timeval tv = {.tv_sec = 0, .tv_usec = 200000};
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     for (;;) {
-        const int n = recv(sock, buf, sizeof buf, 0);
+        struct sockaddr_in from;
+        socklen_t fl = sizeof from;
+        const int n = recvfrom(sock, buf, sizeof buf, 0, (struct sockaddr *)&from, &fl);
         const int64_t now = esp_timer_get_time();
         if (n < (int)sizeof(pkt_t)) {
             /* nothing for 200 ms: say hello so the ground board knows where we are */
-            if (now - dr.last_rx_us > 500000) {
+            if (cfg.role == ROLE_DRONE && now - dr.last_rx_us > 500000) {
                 pkt_t h = {.magic = MAGIC, .type = T_HELLO, .size = sizeof(pkt_t)};
                 sendto(sock, &h, sizeof h, 0, (struct sockaddr *)&ground, sizeof ground);
             }
@@ -338,7 +340,7 @@ static void drone_task(void *arg) {
         memcpy(e.gaps, dr.gaps, sizeof e.gaps);
         e.rssi = (int8_t)drone_rssi;
         portEXIT_CRITICAL(&lock);
-        sendto(sock, &e, sizeof e, 0, (struct sockaddr *)&ground, sizeof ground);
+        sendto(sock, &e, sizeof e, 0, (struct sockaddr *)&from, sizeof from);   /* back to the sender */
     }
 }
 
@@ -348,7 +350,12 @@ static void drone_reporter(void *arg) {
     for (;;) {
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(1000));
         int rssi = 0;
-        if (esp_wifi_sta_get_rssi(&rssi) == ESP_OK) drone_rssi = rssi;
+        if (cfg.role == ROLE_SOLO) {
+            wifi_sta_list_t sl;
+            if (esp_wifi_ap_get_sta_list(&sl) == ESP_OK && sl.num > 0) drone_rssi = rssi = sl.sta[0].rssi;
+        } else if (esp_wifi_sta_get_rssi(&rssi) == ESP_OK) {
+            drone_rssi = rssi;
+        }
         portENTER_CRITICAL(&lock);
         const uint32_t rx = dr.rx - dr.late, gmax = dr.gap_max_window;
         dr.gap_max_window = 0;
@@ -391,7 +398,7 @@ static void wifi_start(void) {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi, NULL));
-    const int ground = cfg.role == ROLE_GROUND;
+    const int ground = cfg.role == ROLE_GROUND || cfg.role == ROLE_SOLO;   /* runs the access point */
     if (ground) esp_netif_create_default_wifi_ap();
     else esp_netif_create_default_wifi_sta();
     wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
@@ -443,7 +450,9 @@ static void open_socket(void) {
 }
 
 // ------------------------------------------------------------------ console
-static const char *role_name(int r) { return r == ROLE_GROUND ? "ground" : r == ROLE_DRONE ? "drone" : "not set"; }
+static const char *role_name(int r) {
+    return r == ROLE_GROUND ? "ground" : r == ROLE_DRONE ? "drone" : r == ROLE_SOLO ? "solo (the Mac is the ground)" : "not set";
+}
 
 static void print_status(void) {
     printf("IDPS link test: role %s, channel %d (%s GHz), %d positions/s of %d bytes, country %s\n",
@@ -462,7 +471,8 @@ static int need_restart(const char *what) {
 static int cmd_role(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "ground")) cfg.role = ROLE_GROUND;
     else if (argc == 2 && !strcmp(argv[1], "drone")) cfg.role = ROLE_DRONE;
-    else { printf("usage: role ground|drone\n"); return 1; }
+    else if (argc == 2 && !strcmp(argv[1], "solo")) cfg.role = ROLE_SOLO;
+    else { printf("usage: role ground|drone|solo\n"); return 1; }
     return need_restart("role");
 }
 
@@ -494,7 +504,7 @@ static int cmd_channel(int argc, char **argv) {
     const int v = argc == 2 ? atoi(argv[1]) : 0;
     if (v < 1 || v > 177) { printf("usage: channel N (36, 40, 44, 48, 149... for 5 GHz; 1-13 for 2.4 GHz)\n"); return 1; }
     cfg.channel = v;
-    if (cfg.role != ROLE_GROUND) { save(); printf("saved; the drone board finds the channel itself\n"); return 0; }
+    if (cfg.role == ROLE_DRONE) { save(); printf("saved; the drone board finds the channel itself\n"); return 0; }
     return need_restart("channel");
 }
 
@@ -532,7 +542,7 @@ static int cmd_status(int argc, char **argv) {
 static void start_console(void) {
     esp_console_repl_t *repl = NULL;
     esp_console_repl_config_t rc = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
-    rc.prompt = cfg.role == ROLE_GROUND ? "ground>" : cfg.role == ROLE_DRONE ? "drone>" : "linktest>";
+    rc.prompt = cfg.role == ROLE_GROUND ? "ground>" : cfg.role == ROLE_DRONE ? "drone>" : cfg.role == ROLE_SOLO ? "solo>" : "linktest>";
 #if defined(CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG)
     esp_console_dev_usb_serial_jtag_config_t hw = ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&hw, &rc, &repl));
@@ -541,7 +551,7 @@ static void start_console(void) {
     ESP_ERROR_CHECK(esp_console_new_repl_uart(&hw, &rc, &repl));
 #endif
     const esp_console_cmd_t cmds[] = {
-        {.command = "role", .help = "role ground|drone: what this board is (restarts)", .func = cmd_role},
+        {.command = "role", .help = "role ground|drone|solo: what this board is (restarts); solo: one board, the Mac runs linktest/ground.py", .func = cmd_role},
         {.command = "stats", .help = "totals since the last reset (ground board)", .func = cmd_stats},
         {.command = "reset", .help = "start counting again (ground board)", .func = cmd_reset},
         {.command = "rate", .help = "rate N: positions per second (120)", .func = cmd_rate},
@@ -571,7 +581,8 @@ void app_main(void) {
     if (cfg.role == ROLE_NONE) {
         printf("\nSet this board's role first:\n"
                "  role ground   the board that stays at the PC\n"
-               "  role drone    the board you carry around\n\n");
+               "  role drone    the board you carry around\n"
+               "  role solo     only one board: it is the drone, the Mac is the ground (linktest/ground.py)\n\n");
     } else {
         wifi_start();
         open_socket();
@@ -584,12 +595,15 @@ void app_main(void) {
             ESP_ERROR_CHECK(esp_timer_create(&ta, &tick_timer));
             ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, 1000000 / cfg.rate));
             printf("ground board: waiting for the drone board. Type 'stats' for totals, 'reset' to start again.\n");
-        } else {
+        } else {   /* drone or solo */
             xTaskCreate(drone_task, "drone", 4096, NULL, 20, NULL);
             xTaskCreate(drone_reporter, "report", 4096, NULL, 5, NULL);
             xTaskCreate(drone_led, "led", 2048, NULL, 4, NULL);
             printf("drone board: looking for the ground board...\n");
         }
+        if (cfg.role == ROLE_SOLO)
+            printf("solo: on the Mac, join the Wi-Fi '" SSID "' (password '" PASS "'), then run\n"
+                   "  python3 ~/IPS/linktest/ground.py\n");
     }
     ESP_LOGI(TAG, "ready");
     start_console();

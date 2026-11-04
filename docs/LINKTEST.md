@@ -23,6 +23,31 @@ Two LEDs show how it's going:
   without one, so you can see dropouts while walking around.
 - The **ground board's LED** is on while the drone answers.
 
+## One board: the Mac is the ground side
+
+With only one C5, the board plays the drone and runs the Wi-Fi network itself. The Mac joins that
+network and sends the positions with `linktest/ground.py`. The Mac's Wi-Fi isn't the C5 that will
+sit at the PC, but the link to the drone side is the same: 5 GHz, the same channel, the same
+packets.
+
+1. Flash the board as below, then in the monitor type `role solo`. When it restarts, it should say
+   `link up on channel 36 (5 GHz)`.
+2. On the Mac, join the Wi-Fi **idps-linktest** (password `idps-linktest`). The Mac has no
+   internet while it's on it. To stop it jumping back to your home Wi-Fi, untick "Auto-join" for
+   your home network for the test.
+3. Plug the board into a USB power bank, then on the Mac run:
+   ```sh
+   python3 ~/IPS/linktest/ground.py
+   ```
+   It prints a line every second. Walk the board around (as in "Run the test" below), then press
+   Ctrl-C for the totals. `--minutes 5` stops by itself; `--rate 240` and `--size 300` work as
+   the commands below do.
+4. For 2.4 GHz, plug the board back in, type `channel 6` in the monitor, rejoin the Wi-Fi on the
+   Mac, and run the script again.
+
+The round trip includes the Mac's Wi-Fi and Python, so it reads a little higher than two C5s
+would. Lost positions and gaps are counted on the board, as with two boards.
+
 ## Flash both boards
 
 ```sh
