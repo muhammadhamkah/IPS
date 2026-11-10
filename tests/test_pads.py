@@ -198,3 +198,19 @@ def test_trj_v2_carries_the_pad_sequence_and_reads_v1():
     head = HEADER_V1.pack(MAGIC, 1, 64, 3, 0, 10.0, n, 0.0, 0, 0, 0, 0.0, crc32(body), 0, 0, 0, 0, 0, 0, 0)
     old = from_bytes(head + struct.pack("<I", crc32(head)) + body)
     assert old.drone_id == 3 and old.up_leg_s == 0.0
+
+
+def test_pads_one_behind_the_other_are_named():
+    """Pads in two rows along the way their drones fly: the rear pad's drones cross over the front
+    pad, which no batch gap can fix. The check says which pads, and the dashboard says it plainly."""
+    from idps.show.pads import pads_in_line
+    from idps.ui.px4.tab import diagnose
+    row = PadLayout(np.array([[0.0, 0.0], [0.0, 1.6], [0.0, 3.2]]), facing_deg=0.0)           # side by side, facing North
+    assert pads_in_line(row) == []
+    two = PadLayout(np.array([[0.0, 0.0], [0.0, 1.6], [1.05, 0.0], [1.05, 1.6]]), facing_deg=0.0)   # a second row in front
+    assert [(a, b) for a, b, _ in pads_in_line(two)] == [(1, 3), (2, 4)]
+    assert [(a, b) for a, b, _ in pads_in_line(two, {1, 2})] == []                              # only the pads in use
+    _, reason, _ = diagnose("  ERROR  0.00 s  Pads 1 and 3, 2 and 4 stand one behind the other in the direction their "
+                            "drones fly (heading 0 deg from North, to the show grid): ...\n"
+                            "Not exported: fix the errors above, or pass --force")
+    assert reason.startswith("The charging pads are in two rows: pads 1 and 3, 2 and 4 stand one behind the other")

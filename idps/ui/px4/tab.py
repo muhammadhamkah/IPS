@@ -98,6 +98,11 @@ FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still goi
              "was told to abort."),
             (r"Not started: not every drone is tracked on its spot: (.*)", "Not started: the cameras do not see every "
              "drone on its own pad ({0}). No drone took off."),
+            (r"Pads (.*?) stand one behind the other in the direction their drones fly", "The charging pads are in "
+             "two rows: pads {0} stand one behind the other in the direction their drones fly to the show grid, so "
+             "the rear pad's drones would cross over the front pad while its drones climb or land. Nothing was "
+             "flown. In the Planner, put the pads side by side in one row across that direction (0.5 m apart is "
+             "enough), or fly fewer drones so only one row is used."),
             (r"Not exported: fix the errors above", "The show does not pass its checks for this venue (take-off, "
              "landing or the show itself: the ERROR lines in the Log pane), so nothing was flown. Move the pads or "
              "change the batch gap or speeds in the Planner's pad settings."),

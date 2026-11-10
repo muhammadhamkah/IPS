@@ -203,6 +203,17 @@ def check_show(show: Show, site, cameras=None, placement: Placement | None = Non
                                         + (f"The smallest safe gap at these speeds is {safe:g} s "
                                            "(batch_gap_s in the pads file), or climb faster."
                                            if safe else "No gap up to 60 s works: check the pads and grid.")))
+            # the usual cause when no gap helps: pads one behind the other the way their drones fly
+            from idps.show.pads import pads_in_line
+            line = pads_in_line(pads, {pads.pad_slot(d)[0] for d in ids})
+            if line:
+                pairs = ", ".join(f"{a} and {b}" for a, b, _ in line[:4]) + (" ..." if len(line) > 4 else "")
+                rep.findings.append(Finding("pads", "error", (), 0.0, 0.0, (0, 0, 0),
+                                            f"Pads {pairs} stand one behind the other in the direction their drones "
+                                            f"fly (heading {pads.facing_deg:.0f} deg from North, to the show grid): the "
+                                            "rear pad's drones cross over the front pad while its drones climb or "
+                                            "land. Put the pads side by side in one row across that direction "
+                                            "(0.5 m apart is enough), or fly only as many drones as one row holds."))
         for kind, who, tk, ned, msg in problems:
             rep.findings.append(Finding(kind, "error", tuple(f"drone {d}" for d in who), tk, tk, tuple(ned), msg))
         rep.stats_pads = seq

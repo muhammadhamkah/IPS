@@ -144,6 +144,24 @@ def pads_from_site(d: dict, source: str = "") -> PadLayout | None:
 FACINGS = {"north": 0.0, "east": 90.0, "south": 180.0, "west": 270.0}
 
 
+def pads_in_line(lay: "PadLayout", pads=None, lateral_m: float = 0.9) -> list[tuple[int, int, float]]:
+    """Pairs of pads (1-based numbers) standing one behind the other in the direction their drones
+    fly (the facing): less than ``lateral_m`` apart across it. The rear pad's drones then cross over
+    the front pad on their way to the grid and back, at the height the front pad's drones of the
+    same batch climb to, so no batch gap can separate them. [(rear, front, sideways distance m)].
+    pads: the pad numbers in use (default: all)."""
+    a = np.radians(lay.facing_deg)
+    fwd, side = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
+    use = sorted(pads) if pads is not None else list(range(1, len(lay.pads_ne) + 1))
+    out = []
+    for i, pa in enumerate(use):
+        for pb in use[i + 1:]:
+            d = lay.pads_ne[pb - 1] - lay.pads_ne[pa - 1]
+            if abs(d @ side) < lateral_m and abs(d @ fwd) > 0.2:
+                out.append((pa, pb, float(abs(d @ side))) if d @ fwd > 0 else (pb, pa, float(abs(d @ side))))
+    return out
+
+
 def site_facing_deg(d: dict) -> float:
     """The pads' front, degrees from North: "auto" (the default) faces the middle of the performance
     area from the pads' middle, where their drones fly; or north / east / south / west, or degrees."""
