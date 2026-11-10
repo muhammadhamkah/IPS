@@ -211,7 +211,9 @@ def test_simulated_drones_never_leave_the_performance_area(site_file, formation)
                 (P[..., 2].ravel() <= v.bbox_max[2])
             assert inside.all(), f"{n} drones, seed {seed}: {100 * (1 - inside.mean()):.2f} % outside"
             origin = site.frame.from_ned(np.zeros(3))[:2]
-            if formation and v.contains_xy(origin[None])[0]:
-                # the formation's route is built around the origin: it starts there and is symmetric about it
+            from idps.coverage.volume import distance_to_polygon
+            if formation and v.contains_xy(origin[None])[0] and distance_to_polygon(origin[None], v.polygon)[0][0] > 1.5:
+                # the formation's route is built around the origin: it starts there and is symmetric about
+                # it (an origin on the area's edge or outside it: a route anywhere inside instead)
                 assert np.allclose(sim.route.P[0, :2], origin)
                 assert np.allclose(sim.route.P[1:, :2].mean(0), origin, atol=1e-9)
