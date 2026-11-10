@@ -238,6 +238,10 @@ That is about 450k 2D observations/s into association and 18k triangulations/s.
 
 ## 6. Calibration subsystem (`idps-calib`)
 
+*Implemented (v0.1): `idps/calib` (`idps-calib`): 6.1 with a plain checkerboard, and 6.2–6.3 with one LED and
+measured rest points in place of the wand and the square. Tested on the simulator, not yet on a camera.
+Steps and status: docs/CALIBRATION.md.*
+
 | Step | Method | Output and quality metric |
 |---|---|---|
 | **6.1 Intrinsics** (per camera, once, in the lab) | ChArUco board viewed through the IR filter: backlit IR board, or filter removed with a fixed focus. Lens focus and aperture are locked with thread-locker before calibrating | `K`, distortion, RMS reprojection error (target < 0.1 px), coverage of the image corners |
