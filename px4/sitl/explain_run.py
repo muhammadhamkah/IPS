@@ -146,6 +146,12 @@ def _engine_error(folder, loop, show0):
 def explain(folder, limit_mm: float = 30.0) -> list[str]:
     folder = Path(folder)
     from idps.sim.px4run import phase_times, read_track
+    if not (folder / "track.csv").exists():
+        have = ", ".join(sorted(p.name for p in folder.iterdir())) if folder.is_dir() else "the folder does not exist"
+        return ["explain: no camera-loop flight in this run (no track.csv). "
+                + ("It flew with positions inside PX4 (no cameras or engine): see truth.track.csv."
+                   if (folder / "truth.track.csv").exists() else
+                   "It stopped before the cameras started, or is still starting.") + f" In the folder: {have}"]
     track = read_track(folder / "track.csv")
     track = np.column_stack([track[:, 0], phase_times(track), track[:, 2:5]])   # every phase, on show time
     track = track[np.isfinite(track[:, 1])]
