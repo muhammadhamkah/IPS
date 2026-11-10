@@ -45,7 +45,8 @@ def formation_offsets(site: Site, n: int, rng, spacing: float = 2.0, min_spacing
     """Each drone's place in the formation, relative to the shared route: a grid that fits the
     venue. 2 m apart where there is room; in a smaller venue the grid follows the venue's shape,
     closes up (not below ``min_spacing``) and stacks in layers 0.8 m apart, so no drone is sent
-    outside the flight volume. Returns (offsets (n, 3), widest horizontal span, vertical span)."""
+    outside the flight volume. Returns (offsets (n, 3), half-width in x, half-width in y, vertical
+    span)."""
     v = site.volume
     lo, hi = v.bbox_min, v.bbox_max
     room = np.maximum((hi[:2] - lo[:2] - 1.2) * 0.6, 0.3)       # 60 % of the width for the formation,
@@ -70,7 +71,7 @@ def formation_offsets(site: Site, n: int, rng, spacing: float = 2.0, min_spacing
         r, c = divmod(j, cols)
         out.append([(c - (cols - 1) / 2) * sp, (r - (rows - 1) / 2) * sp,
                     (l - (layers - 1) / 2) * 0.8 + rng.uniform(-min(z_free, 0.5), min(z_free, 0.5))])
-    return np.array(out), max((cols - 1) * sp, (rows - 1) * sp), (layers - 1) * 0.8 + 2 * min(z_free, 0.5)
+    return np.array(out), (cols - 1) * sp / 2, (rows - 1) * sp / 2, (layers - 1) * 0.8 + 2 * min(z_free, 0.5)
 
 
 class SimShow:
@@ -92,11 +93,27 @@ class SimShow:
         self.stations: dict[str, SimStation] = {}
         self.set_cameras(cameras)
         if formation:
-            offsets, span, z_span = formation_offsets(site, n_drones, self.rng)
-            self.route = traj.Waypoints(self._inside_points(7, margin=0.6 + span / 2, z_margin=0.6 + z_span / 2),
-                                        speed_mps)
-            # (each drone a little behind the one before, but never by more than 0.6 s in all: a
-            # long lag stretches the formation out of the venue on the fast legs)
+            offsets, hx, hy, z_span = formation_offsets(site, n_drones, self.rng)
+            # the route keeps the whole formation inside the performance area: every waypoint and
+            # every leg has room for the formation's footprint around it. A venue whose shape
+            # leaves no such route (narrow, L-shaped) gets the formation closed up until one fits.
+            # The route is built around the venue's origin (it starts there and every waypoint has
+            # its mirror image through the origin), so the formation moves around the origin.
+            origin = site.frame.from_ned(np.zeros(3))[:2]
+            pts = None
+            for centre in (origin, None):                      # (an origin outside the area: anywhere inside)
+                for shrink in 0.8 ** np.arange(12):
+                    pts = self._route_points(7, hx * shrink + 0.3, hy * shrink + 0.3, 0.6 + z_span / 2, centre)
+                    if pts is not None:
+                        offsets[:, :2] *= shrink
+                        break
+                if pts is not None:
+                    break
+            if pts is None:                                    # no room at all: stand at the centre
+                pts = self._inside_points(2, margin=0.1, z_margin=0.6 + z_span / 2)[:1].repeat(2, 0)
+                offsets[:, :2] *= 0.0
+            self.route = traj.Waypoints(pts, speed_mps)
+            # (each drone a little behind the one before on the same route, 0.6 s in all at most)
             lag = min(0.15, 0.6 / max(n_drones - 1, 1))
             self.drones = [(k + 1, Formation(self.route, off, lag * k)) for k, off in enumerate(offsets)]
         else:
@@ -123,8 +140,69 @@ class SimShow:
                 np.array([[*v.polygon.mean(0), (z0 + z1) / 2]] * n)
         return np.array(out[:n])
 
+    def _fits(self, xy, hx: float, hy: float) -> np.ndarray:
+        """Points (N, 2) around which a hx x hy half-size footprint lies inside the performance area."""
+        xy = np.atleast_2d(xy)
+        ok = np.ones(len(xy), bool)
+        for ax in (-1.0, 0.0, 1.0):
+            for ay in (-1.0, 0.0, 1.0):
+                ok &= self.site.volume.contains_xy(xy + [ax * hx, ay * hy])
+        return ok
+
+    def _leg_fits(self, a, b, hx: float, hy: float) -> bool:
+        n = int(np.ceil(np.linalg.norm(np.subtract(b, a)[:2]) / 0.25)) + 2
+        return bool(self._fits(np.linspace(a[:2], b[:2], n), hx, hy).all())
+
+    def _route_points(self, n: int, hx: float, hy: float, z_margin: float = 0.5, centre=None):
+        """Up to n waypoints of a closed route on which a hx x hy half-size footprint stays inside
+        the performance area the whole way: at every waypoint and along every straight leg,
+        the closing one too (a leg across the notch of an L-shaped venue would leave it). With
+        ``centre`` (x, y) the route starts there and each waypoint is followed by its mirror image
+        through it, so the route is centred on that point. None if the venue has no room for that
+        footprint (around the centre, if given)."""
+        v = self.site.volume
+        lo, hi = v.bbox_min, v.bbox_max
+        z0 = max(lo[2] + z_margin, 0.5)
+        z1 = max(min(hi[2] - z_margin, hi[2] - 0.3), z0)
+        xy = self.rng.uniform(lo[:2], hi[:2], size=(600, 2))
+        xy = xy[self._fits(xy, hx, hy)]
+        if centre is not None:
+            centre = np.asarray(centre, float)
+            if not self._fits(centre, hx, hy)[0]:
+                return None
+            xy = xy[self._fits(2 * centre - xy, hx, hy)]          # its mirror image fits too
+            route = [centre]
+            for p in xy:
+                if len(route) >= n:
+                    break
+                q = 2 * centre - p
+                if self._leg_fits(route[-1], p, hx, hy) and self._leg_fits(p, q, hx, hy):
+                    route += [p, q]
+            if len(route) < 3:
+                return None
+            xy = np.empty((0, 2))
+        elif len(xy) < 2:
+            return None
+        else:
+            route = [xy[0]]
+        for p in xy[1:]:
+            if len(route) >= n:
+                break
+            if self._leg_fits(route[-1], p, hx, hy):
+                route.append(p)
+        while len(route) > 2 and not self._leg_fits(route[-1], route[0], hx, hy):
+            route.pop()
+        if len(route) < 2:
+            return None
+        return np.array([[p[0], p[1], self.rng.uniform(z0, z1)] for p in route])
+
     def _random_route(self, speed):
-        return traj.Waypoints(self._inside_points(10), speed, loop=True)
+        pts = self._route_points(10, 0.6, 0.6)
+        if pts is None:
+            pts = self._route_points(10, 0.1, 0.1)
+        if pts is None:
+            pts = self._inside_points(2, margin=0.1)
+        return traj.Waypoints(pts, speed, loop=True)
 
     def _station(self, k, cam: PlannedCamera) -> SimStation:
         st = SimStation(k, cam.position_m, cam.R, cam.lens_mm, self.model, self.timing, self.markers, self.rng, 1.0)

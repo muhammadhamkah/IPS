@@ -188,21 +188,30 @@ def test_advisor_focus_counts_whole_volume(lab):
         assert r.failing_after <= r.failing_before
 
 
-@pytest.mark.parametrize("site_file,n", [("lab", 5), ("lab", 12), ("lab", 20), ("show_8x8", 20)])
-def test_simulated_formation_stays_inside_the_venue(site_file, n):
-    """The formation's grid is fitted to the venue (closer together, then in layers, in a small
-    one). With the old fixed 2 m grid, 20 drones spanned 8 m in the 6 m lab: they flew outside the
-    cameras' volume half the time and the Simulate tab showed 300 mm errors that were the test
-    scenario's, not the tracking's."""
+@pytest.mark.parametrize("site_file", ["lab", "show_8x8", "venue_50x20x20", "irregular_venue", "hall"])
+@pytest.mark.parametrize("formation", [True, False])
+def test_simulated_drones_never_leave_the_performance_area(site_file, formation):
+    """In any simulation the drones stay inside the performance area, at every moment: the
+    formation is fitted to the venue (closer together, then in layers, in a small one) and its
+    route leaves room for the whole formation at every waypoint and along every leg, in an
+    L-shaped venue too. With the old fixed 2 m grid, 20 drones spanned 8 m in the 6 m lab: they
+    flew outside the cameras' volume half the time and the Simulate tab showed 300 mm errors that
+    were the test scenario's, not the tracking's."""
     import numpy as np
     from idps.monitor.simsource import SimShow
     from idps.plan.site import load_site
     site = load_site(f"examples/sites/{site_file}.yaml")
     v = site.volume
-    for seed in (1, 2, 3):
-        sim = SimShow(site, [], n_drones=n, seed=seed)
-        t = np.arange(0, 60, 0.1)
-        P = np.array([route.position(t) for _, route in sim.drones])
-        inside = v.contains_xy(P[..., :2].reshape(-1, 2)) & (P[..., 2].ravel() >= v.bbox_min[2]) & \
-            (P[..., 2].ravel() <= v.bbox_max[2])
-        assert inside.all(), f"{100 * (1 - inside.mean()):.1f} % outside (seed {seed})"
+    t = np.arange(0, 90, 0.05)
+    for n in (1, 5, 20, 30):
+        for seed in (1, 2):
+            sim = SimShow(site, [], n_drones=n, seed=seed, formation=formation)
+            P = np.array([route.position(t) for _, route in sim.drones])
+            inside = v.contains_xy(P[..., :2].reshape(-1, 2)) & (P[..., 2].ravel() >= v.bbox_min[2]) & \
+                (P[..., 2].ravel() <= v.bbox_max[2])
+            assert inside.all(), f"{n} drones, seed {seed}: {100 * (1 - inside.mean()):.2f} % outside"
+            origin = site.frame.from_ned(np.zeros(3))[:2]
+            if formation and v.contains_xy(origin[None])[0]:
+                # the formation's route is built around the origin: it starts there and is symmetric about it
+                assert np.allclose(sim.route.P[0, :2], origin)
+                assert np.allclose(sim.route.P[1:, :2].mean(0), origin, atol=1e-9)

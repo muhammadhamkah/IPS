@@ -92,7 +92,11 @@ class SitlDrone:
             elif kind == "DEBUG_VECT" and h.name.startswith("truth"):
                 self._on_truth(time.monotonic() - self.t0, h.time_usec * 1e-6, [h.x, h.y, h.z])
                 if self.clock is not None:
-                    self.clock.write(f"{self.drone_id},{time.monotonic():.4f},{h.time_usec * 1e-6:.4f}\n")
+                    yaw = float("nan")                      # the drone's true heading (deg from North)
+                    if self._att is not None:
+                        w, x, y, z = self._att
+                        yaw = math.degrees(math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+                    self.clock.write(f"{self.drone_id},{time.monotonic():.4f},{h.time_usec * 1e-6:.4f},{yaw:.2f}\n")
             elif kind == "DEBUG_FLOAT_ARRAY" and h.name.startswith("track") and self.track is not None:
                 self.track.write(track_line(self.drone_id, h.data))
 
@@ -177,7 +181,7 @@ def _receive(buf, specs, t0: float, origin: dict, marker_offset, track_path=None
         # clock.csv: when each drone's "truth" message arrived (time.monotonic) and its PX4 time: a
         # simulated clock that stood still while the PC's ran on shows as a jump in the difference
         clock = open(Path(track_path).with_name("clock.csv"), "w", buffering=1)
-        clock.write("drone_id,pc_s,px4_s\n")
+        clock.write("drone_id,pc_s,px4_s,yaw_deg\n")
     for k, (instance, drone_id, home) in enumerate(specs):
         d = SitlDrone(instance, drone_id, home, t0, frame, marker_offset)
         d.publish = (lambda k: lambda snap: SitlWorld.write(arr, k, snap))(k)
