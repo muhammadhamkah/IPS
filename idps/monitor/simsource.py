@@ -41,6 +41,38 @@ class Formation(traj.Trajectory):
         return self.route.position(np.asarray(t, float) - self.delay) + self.offset
 
 
+def formation_offsets(site: Site, n: int, rng, spacing: float = 2.0, min_spacing: float = 0.8):
+    """Each drone's place in the formation, relative to the shared route: a grid that fits the
+    venue. 2 m apart where there is room; in a smaller venue the grid follows the venue's shape,
+    closes up (not below ``min_spacing``) and stacks in layers 0.8 m apart, so no drone is sent
+    outside the flight volume. Returns (offsets (n, 3), widest horizontal span, vertical span)."""
+    v = site.volume
+    lo, hi = v.bbox_min, v.bbox_max
+    room = np.maximum((hi[:2] - lo[:2] - 1.2) * 0.6, 0.3)       # 60 % of the width for the formation,
+    z_room = max((hi[2] - max(lo[2], 0.5) - 1.2) * 0.6, 0.0)    # the rest for the route to move in
+    best = None
+    for layers in range(1, int(z_room // 0.8) + 2):
+        m = math.ceil(n / layers)
+        cols = max(1, min(m, round(math.sqrt(m * room[0] / room[1]))))
+        rows = math.ceil(m / cols)
+        sp = min(spacing, room[0] / max(cols - 1, 1) if cols > 1 else spacing,
+                 room[1] / max(rows - 1, 1) if rows > 1 else spacing)
+        if best is None or sp > best[0] + 1e-9:
+            best = (sp, layers, cols, rows)
+        if sp >= min_spacing:
+            break
+    sp, layers, cols, rows = best
+    per = cols * rows
+    z_free = max(z_room - (layers - 1) * 0.8, 0.0) / 2 if layers == 1 else 0.15
+    out = []
+    for k in range(n):
+        l, j = divmod(k, per)
+        r, c = divmod(j, cols)
+        out.append([(c - (cols - 1) / 2) * sp, (r - (rows - 1) / 2) * sp,
+                    (l - (layers - 1) / 2) * 0.8 + rng.uniform(-min(z_free, 0.5), min(z_free, 0.5))])
+    return np.array(out), max((cols - 1) * sp, (rows - 1) * sp), (layers - 1) * 0.8 + 2 * min(z_free, 0.5)
+
+
 class SimShow:
     def __init__(self, site: Site, cameras: list[PlannedCamera], n_drones: int = 6, seed: int = 1,
                  speed_mps: float = 2.5, dropout: float = 0.01, formation: bool = True):
@@ -60,16 +92,13 @@ class SimShow:
         self.stations: dict[str, SimStation] = {}
         self.set_cameras(cameras)
         if formation:
-            cols = int(math.ceil(math.sqrt(n_drones)))
-            spacing = 2.0
-            span = (cols - 1) * spacing
-            self.route = traj.Waypoints(self._inside_points(7, margin=0.6 + span / 2 + 0.5, z_margin=1.0), speed_mps)
-            self.drones = []
-            for k in range(n_drones):
-                r, c = divmod(k, cols)
-                off = np.array([(c - (cols - 1) / 2) * spacing, (r - (cols - 1) / 2) * spacing,
-                                self.rng.uniform(-0.5, 0.5)])
-                self.drones.append((k + 1, Formation(self.route, off, 0.15 * k)))
+            offsets, span, z_span = formation_offsets(site, n_drones, self.rng)
+            self.route = traj.Waypoints(self._inside_points(7, margin=0.6 + span / 2, z_margin=0.6 + z_span / 2),
+                                        speed_mps)
+            # (each drone a little behind the one before, but never by more than 0.6 s in all: a
+            # long lag stretches the formation out of the venue on the fast legs)
+            lag = min(0.15, 0.6 / max(n_drones - 1, 1))
+            self.drones = [(k + 1, Formation(self.route, off, lag * k)) for k, off in enumerate(offsets)]
         else:
             self.route = None
             self.drones = [(k + 1, self._random_route(speed_mps)) for k in range(n_drones)]

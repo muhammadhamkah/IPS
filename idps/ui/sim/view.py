@@ -60,8 +60,7 @@ class SimView3D(View3D):
             faint = QColor(col)
             faint.setAlphaF(0.35)
             tr = r.centre[i, max(0, k - n_trail):k + 1]
-            for a, b in zip(tr, tr[1:]):
-                self._line(prims, a, b, QPen(faint, 1.2))
+            self._polyline(prims, tr, QPen(faint, 1.2))
             if i == self.selected:
                 pen = QPen(QColor(tok["volume"]), 1.0)
                 pen.setColor(QColor(tok["volume"].red(), tok["volume"].green(), tok["volume"].blue(), 140))

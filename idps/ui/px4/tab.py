@@ -265,6 +265,8 @@ class Px4Tab(QWidget):
         self.timer.setInterval(PLAY_MS)
         self.timer.timeout.connect(self._tick)
         self._acc = 0.0
+        self._last_tick = None
+        self._live_last = None
         self.poll = QTimer(self)                       # while flying: reload the tracking log
         self.poll.setInterval(500)
         self.live = QTimer(self)                       # while flying: move the view on smoothly between reloads
@@ -587,6 +589,7 @@ class Px4Tab(QWidget):
         else:
             if self.slider.value() >= self.slider.maximum():
                 self.slider.setValue(0)
+            self._last_tick = None
             self.timer.start()
             self.play_btn.setText("Pause")
 
@@ -597,7 +600,9 @@ class Px4Tab(QWidget):
         if run is None or self._live_t is None or not np.isfinite(run.last_t):
             return
         target = run.last_t - LIVE_LAG_S
-        step = PLAY_MS / 1000
+        now = time.perf_counter()
+        step = min(now - self._live_last, 0.25) if self._live_last is not None else PLAY_MS / 1000
+        self._live_last = now
         if target - self._live_t > 1.0:
             step *= 1.5
         self._live_t = min(self._live_t + step, target)
@@ -606,7 +611,10 @@ class Px4Tab(QWidget):
             self.slider.setValue(k)
 
     def _tick(self):
-        self._acc += PLAY_MS / 1000 * REPLAY_HZ * float(self.speed.currentData())
+        now = time.perf_counter()               # by the clock: slow drawing skips frames, the replay keeps time
+        dt = min(now - self._last_tick, 0.25) if self._last_tick is not None else PLAY_MS / 1000
+        self._last_tick = now
+        self._acc += dt * REPLAY_HZ * float(self.speed.currentData())
         step = int(self._acc)
         if step:
             self._acc -= step

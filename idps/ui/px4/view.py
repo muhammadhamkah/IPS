@@ -54,14 +54,11 @@ class FlightView3D(View3D):
             if i == self.selected:                                   # its whole path in the file
                 path = QColor(tok["volume"])
                 path.setAlpha(90)
-                for a, b in zip(plan[::4], plan[4::4]):
-                    self._line(prims, a, b, QPen(path, 1.0, Qt.PenStyle.DashLine))
+                self._polyline(prims, plan[::4], QPen(path, 1.0, Qt.PenStyle.DashLine))
             faint = QColor(col)
             faint.setAlphaF(0.45)
             tr = act[max(0, k - n_trail):k + 1]
-            for a, b in zip(tr, tr[1:]):
-                if np.isfinite(a).all() and np.isfinite(b).all():
-                    self._line(prims, a, b, QPen(faint, 1.4))
+            self._polyline(prims, tr, QPen(faint, 1.4))
             P, z = self.project([plan[k]])
             if z[0] > 0.05:
                 prims.append((float(z[0]) - 0.04, "dot", (P[0], 8.0, QColor(0, 0, 0, 0), QColor(tok["volume"]))))

@@ -186,3 +186,23 @@ def test_advisor_focus_counts_whole_volume(lab):
     assert adv.vis[k, ~adv.mask].any()
     for r in adv.recommend(top=3):
         assert r.failing_after <= r.failing_before
+
+
+@pytest.mark.parametrize("site_file,n", [("lab", 5), ("lab", 12), ("lab", 20), ("show_8x8", 20)])
+def test_simulated_formation_stays_inside_the_venue(site_file, n):
+    """The formation's grid is fitted to the venue (closer together, then in layers, in a small
+    one). With the old fixed 2 m grid, 20 drones spanned 8 m in the 6 m lab: they flew outside the
+    cameras' volume half the time and the Simulate tab showed 300 mm errors that were the test
+    scenario's, not the tracking's."""
+    import numpy as np
+    from idps.monitor.simsource import SimShow
+    from idps.plan.site import load_site
+    site = load_site(f"examples/sites/{site_file}.yaml")
+    v = site.volume
+    for seed in (1, 2, 3):
+        sim = SimShow(site, [], n_drones=n, seed=seed)
+        t = np.arange(0, 60, 0.1)
+        P = np.array([route.position(t) for _, route in sim.drones])
+        inside = v.contains_xy(P[..., :2].reshape(-1, 2)) & (P[..., 2].ravel() >= v.bbox_min[2]) & \
+            (P[..., 2].ravel() <= v.bbox_max[2])
+        assert inside.all(), f"{100 * (1 - inside.mean()):.1f} % outside (seed {seed})"

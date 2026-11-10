@@ -64,7 +64,9 @@ class View3D(QWidget):
         cp, sp, cy, sy = math.cos(self.pitch), math.sin(self.pitch), math.cos(self.yaw), math.sin(self.yaw)
         fwd = -np.array([cp * cy, cp * sy, sp])            # from eye towards target
         right = np.array([-sy, cy, 0.0])
-        up = np.cross(right, fwd)
+        up = np.array([right[1] * fwd[2] - right[2] * fwd[1],      # right x fwd, written out:
+                       right[2] * fwd[0] - right[0] * fwd[2],                              # np.cross costs far more
+                       right[0] * fwd[1] - right[1] * fwd[0]])                             # and this runs per line drawn
         eye = self.target - fwd * self.dist
         return eye, right, up, fwd
 
@@ -416,6 +418,17 @@ class View3D(QWidget):
         (P, z) = self.project([a, b])
         if (z > 0.05).all():
             prims.append((float(z.mean()), "line", (P[0], P[1], pen)))
+
+    def _polyline(self, prims, pts3, pen):
+        """A path through many points (a trail), projected in one pass; gaps (NaN) are skipped."""
+        pts3 = np.asarray(pts3, float)
+        if len(pts3) < 2:
+            return
+        ok = np.isfinite(pts3).all(1)
+        P, z = self.project(np.where(ok[:, None], pts3, 0.0))
+        ok &= z > 0.05
+        for i in np.nonzero(ok[:-1] & ok[1:])[0]:
+            prims.append((float(z[i] + z[i + 1]) / 2, "line", (P[i], P[i + 1], pen)))
 
     def _poly(self, prims, pts3, pen, brush):
         P, z = self.project(pts3)

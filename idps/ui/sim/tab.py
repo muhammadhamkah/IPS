@@ -8,6 +8,7 @@ placing the cameras, before buying or installing anything.
 from __future__ import annotations
 
 import math
+import time
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
@@ -153,6 +154,7 @@ class SimTab(QWidget):
         self.timer.setInterval(PLAY_MS)
         self.timer.timeout.connect(self._tick)
         self._acc = 0.0
+        self._last_tick = None
         self._mode_changed()
 
     # ------------------------------------------------------------ settings
@@ -316,12 +318,18 @@ class SimTab(QWidget):
         else:
             if self.slider.value() >= self.slider.maximum():
                 self.slider.setValue(0)
+            self._last_tick = None
             self.timer.start()
             self.play_btn.setText("Pause")
 
     def _tick(self):
         hz = (len(self.res.t) - 1) / max(self.res.t[-1], 1e-9)
-        self._acc += PLAY_MS / 1000 * hz * float(self.speed.currentData())
+        # by the clock, not by counting ticks: when drawing a frame takes longer than a tick, frames
+        # are skipped and the replay stays in real time (it used to run slow instead)
+        now = time.perf_counter()
+        dt = min(now - self._last_tick, 0.25) if self._last_tick is not None else PLAY_MS / 1000
+        self._last_tick = now
+        self._acc += dt * hz * float(self.speed.currentData())
         step = int(self._acc)
         if step:
             self._acc -= step

@@ -956,3 +956,26 @@ def test_px4_flight_flies_the_planner_venue(win, app):
     env, why = tab._venue_files("cameras")
     assert why is None
     c.result = None
+
+
+def test_replay_keeps_real_time_when_drawing_is_slow(win, app, monkeypatch):
+    """The replay advances by the clock: a tick that comes late (a frame that took long to draw)
+    moves on by the time that really passed, so the replay skips frames instead of running slow."""
+    import numpy as np
+    import idps.ui.sim.tab as T
+    from types import SimpleNamespace
+    sim = win.sim
+    sim.res = SimpleNamespace(t=np.arange(0, 20, 1 / 30))
+    sim.slider.blockSignals(True)
+    sim.slider.setRange(0, len(sim.res.t) - 1)
+    sim.slider.setValue(0)
+    now = [100.0]
+    monkeypatch.setattr(T.time, "perf_counter", lambda: now[0])
+    sim._last_tick, sim._acc = None, 0.0
+    sim._tick()                                    # the first tick: one timer period
+    for _ in range(10):                            # ten ticks, each 100 ms late instead of 33 ms
+        now[0] += 0.1
+        sim._tick()
+    assert abs(sim.res.t[sim.slider.value()] - 1.033) < 0.05     # 1 s of replay for 1 s of clock
+    sim.slider.blockSignals(False)
+    sim.res = None
