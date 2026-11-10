@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from idps.ui import theme
@@ -99,30 +99,39 @@ class ErrorGraph(QWidget):
         super().__init__(parent)
         self.run, self.selected, self.frame, self.limit_mm = None, None, 0, 30.0
         self.setMinimumHeight(130)
+        self._plot = None               # the axes and curves, drawn once per run / selection / size
+        self._plot_key = None
 
     def set_state(self, run, selected, frame, limit_mm):
         self.run, self.selected, self.frame, self.limit_mm = run, selected, frame, limit_mm
         self.update()
 
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        tok = theme.tokens()
-        p.fillRect(self.rect(), tok["surface"])
+    L, R, T, B = 40, 8, 8, 18           # margins around the plot
+
+    def _scales(self):
         r = self.run
+        w, h = self.width() - self.L - self.R, self.height() - self.T - self.B
+        fin = r.error_mm[np.isfinite(r.error_mm)]
+        top = max(2.0 * self.limit_mm, float(fin.max()) * 1.05 if len(fin) else 0.0)
+        return w, h, top, r.t[0], r.t[-1]
+
+    def _draw_plot(self, tok) -> QPixmap:
+        """Axes and every drone's curve. A flight has thousands of samples per drone and the widget
+        only a thousand or so pixel columns, so each curve is drawn as its lowest and highest value
+        per column. Drawing every sample as its own line on every frame took over 100 ms and made
+        the live view jerky."""
+        r = self.run
+        L, T = self.L, self.T
+        w, h, top, t0, t1 = self._scales()
+        dpr = self.devicePixelRatioF()
+        pm = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(tok["surface"])
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         f = QFont(self.font())
         f.setPointSizeF(9)
         p.setFont(f)
-        if r is None or not len(r.t):
-            p.setPen(tok["text2"])
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Distance from the file over the show")
-            return
-        L, R, T, B = 40, 8, 8, 18
-        w, h = self.width() - L - R, self.height() - T - B
-        fin = r.error_mm[np.isfinite(r.error_mm)]
-        top = max(2.0 * self.limit_mm, float(fin.max()) * 1.05 if len(fin) else 0.0)
-        t0, t1 = r.t[0], r.t[-1]
-        X = lambda t: L + w * (t - t0) / max(t1 - t0, 1e-9)                                  # noqa: E731
         Y = lambda e: T + h * (1 - min(e, top) / top)                                       # noqa: E731
         p.setPen(QPen(tok["text2"], 0.6))
         p.drawLine(QPointF(L, T + h), QPointF(L + w, T + h))
@@ -132,19 +141,54 @@ class ErrorGraph(QWidget):
         p.drawText(QRectF(L, T + h + 2, w, 16), Qt.AlignmentFlag.AlignRight, "mm  ·  show time →")
         p.setPen(QPen(QColor(theme.STATUS[0]), 1, Qt.PenStyle.DashLine))
         p.drawLine(QPointF(L, Y(self.limit_mm)), QPointF(L + w, Y(self.limit_mm)))
+        cols = max(int(w), 2)
+        col = np.clip(((r.t - t0) / max(t1 - t0, 1e-9) * (cols - 1)).astype(int), 0, cols - 1)
+        xs = L + w * np.arange(cols) / (cols - 1)
         order = [i for i in range(len(r.drone_ids)) if i != self.selected] + \
                 ([self.selected] if self.selected is not None else [])
         for i in order:
-            e = r.error_mm[i]
-            col = QColor(tok["volume"]) if i == self.selected else QColor(tok["text2"])
-            col.setAlpha(255 if i == self.selected else 70)
-            p.setPen(QPen(col, 1.6 if i == self.selected else 0.8))
-            prev = None
-            for t, v in zip(r.t, e):
-                pt = QPointF(X(t), Y(v)) if np.isfinite(v) else None
-                if pt is not None and prev is not None:
-                    p.drawLine(prev, pt)
-                prev = pt
+            e = np.minimum(r.error_mm[i], top)
+            ok = np.isfinite(e)
+            lo, hi = np.full(cols, np.inf), np.full(cols, -np.inf)
+            np.minimum.at(lo, col[ok], e[ok])
+            np.maximum.at(hi, col[ok], e[ok])
+            colour = QColor(tok["volume"]) if i == self.selected else QColor(tok["text2"])
+            colour.setAlpha(255 if i == self.selected else 70)
+            p.setPen(QPen(colour, 1.6 if i == self.selected else 0.8))
+            have = np.isfinite(lo)
+            ylo, yhi = T + h * (1 - lo / top), T + h * (1 - hi / top)
+            line = []
+            for c in range(cols):
+                if have[c]:
+                    line.append(QPointF(xs[c], ylo[c]))
+                    if hi[c] > lo[c]:
+                        line.append(QPointF(xs[c], yhi[c]))
+                elif line:                                  # a gap (no samples here): the curve breaks
+                    p.drawPolyline(line)
+                    line = []
+            if line:
+                p.drawPolyline(line)
+        p.end()
+        return pm
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        tok = theme.tokens()
+        r = self.run
+        if r is None or not len(r.t):
+            p.fillRect(self.rect(), tok["surface"])
+            f = QFont(self.font())
+            f.setPointSizeF(9)
+            p.setFont(f)
+            p.setPen(tok["text2"])
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Distance from the file over the show")
+            return
+        key = (self.selected, self.width(), self.height(), self.limit_mm, tok["surface"].name(), tok["text2"].name())
+        if self._plot is None or self._plot_key is None or self._plot_key[0] is not r or self._plot_key[1] != key:
+            self._plot, self._plot_key = self._draw_plot(tok), (r, key)
+        p.drawPixmap(0, 0, self._plot)
+        w, h, top, t0, t1 = self._scales()
         k = min(self.frame, len(r.t) - 1)
+        x = self.L + w * (r.t[k] - t0) / max(t1 - t0, 1e-9)
         p.setPen(QPen(tok["text"], 1))
-        p.drawLine(QPointF(X(r.t[k]), T), QPointF(X(r.t[k]), T + h))
+        p.drawLine(QPointF(x, self.T), QPointF(x, self.T + h))
