@@ -809,6 +809,11 @@ def test_px4_flight_tab_explains_a_failed_run():
     _, reason, _ = diagnose("PX4 drone 1 (instance 0): PX4 stopped while starting. The end of its log (x):\n"
                             "INFO  [px4] PX4 server already running for instance 0")
     assert reason.startswith("A PX4 from an earlier flight was still running (instance 0)")
+    # the computer fell behind during the flight: said as that, ahead of the drones' failsafes it caused
+    _, reason, _ = diagnose("   drone 5: WARN  [failsafe] Failsafe activated\n"
+                            "This computer fell behind real time: the simulated cameras ran 45365 ms behind the clock "
+                            "(want under 30),\nNot started: drone(s) 2 (?) not holding in the grid")
+    assert reason.startswith("This computer fell behind real time during the flight: the simulated cameras ran 45365 ms")
 
 
 def test_px4_camera_loop_uses_the_paced_build_when_patched(tmp_path):

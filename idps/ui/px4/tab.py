@@ -85,6 +85,10 @@ FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still goi
             (r"drone (\d+): no heartbeat on (\S+)", "Drone {0} did not answer on {1}."),
             (r"Too much for this computer: the simulated cameras run (\d+) ms behind", "Too much for this computer: "
              "the simulated cameras ran {0} ms behind the clock. Fly fewer drones, or 'Positions inside PX4'."),
+            (r"This computer fell behind real time: the simulated cameras ran (\d+) ms behind", "This computer fell "
+             "behind real time during the flight: the simulated cameras ran {0} ms behind the clock, so the drones "
+             "were flying on old positions and the flight was stopped. This is the computer, not the tracking: plug "
+             "it in (low battery slows it down), close other heavy programs, or fly fewer drones."),
             (r"Not enough free disk space", "The disk is nearly full: free some space (see the Log pane) and fly "
              "again."),
             (r"No space left on device", "The disk is full: free some space (see the Log pane) and fly again."),

@@ -195,7 +195,30 @@ fi
 TRACK_ARG=(); [ "$MODE" = cameras ] && TRACK_ARG=(--positions "$OUT/positions.csv")
 ( "$PY" -m idps.show.cli start "$OUT/show/manifest.json" $L --lead 15 "${TRACK_ARG[@]}" 2>&1 | tee "$OUT/start.txt" \
     | grep --line-buffered -E "^(tracked|waiting for tracking|launch in|every drone holds|show starts in|Not started)" ) &
-PIDS+=($!); wait $! || true
+START=$!; PIDS+=($START)
+# cameras: watch for the whole flight that the simulated cameras keep up with the clock (the check
+# above was before take-off). A computer that falls behind (low battery, another heavy program)
+# feeds the drones stale positions or none: stop the flight then, and say why.
+WATCH=""
+if [ "$MODE" = cameras ]; then
+  ( while kill -0 $START 2>/dev/null; do
+      sleep 2
+      behind=$(grep -o "behind the clock (ms, last 2 s): median [0-9.]*" "$OUT/cams.log" | tail -1 | awk '{print int($NF)}')
+      if [ -n "$behind" ] && [ "$behind" -gt "${BEHIND_LIMIT_MS:-250}" ]; then
+        echo "$behind" > "$OUT/fell_behind"
+        pkill -TERM -f "idps.show.cli start" 2>/dev/null || true      # it aborts the show: every drone lands
+        break
+      fi
+    done ) &
+  WATCH=$!
+fi
+wait $START || true
+[ -n "$WATCH" ] && { kill $WATCH 2>/dev/null || true; }
+if [ -f "$OUT/fell_behind" ]; then
+  echo "This computer fell behind real time: the simulated cameras ran $(cat "$OUT/fell_behind") ms behind the clock (want under 30),"
+  echo "so the drones were flying on old positions. The flight was stopped and every drone told to land."
+  echo "Plug the computer in (low battery slows it down), close other heavy programs, or fly fewer drones."
+fi
 grep -E "denied|refused|Not started" "$OUT/start.txt" || true
 for ((i=0;i<N;i++)); do
   f=$(grep -hE -B2 -A2 "Failsafe|stopped" "$B/rootfs/$i/out.log" | head -5 | tr '\n' ' ' || true)
