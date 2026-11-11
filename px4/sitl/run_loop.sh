@@ -249,6 +249,14 @@ if [ "$MODE" = cameras ]; then
         pkill -TERM -f "idps.show.cli start" 2>/dev/null || true      # it aborts the show: every drone lands
         break
       fi
+      # the engine too: it works the cameras' frames off one by one, and once it is slower than
+      # they come its positions get older and older (seen: 53 s old) and no drone gets any
+      late=$(grep -o "exposure to send (ms) median [0-9]*" "$OUT/engine.log" | tail -1 | awk '{print $NF}')
+      if [ -n "$late" ] && [ "$late" -gt "${ENGINE_LATE_LIMIT_MS:-200}" ]; then
+        echo "$late" > "$OUT/engine_behind"
+        pkill -TERM -f "idps.show.cli start" 2>/dev/null || true
+        break
+      fi
     done ) &
   WATCH=$!
 fi
@@ -259,7 +267,13 @@ if [ -f "$OUT/fell_behind" ]; then
   echo "so the drones were flying on old positions. The flight was stopped and every drone told to land."
   echo "Plug the computer in (low battery slows it down), close other heavy programs, or fly fewer drones."
 fi
-grep -E "denied|refused|Not started" "$OUT/start.txt" || true
+if [ -f "$OUT/engine_behind" ]; then
+  echo "The engine fell behind: its positions were $(cat "$OUT/engine_behind") ms old when sent (about 25 is normal),"
+  echo "so the drones were flying without usable positions. The flight was stopped and every drone told to land."
+  echo "This computer cannot work off this many cameras and drones in real time: plug it in, close other heavy"
+  echo "programs, fly fewer drones, or plan fewer cameras (a lower 'cameras per point')."
+fi
+grep -E "denied|refused|Not started" "$OUT/start.txt" | sort -u || true
 for ((i=0;i<N;i++)); do
   f=$(grep -hE -B2 -A2 "Failsafe|stopped" "$B/rootfs/$i/out.log" | head -5 | tr '\n' ' ' || true)
   [ -n "$f" ] && echo "   drone $((i+1)): $f"

@@ -85,6 +85,10 @@ FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still goi
             (r"drone (\d+): no heartbeat on (\S+)", "Drone {0} did not answer on {1}."),
             (r"Too much for this computer: the simulated cameras run (\d+) ms behind", "Too much for this computer: "
              "the simulated cameras ran {0} ms behind the clock. Fly fewer drones, or 'Positions inside PX4'."),
+            (r"The engine fell behind: its positions were (\d+) ms old", "The engine could not keep up with this "
+             "many cameras and drones in real time (its positions were {0} ms old; about 25 is normal), so the "
+             "flight was stopped. Plug the computer in, close other heavy programs, fly fewer drones, or plan "
+             "fewer cameras."),
             (r"This computer fell behind real time: the simulated cameras ran (\d+) ms behind", "This computer fell "
              "behind real time during the flight: the simulated cameras ran {0} ms behind the clock, so the drones "
              "were flying on old positions and the flight was stopped. This is the computer, not the tracking: plug "
