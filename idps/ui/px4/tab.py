@@ -290,7 +290,7 @@ class Px4Tab(QWidget):
         self._last_tick = None
         self._live_last = None
         self.poll = QTimer(self)                       # while flying: reload the tracking log
-        self.poll.setInterval(500)
+        self.poll.setInterval(250)
         self.live = QTimer(self)                       # while flying: move the view on smoothly between reloads
         self.live.setInterval(PLAY_MS)
         self.live.timeout.connect(self._live_tick)
@@ -488,6 +488,7 @@ class Px4Tab(QWidget):
     def _finished(self, code, _status):
         self.poll.stop()
         self.live.stop()
+        self._drop_load_job()
         self._end_activity()
         self._read_output()
         self.proc = None
@@ -506,16 +507,37 @@ class Px4Tab(QWidget):
         elif code != 0:
             self.status.setText(self.status.text() + f"  (The flight script ended with code {code}: see the log.)")
 
+    def _drop_load_job(self):
+        """Let the worker finish reading the log (the run is read again here) and forget what it read."""
+        job, self._load_job = getattr(self, "_load_job", None), None
+        if job is not None:
+            try:
+                job.result(timeout=10)
+            except Exception:
+                pass
+
     def _poll(self):
         if self.out_dir is None or not (self.out_dir / "show" / "manifest.json").exists():
             return
-        try:
-            run = load_run(self.out_dir)
-        except Exception:                       # files still being written
-            return
-        if not np.isfinite(run.last_t):
-            return
-        self.show_run(run, live=True)
+        # Reading the log takes a quarter of a second with 20 drones: in the window's own thread
+        # the view would stop that long twice a second. A worker reads it; the result is shown
+        # at the next poll.
+        job = getattr(self, "_load_job", None)
+        if job is not None:
+            if not job.done():
+                return
+            self._load_job = None
+            try:
+                folder, run = job.result()
+            except Exception:                   # files still being written
+                folder, run = None, None
+            if run is not None and folder == self.out_dir and np.isfinite(run.last_t):
+                self.show_run(run, live=True)
+        if getattr(self, "_loader", None) is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._loader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="idps-run")
+        folder = self.out_dir
+        self._load_job = self._loader.submit(lambda: (folder, load_run(folder)))
 
     # ------------------------------------------------------------ results
     def open_run(self, folder, finished: bool = False) -> bool:
@@ -533,6 +555,7 @@ class Px4Tab(QWidget):
     def clear_run(self):
         """Forget the run on screen (a new flight is starting: its data replaces it as it comes)."""
         self.timer.stop()
+        self._drop_load_job()
         self.play_btn.setText("Play")
         self.run_data, self._live_t = None, None
         self.view.set_run(None, LIMIT_MM)
@@ -699,6 +722,7 @@ class Px4Tab(QWidget):
         self.timer.stop()
         self.poll.stop()
         self.live.stop()
+        self._drop_load_job()
         if self.proc is not None:                         # quitting mid-flight: land and stop everything
             self.proc.finished.disconnect()
             self._signal_group(signal.SIGTERM)
