@@ -461,6 +461,7 @@ class PlanCanvas(QGraphicsView):
         close = {k for i, j, _ in _pads_too_close(self._pads()) for k in (i, j)}
         if self.result is not None and not self.result_stale:      # cameras that cannot tell its drones apart
             close |= {r["pad"] - 1 for r in self.result[0].summary.get("pads", []) if not r["ok"]}
+        close |= self.pad_layout().pads_at_fault                    # their drones cannot take off or land safely
         for i, c in enumerate(self._pads()):
             self._draw_pad(p, tok, c, i, selected=self.selection == ("pad", i), warn=i in close)
 
@@ -734,7 +735,7 @@ class PlanCanvas(QGraphicsView):
             "zone": "Click the tripod area corners. Return or double-click to finish.",
             "nogo": "Click the no-go area corners. Return or double-click to finish.",
             "pad": f"Click where each charging pad stands (4 drones, 2 × 2; pads at least {MIN_PAD_GAP_M:g} m "
-                   "apart). Pad 1 holds drones 1–4, pad 2 drones 5–8, … Esc when done.",
+                   "apart). Pad 1 holds drones 1–4, pad 2 drones 5–8, … Drag a placed pad to move it. Esc when done.",
             "measure": "Click two points to measure (snaps to vertices, truss ends and cameras). Esc clears.",
         }
         if tool != "measure":
@@ -911,6 +912,14 @@ class PlanCanvas(QGraphicsView):
                               "from here.")
             return
         if self.tool == "pad":
+            hit = self._hit(x, y)
+            if hit is not None and hit[0] == "pad":       # on a pad already placed: move it, not a new one
+                self.drag = hit
+                self.drag_before = self.doc.snapshot()
+                self.set_selection(("pad", hit[1]))
+                self.cursor_pt = None
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                return
             self.place_pad(pt)
             return
         if self.tool == "measure":
@@ -968,6 +977,12 @@ class PlanCanvas(QGraphicsView):
             return
         if self.tool != "select":
             self.cursor_pt = self._snap(sp.x(), sp.y(), e.modifiers())
+            if self.tool == "pad":                         # over a placed pad: it can be dragged (no ghost there)
+                hit = self._hit(sp.x(), sp.y())
+                over = hit is not None and hit[0] == "pad"
+                if over:
+                    self.cursor_pt = None
+                self.setCursor(Qt.CursorShape.OpenHandCursor if over else Qt.CursorShape.CrossCursor)
             self.viewport().update()
 
     def mouseReleaseEvent(self, e):
@@ -983,6 +998,8 @@ class PlanCanvas(QGraphicsView):
             self.doc.commit(what, self.drag_before)
             self.drag = None
             self.drag_before = None
+            if self.tool == "pad":
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
 
     def mouseDoubleClickEvent(self, e):
         if self.tool in ("volume", "zone", "nogo") and len(self.pending) >= 3:
@@ -1153,8 +1170,10 @@ class PlanCanvas(QGraphicsView):
         self.doc.edit("Place charging pad", add)
         k = len(self._pads())
         self.set_selection(("pad", k - 1))
-        self.message.emit(f"Pad {k} placed: drones {SLOTS * (k - 1) + 1}–{SLOTS * k} (slot = take-off batch). "
-                          "Click to place the next; Esc when done, then Plan Cameras (⌘R).")
+        rep = self.pad_layout()
+        self.message.emit(rep.warning or (f"Pad {k} placed: drones {SLOTS * (k - 1) + 1}–{SLOTS * k} (slot = take-off "
+                                          "batch). " + (rep.note + " " if rep.note else "")
+                                          + "Click to place the next; Esc when done, then Plan Cameras (⌘R)."))
         self.viewport().update()
         return True
 
@@ -1163,6 +1182,30 @@ class PlanCanvas(QGraphicsView):
             self.message.emit(f"Pads {i + 1} and {j + 1} are {dist:.2f} m apart: keep pads at least "
                               f"{MIN_PAD_GAP_M:g} m apart.")
             return
+        rep = self.pad_layout()
+        if rep.warning or rep.note:
+            self.message.emit(rep.warning or rep.note)
+
+    def pad_layout(self):
+        """Can drones take off from the pads as placed and land back (idps.show.padcheck)? Worked out
+        again when the pads, the area or the origin change, but not while a pad is being dragged
+        (it takes a few tenths of a second with many pads)."""
+        import json
+        from idps.show.padcheck import PadLayoutReport, pad_layout_report
+        d = self.doc.data
+        if len(self._pads()) < 2 or len(d["volume"]["polygon"]) < 3 or not d.get("origin"):
+            return PadLayoutReport()
+        key = json.dumps([d.get("pads"), d["volume"], d.get("origin")], sort_keys=True, default=str)
+        cached = getattr(self, "_pad_layout", None)
+        if cached is None or cached[0] != key:
+            if self.drag is not None and self.drag[0] == "pad" and cached is not None:
+                return cached[1]
+            try:
+                cached = (key, pad_layout_report(self.doc.to_site_dict()))
+            except Exception:                            # never let a check break the drawing
+                cached = (key, PadLayoutReport())
+            self._pad_layout = cached
+        return cached[1]
 
 
 def _pads_too_close(centres):

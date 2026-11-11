@@ -265,3 +265,21 @@ def test_trj_carries_the_row_delays():
             row_delay_s=4.0, max_row_delay_s=8.0)
     back = from_bytes(to_bytes(t))
     assert (back.row_delay_s, back.max_row_delay_s) == (4.0, 8.0) and len(to_bytes(t)) == 72 + n * 40
+
+
+def test_planner_pad_layout_report():
+    """The Planner's answer as pads are placed: rows one behind the other fly (it says which pads
+    go later); a layout whose drones would fly too close is named, with its pads."""
+    from idps.show.padcheck import pad_layout_report
+    base = {"origin": {"xy": [-0.5, 1], "north_deg": 90},
+            "volume": {"polygon": [[-9.5, 5], [8.5, 5], [8.5, -3.5], [-9.5, -3.5]], "z": [0, 10]}}
+    row = pad_layout_report(dict(base, pads={"centres": [[-5, 4], [-4.5, 4], [-4, 4]]}))
+    assert (row.warning, row.note, row.pads_at_fault, row.drones) == ("", "", set(), 12)
+    two = pad_layout_report(dict(base, pads={"centres": [[-4.75, 3.95], [-3.15, 3.95], [-4.75, 2.9], [-3.15, 2.9],
+                                                          [-1.55, 3.95]]}))
+    assert not two.warning and two.note.startswith("Pads 1 and 2 stand behind another pad: in each of the 4 batches "
+                                                   "their drones take off 4 s after the front pads'")
+    bad = pad_layout_report(dict(base, pads={"centres": [[-5 + 1.0 * i, 4.4 - 1.0 * j] for j in range(3) for i in range(4)]}))
+    assert bad.warning.startswith("Pads 1, 2, 3") and "cannot fly as placed (48 drones)" in bad.warning
+    assert bad.pads_at_fault and not bad.note
+    assert pad_layout_report(dict(base, pads={"centres": [[0, 0]]})).warning == ""        # one pad: nothing to check

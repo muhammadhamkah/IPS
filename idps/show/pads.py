@@ -245,7 +245,15 @@ def site_facing_deg(d: dict) -> float:
                 if best is None or score > best[0]:
                     best = (score, normal)
         normal = best[1]
-        face = normal if normal @ to_area >= 0 else -normal
+        depth = pads @ normal
+        mates = (np.abs(depth[:, None] - depth[None, :]) < 0.15).sum(1) - 1
+        if (mates > 0).all() or len(pads) == 2:                  # rows of pads (every pad beside another)
+            face = normal if normal @ to_area >= 0 else -normal
+        else:                                                    # scattered pads: one row if they nearly are,
+            _, sv, vt = np.linalg.svd(pads - pads.mean(0))       # else towards the area's middle
+            if sv[1] < PAD_SIDE_M:
+                normal = np.array([-vt[0][1], vt[0][0]])
+                face = normal if normal @ to_area >= 0 else -normal
     return round(float(np.degrees(np.arctan2(face[1], face[0]))), 3) % 360.0 + 0.0
 
 
@@ -462,7 +470,9 @@ def sequence_plan(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray) -> S
         for rk in (ranks, pad_ranks(lay, used, by_depth=True)):
             for gap in ROW_GAPS_S:
                 cand = _make_plan(lay, ids, first, last, rk, gap)
-                if not _check(lay, ids, first, last, cand)[0]:
+                # (a coarse, quick look first; the one that passes it is then checked in full)
+                if not _check(lay, ids, first, last, cand, dt=0.1, stop_early=True)[0] \
+                        and not _check(lay, ids, first, last, cand)[0]:
                     plan = cand
                     break
             if plan is not None:
@@ -501,7 +511,7 @@ def check_sequence(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray, dt:
 
 
 def _check(lay: PadLayout, ids, first, last, plan: SequencePlan, dt: float = 0.05,
-           min_sep_m: float = TRANSIT_MIN_SEP_M):
+           min_sep_m: float = TRANSIT_MIN_SEP_M, stop_early: bool = False):
     """The sequence flown with `plan`, sampled every dt: every pair of flying drones at least
     min_sep_m apart, and none in another's downwash."""
     nb = lay.n_batches(ids)
@@ -515,6 +525,8 @@ def _check(lay: PadLayout, ids, first, last, plan: SequencePlan, dt: float = 0.0
     N = len(ids)
     iu, ju = np.triu_indices(N, 1)
     for name, legs, kind in phases:
+        if stop_early and problems:                                        # (searching: one problem is enough)
+            break
         t_end = max(L.t_end for L in legs)
         t = np.arange(0.0, t_end + 1.0, dt)
         P = np.stack([L.at(t) for L in legs])                              # (N, T, 3)

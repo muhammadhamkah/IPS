@@ -877,8 +877,27 @@ def test_charging_pads_after_trusses_before_planning(win, app, monkeypatch, tmp_
     assert win.doc.data["pads"]["centres"] == [[-3.0, -3.0], [-2.0, -3.0]]
     assert c.tool == "pad" and c.selection == ("pad", 1)
     app.processEvents()
+    # still in the pad tool: pressing on a placed pad drags it (it does not try to place another)
+    p0, p1 = c.mapFromScene(QPointF(-3.05, -3.0)), c.mapFromScene(QPointF(-4.05, -3.5))
+    QTest.mousePress(c.viewport(), Qt.MouseButton.LeftButton, pos=p0)
+    QTest.mouseMove(c.viewport(), p1)
+    QTest.mouseRelease(c.viewport(), Qt.MouseButton.LeftButton, pos=p1)
+    assert len(win.doc.data["pads"]["centres"]) == 2 and c.tool == "pad" and c.selection == ("pad", 0)
+    assert win.doc.data["pads"]["centres"][0] == pytest.approx([-4.0, -3.5])
+    win.doc.undo.undo()                                          # one undo step puts it back
+    assert win.doc.data["pads"]["centres"][0] == pytest.approx([-3.0, -3.0])
+    c.set_selection(("pad", 1))
+    app.processEvents()
     from PySide6.QtWidgets import QLabel
     assert any("Drone 5: front-left, batch 1" in w.text() for w in win.inspector.findChildren(QLabel) if w.isVisible())
+    # a third pad behind the first: it flies (row by row), and the Planner says how
+    said = []
+    c.message.connect(said.append)
+    click(c, -3, -2.2)
+    assert len(win.doc.data["pads"]["centres"]) == 3 and "behind another pad" in said[-1] and "take off" in said[-1]
+    assert c.pad_layout().pads_at_fault == set()
+    c.delete_item("pad", 2)
+    c.set_selection(("pad", 1))
     QTest.keyClick(c.viewport(), Qt.Key.Key_Escape)
     assert c.tool == "select"
     # drag pad 2 by its body
