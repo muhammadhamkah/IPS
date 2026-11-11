@@ -26,7 +26,9 @@ without parsing:
    60  u16      take-off long leg (ms): as long as the longest in its batch (0: from its distance)
    62  u16      landing long leg (ms): likewise
    64  u16      landing wait (ms): in front of its slot until the batch beside it is down
-   66  u16      reserved (0)
+   66  u8       row delay (0.1 s): pads one behind the other; this drone takes off this long into its
+                batch (the rear pad after the front one) and lands (largest - this) into it
+   67  u8       largest row delay in the show (0.1 s): every batch is this much longer (0: one row)
    60  u32      CRC-32 of bytes 0..59
 
   samples, 40 bytes each, at the sample rate from the first sample's time
@@ -48,7 +50,7 @@ import numpy as np
 
 MAGIC = b"IDPSTRJ1"
 VERSION = 2
-HEADER = struct.Struct("<8sHHHHfIf3ffIBBHHHHHHHHH")  # 68 bytes, then the header CRC
+HEADER = struct.Struct("<8sHHHHfIf3ffIBBHHHHHHHHBB")  # 68 bytes, then the header CRC
 HEADER_SIZE = HEADER.size + 4
 HEADER_V1 = struct.Struct("<8sHHHHfIf3ffIBBHHHHH")   # version 1: 60 bytes + CRC
 SAMPLE = np.dtype([("pos", "<f4", 3), ("vel", "<f4", 3), ("acc", "<f4", 3), ("rgb", "u1", 3), ("pad", "u1")])
@@ -82,6 +84,8 @@ class Trj:
     up_leg_s: float = 0.0          # 0: timed by its own distance
     down_leg_s: float = 0.0
     land_wait_s: float = 0.0
+    row_delay_s: float = 0.0       # pads one behind the other (idps.show.pads.sequence_plan); tenths of a second
+    max_row_delay_s: float = 0.0
 
     @property
     def duration(self) -> float:
@@ -101,7 +105,8 @@ def to_bytes(t: Trj) -> bytes:
                        int(round(t.transfer_speed_mps * 1000)), int(round(t.hold_timeout_s)),
                        int(round((t.pad_facing_deg % 360.0) * 100)) % 36000,
                        int(round(t.up_leg_s * 1000)), int(round(t.down_leg_s * 1000)),
-                       int(round(t.land_wait_s * 1000)), 0)
+                       int(round(t.land_wait_s * 1000)), int(round(t.row_delay_s * 10)),
+                       int(round(t.max_row_delay_s * 10)))
     return head + struct.pack("<I", crc32(head)) + body
 
 
@@ -118,14 +123,15 @@ def from_bytes(b: bytes) -> Trj:
         raise ValueError(".trj header CRC mismatch")
     f = st.unpack(head)
     _, ver, hsize, did, clear, rate, n, t0, hn, he, hd, yaw, crc_s, batch, nb, gap, climb, xfer, hold, facing = f[:20]
-    up, down, wait = (f[20], f[21], f[22]) if ver >= 2 else (0, 0, 0)
+    up, down, wait, row, row_max = (f[20], f[21], f[22], f[23], f[24]) if ver >= 2 else (0, 0, 0, 0, 0)
     body = b[hsize:hsize + n * SAMPLE.itemsize]
     if len(body) != n * SAMPLE.itemsize or crc32(body) != crc_s:
         raise ValueError(".trj samples truncated or corrupt")
     s = np.frombuffer(body, SAMPLE)
     return Trj(did, rate, t0, np.array([hn, he, hd]), yaw, s["pos"].astype(float), s["vel"].astype(float),
                s["acc"].astype(float), s["rgb"].astype(float), batch, nb, gap / 1000, climb / 1000, xfer / 1000,
-               float(hold), facing / 100, (clear / 100 if ver >= 2 else 0.0), up / 1000, down / 1000, wait / 1000)
+               float(hold), facing / 100, (clear / 100 if ver >= 2 else 0.0), up / 1000, down / 1000, wait / 1000,
+               row / 10, row_max / 10)
 
 
 def write_trj(path, t: Trj) -> bytes:

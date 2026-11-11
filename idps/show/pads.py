@@ -78,6 +78,8 @@ class PadLayout:
     transfer_speed_mps: float = 1.0
     facing_deg: float = 0.0                              # the pads' front, degrees from North (clockwise)
     source: str = ""
+    row_gap_s: float | None = None                       # pads one behind the other: the rear one this long after
+                                                         # the front one (None: the shortest that passes the checks)
 
     def __post_init__(self):
         # the first batch up flies highest: a later batch never climbs through one already up, and
@@ -125,7 +127,8 @@ class PadLayout:
         return {"pads": [[float(x) for x in p] for p in self.pads_ne], "slot_spacing_m": self.slot_spacing_m,
                 "layers_m": [float(x) for x in self.layers_m], "batch_gap_s": self.batch_gap_s,
                 "hold_timeout_s": self.hold_timeout_s, "climb_speed_mps": self.climb_speed_mps,
-                "transfer_speed_mps": self.transfer_speed_mps, "facing_deg": self.facing_deg}
+                "transfer_speed_mps": self.transfer_speed_mps, "facing_deg": self.facing_deg,
+                "row_gap_s": self.row_gap_s}
 
 
 def pads_from_site(d: dict, source: str = "") -> PadLayout | None:
@@ -136,9 +139,10 @@ def pads_from_site(d: dict, source: str = "") -> PadLayout | None:
         return None
     f = Frame.from_dict(d.get("origin"))
     ne = np.round(np.array([f.ne(c) for c in p["centres"]], float).reshape(-1, 2), 6) + 0.0   # (no -0.0)
+    rg = p.get("row_gap_s")
     return PadLayout(ne, float(p["slot_spacing_m"]), tuple(float(x) for x in p["layers_m"]), float(p["batch_gap_s"]),
                      float(p["hold_timeout_s"]), float(p["climb_speed_mps"]), float(p["transfer_speed_mps"]),
-                     site_facing_deg(d), source)
+                     site_facing_deg(d), source, float(rg) if isinstance(rg, (int, float)) else None)
 
 
 FACINGS = {"north": 0.0, "east": 90.0, "south": 180.0, "west": 270.0}
@@ -160,6 +164,42 @@ def pads_in_line(lay: "PadLayout", pads=None, lateral_m: float = 0.9) -> list[tu
             if abs(d @ side) < lateral_m and abs(d @ fwd) > 0.2:
                 out.append((pa, pb, float(abs(d @ side))) if d @ fwd > 0 else (pb, pa, float(abs(d @ side))))
     return out
+
+
+def pad_ranks(lay: "PadLayout", pads=None, by_depth: bool = False) -> dict[int, int]:
+    """Each pad's turn within a batch: 0 goes first, 1 a row gap later, and so on. A pad standing
+    behind another the way they face (pads_in_line) goes after it, so its drones cross over the
+    front pad once that pad's drones of the same batch have left; landing runs the other way
+    round (the rear pad first). by_depth: every row of pads its own turn, front to back, whatever
+    stands in line (the fallback when the first does not pass the checks)."""
+    use = sorted(pads) if pads is not None else list(range(1, len(lay.pads_ne) + 1))
+    rank = {p: 0 for p in use}
+    if by_depth:
+        a = np.radians(lay.facing_deg)
+        depth = {p: float(lay.pads_ne[p - 1] @ np.array([np.cos(a), np.sin(a)])) for p in use}
+        r, last = -1, None
+        for p in sorted(use, key=lambda p: -depth[p]):           # the front row (nearest the grid) first
+            if last is None or last - depth[p] > 0.3:
+                r += 1
+            rank[p], last = r, depth[p]
+        return rank
+    line = pads_in_line(lay, use)
+    for _ in use:
+        for rear, front, _d in line:
+            rank[rear] = max(rank[rear], rank[front] + 1)
+    return rank
+
+
+@dataclass
+class SequencePlan:
+    """How the drones take off and land: each one's extra wait behind the pad in front of it
+    (delay, s; landing waits max_delay - delay), the batches' long legs and landing waits."""
+    row_gap_s: float
+    delay: dict
+    max_delay: float
+    up: dict
+    down: dict
+    wait: dict
 
 
 def site_facing_deg(d: dict) -> float:
@@ -186,11 +226,26 @@ def site_facing_deg(d: dict) -> float:
     face = to_area
     if len(pads) >= 2:
         # pads in a row: face across the row, towards the area, so they stand side by side and no
-        # pad's drones fly over another pad while its next batch climbs
-        _, sv, vt = np.linalg.svd(pads - pads.mean(0))
-        if sv[1] < PAD_SIDE_M:                                   # (nearly) one row
-            normal = np.array([-vt[0][1], vt[0][0]])
-            face = normal if normal @ to_area >= 0 else -normal
+        # pad's drones fly over another pad while its next batch climbs. A block of pads (two or more
+        # rows) faces across its rows the same way: the rows then stand squarely one behind the
+        # other and take off row by row (pad_ranks); facing the area's middle at an angle would put
+        # every pad partly behind several others. The rows' direction: the one along which the
+        # most pairs of pads stand side by side (of the directions between pairs of pads); of two
+        # equally good ones (a square block), the one whose front faces the area more squarely.
+        unit = to_area / np.hypot(*to_area)
+        best = None
+        for a in range(len(pads)):
+            for b in range(a + 1, len(pads)):
+                row = pads[b] - pads[a]
+                row = row / max(np.hypot(*row), 1e-9)
+                normal = np.array([-row[1], row[0]])
+                depth = pads @ normal
+                same = int((np.abs(depth[:, None] - depth[None, :]) < 0.15).sum() - len(pads)) // 2
+                score = (same, round(abs(float(normal @ unit)), 3))
+                if best is None or score > best[0]:
+                    best = (score, normal)
+        normal = best[1]
+        face = normal if normal @ to_area >= 0 else -normal
     return round(float(np.degrees(np.arctan2(face[1], face[0]))), 3) % 360.0 + 0.0
 
 
@@ -278,7 +333,7 @@ def _forward(lay: PadLayout) -> np.ndarray:
     return np.array([np.cos(a), np.sin(a), 0.0])
 
 
-def batch_leg_times(lay: PadLayout, ids, first, last) -> tuple[dict, dict, dict]:
+def batch_leg_times(lay: PadLayout, ids, first, last, delay: dict | None = None) -> tuple[dict, dict, dict]:
     """Each drone's long level leg on the way up (clear point -> its grid place) and down (grid ->
     in front of its slot), as long as the longest in its batch: a batch moves as one formation, so
     drones from pads side by side (0.5 m apart) never close in on each other on their way. The
@@ -301,19 +356,24 @@ def batch_leg_times(lay: PadLayout, ids, first, last) -> tuple[dict, dict, dict]
                 times[d] = round(longest, 3)
     wait, done_after = {}, None                       # landing: the last batch up comes down first
     nb = lay.n_batches(ids)
+    delay = delay or {}
+    most = max(delay.values(), default=0.0)
     for b in sorted(batches, reverse=True):
         mine = [d for d in ids if lay.batch(d) == b]
-        arrive = lay.batch_gap_s * (nb - b) + down[mine[0]]
-        w = max(0.0, done_after - arrive) if done_after is not None else 0.0
-        step = max(leg_time(lay.clear_m(d), lay.transfer_speed_mps) for d in mine)
-        descend = leg_time(lay.layer_m(mine[0]), lay.climb_speed_mps)
-        done_after = arrive + w + step + descend + TOUCHDOWN_S
-        for d in mine:
+        done = []
+        for d in mine:                                # (pads one behind the other: the rear pad's drones first)
+            arrive = (lay.batch_gap_s + most) * (nb - b) + (most - delay.get(d, 0.0)) + down[d]
+            w = max(0.0, done_after - arrive) if done_after is not None else 0.0
+            step = leg_time(lay.clear_m(d), lay.transfer_speed_mps)
+            descend = leg_time(lay.layer_m(d), lay.climb_speed_mps)
+            done.append(arrive + w + step + descend + TOUCHDOWN_S)
             wait[d] = round(w, 3)
+        done_after = max(done)
     return up, down, wait
 
 
-def launch_legs(lay: PadLayout, drone_id: int, grid_ned, t_launch: float = 0.0, long_s: float | None = None) -> Legs:
+def launch_legs(lay: PadLayout, drone_id: int, grid_ned, t_launch: float = 0.0, long_s: float | None = None,
+                delay_s: float = 0.0, stagger_s: float = 0.0) -> Legs:
     """Pad -> up to the layer -> forward clear of the pads -> level to the grid place (in long_s, its
     batch's time, if given). The short step clears the pad (and the slot beside it, whose batch climbs
     next) at once; a long leg starts slowly."""
@@ -321,14 +381,17 @@ def launch_legs(lay: PadLayout, drone_id: int, grid_ned, t_launch: float = 0.0, 
     g = np.asarray(grid_ned, float)
     top = np.array([home[0], home[1], g[2]])
     clear = top + _forward(lay) * lay.clear_m(drone_id)
-    t0 = t_launch + lay.batch_gap_s * (lay.batch(drone_id) - 1)
+    # pads one behind the other: a batch takes stagger_s longer (its rows one after the other), and
+    # this drone goes delay_s into it
+    t0 = t_launch + (lay.batch_gap_s + stagger_s) * (lay.batch(drone_id) - 1) + delay_s
     return Legs(t0, [home, top, clear, g], [leg_time(top[2] - home[2], lay.climb_speed_mps),
                                             leg_time(lay.clear_m(drone_id), lay.transfer_speed_mps),
                                             long_s or leg_time(np.linalg.norm(g - clear), lay.transfer_speed_mps)])
 
 
 def landing_legs(lay: PadLayout, drone_id: int, from_ned, t_leave0: float, n_batches: int,
-                 long_s: float | None = None, wait_s: float = 0.0) -> Legs:
+                 long_s: float | None = None, wait_s: float = 0.0, delay_s: float = 0.0,
+                 stagger_s: float = 0.0) -> Legs:
     """Grid place -> level to in front of its slot (in long_s, its batch's time, if given) -> wait
     there wait_s (until the batch beside it is down) -> back over the slot -> down onto it (PX4 lands
     and disarms). t_leave0: when the first batch to land (the last to take off) leaves the grid."""
@@ -337,7 +400,7 @@ def landing_legs(lay: PadLayout, drone_id: int, from_ned, t_leave0: float, n_bat
     above = np.array([home[0], home[1], p[2]])
     front = above + _forward(lay) * lay.clear_m(drone_id)
     low = np.array([home[0], home[1], home[2] - LAND_HOVER_M])
-    t0 = t_leave0 + lay.batch_gap_s * (n_batches - lay.batch(drone_id))
+    t0 = t_leave0 + (lay.batch_gap_s + stagger_s) * (n_batches - lay.batch(drone_id)) + delay_s
     pts = [p, front] + ([front] if wait_s > 0 else []) + [above, low]
     Ts = [long_s or leg_time(np.linalg.norm(front - p), lay.transfer_speed_mps)] + ([wait_s] if wait_s > 0 else []) \
         + [leg_time(lay.clear_m(drone_id), lay.transfer_speed_mps), leg_time(low[2] - above[2], lay.climb_speed_mps)]
@@ -345,19 +408,17 @@ def landing_legs(lay: PadLayout, drone_id: int, from_ned, t_leave0: float, n_bat
 
 
 def downwash_pairs(P: np.ndarray, active: np.ndarray, radius_m: float, depth_m: float):
-    """(i, j, k): drone i hovers above drone j at sample k, within radius_m sideways and depth_m below
-    (NED: i's D is smaller). P (N, T, 3), active (N, T)."""
+    """(i, j, k): drone i hovers above drone j at sample k (the first such), within radius_m sideways
+    and depth_m below (NED: i's D is smaller). P (N, T, 3), active (N, T)."""
     N = len(P)
     hits = []
     for i in range(N):
-        for j in range(N):
-            if i == j:
-                continue
-            dh = np.linalg.norm(P[i, :, :2] - P[j, :, :2], axis=1)
-            dz = P[j, :, 2] - P[i, :, 2]                     # > 0: i is above j
-            bad = active[i] & active[j] & (dh < radius_m) & (dz > 0.05) & (dz < depth_m)
-            for k in np.flatnonzero(bad)[:1]:
-                hits.append((i, j, int(k)))
+        dh = np.linalg.norm(P[:, :, :2] - P[i, :, :2], axis=2)        # (N, T) sideways from i
+        dz = P[:, :, 2] - P[i, :, 2]                                    # > 0: i is above
+        bad = active[i] & active & (dh < radius_m) & (dz > 0.05) & (dz < depth_m)
+        bad[i] = False
+        for j in np.flatnonzero(bad.any(1)):
+            hits.append((i, int(j), int(np.argmax(bad[j]))))
     return hits
 
 
@@ -366,13 +427,60 @@ DOWNWASH_RADIUS_M = 0.4          # no flying drone this close sideways above ano
 DOWNWASH_DEPTH_M = 3.0           # ... that is less than this far below it
 
 
+ROW_GAPS_S = (2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0)     # tried in turn for pads one behind the other
+_PLANS: dict = {}
+
+
+def _make_plan(lay: PadLayout, ids, first, last, ranks: dict, row_gap: float) -> SequencePlan:
+    row_gap = round(float(row_gap), 1)                    # (the .trj stores tenths of a second)
+    delay = {d: ranks.get(lay.pad_slot(d)[0], 0) * row_gap for d in ids}
+    up, down, wait = batch_leg_times(lay, ids, first, last, delay)
+    return SequencePlan(row_gap, delay, max(delay.values(), default=0.0), up, down, wait)
+
+
+def sequence_plan(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray) -> SequencePlan:
+    """The take-off and landing plan for these drones. Pads side by side need none. Pads one
+    behind the other the way they face (two rows, where there is no room for one) are staggered:
+    the rear pad's drones take off ``row_gap_s`` after the front pad's of the same batch, and land
+    before them. The row gap is the layout's, or (None) the shortest of ROW_GAPS_S with which the
+    sequence passes its checks; if none does, the plan with the first one (the checks then say
+    what is wrong)."""
+    ids = list(ids)
+    first, last = np.asarray(first, float), np.asarray(last, float)
+    key = (lay.pads_ne.tobytes(), lay.slot_spacing_m, lay.layers_m, lay.batch_gap_s, lay.climb_speed_mps,
+           lay.transfer_speed_mps, lay.facing_deg, lay.row_gap_s, tuple(ids), first.tobytes(), last.tobytes())
+    if key in _PLANS:
+        return _PLANS[key]
+    used = {lay.pad_slot(d)[0] for d in ids if lay.pad_slot(d)[0] <= len(lay.pads_ne)}
+    ranks = pad_ranks(lay, used)
+    if not any(ranks.values()):
+        plan = _make_plan(lay, ids, first, last, ranks, 0.0)
+    elif lay.row_gap_s is not None:
+        plan = _make_plan(lay, ids, first, last, ranks, lay.row_gap_s)
+    else:
+        plan = None
+        for rk in (ranks, pad_ranks(lay, used, by_depth=True)):
+            for gap in ROW_GAPS_S:
+                cand = _make_plan(lay, ids, first, last, rk, gap)
+                if not _check(lay, ids, first, last, cand)[0]:
+                    plan = cand
+                    break
+            if plan is not None:
+                break
+        if plan is None:
+            plan = _make_plan(lay, ids, first, last, ranks, ROW_GAPS_S[0])
+    if len(_PLANS) > 64:
+        _PLANS.clear()
+    _PLANS[key] = plan
+    return plan
+
+
 def check_sequence(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray, dt: float = 0.05,
                    min_sep_m: float = TRANSIT_MIN_SEP_M, layer_tol_m: float = 0.1):
     """Take-off, hold and landing for drones `ids` whose show starts at `first` (N, 3 NED) and ends at
     `last`. Returns (problems, stats): problems = [(kind, drones (ids), t, ned, message)], all errors."""
     ids = list(ids)
     problems = []
-    nb = lay.n_batches(ids)
     for k, did in enumerate(ids):
         pad, slot = lay.pad_slot(did)
         if pad > len(lay.pads_ne):
@@ -386,15 +494,26 @@ def check_sequence(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray, dt:
                                  f"{h:.2f} m; its batch flies at {lay.layer_m(did):g} m."))
     if problems:
         return problems, {}
+    plan = sequence_plan(lay, ids, first, last)
+    problems, stats = _check(lay, ids, first, last, plan, dt, min_sep_m)
+    stats["row gap"] = plan.row_gap_s if plan.max_delay else 0.0
+    return problems, stats
 
-    stats = {}
-    up, down, wait = batch_leg_times(lay, ids, first, last)
-    phases = [("take-off", [launch_legs(lay, d, first[k], long_s=up[d]) for k, d in enumerate(ids)], "launch")]
-    t_land = 0.0
-    phases.append(("landing after the show", [landing_legs(lay, d, last[k], t_land, nb, long_s=down[d], wait_s=wait[d])
-                                              for k, d in enumerate(ids)], "land"))
-    phases.append(("landing after a hold timeout", [landing_legs(lay, d, first[k], t_land, nb, long_s=down[d], wait_s=wait[d])
-                                                    for k, d in enumerate(ids)], "land"))
+
+def _check(lay: PadLayout, ids, first, last, plan: SequencePlan, dt: float = 0.05,
+           min_sep_m: float = TRANSIT_MIN_SEP_M):
+    """The sequence flown with `plan`, sampled every dt: every pair of flying drones at least
+    min_sep_m apart, and none in another's downwash."""
+    nb = lay.n_batches(ids)
+    problems, stats = [], {}
+    up, down, wait, dl, most = plan.up, plan.down, plan.wait, plan.delay, plan.max_delay
+    phases = [("take-off", [launch_legs(lay, d, first[k], long_s=up[d], delay_s=dl[d], stagger_s=most)
+                            for k, d in enumerate(ids)], "launch")]
+    for name, ends in (("landing after the show", last), ("landing after a hold timeout", first)):
+        phases.append((name, [landing_legs(lay, d, ends[k], 0.0, nb, long_s=down[d], wait_s=wait[d],
+                                           delay_s=most - dl[d], stagger_s=most) for k, d in enumerate(ids)], "land"))
+    N = len(ids)
+    iu, ju = np.triu_indices(N, 1)
     for name, legs, kind in phases:
         t_end = max(L.t_end for L in legs)
         t = np.arange(0.0, t_end + 1.0, dt)
@@ -404,21 +523,18 @@ def check_sequence(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray, dt:
         else:
             active = np.stack([t <= L.t_end + TOUCHDOWN_S for L in legs])  # flying until it is down
         stats[name] = t_end
-        N = len(ids)
         worst = np.inf
-        for i in range(N):
-            for j in range(i + 1, N):
-                both = active[i] & active[j]
-                if not both.any():
-                    continue
-                d = np.linalg.norm(P[i] - P[j], axis=1)
-                d = np.where(both, d, np.inf)
-                k = int(d.argmin())
-                worst = min(worst, float(d[k]))
-                if d[k] < min_sep_m - 1e-3:                                 # (pads exactly min_sep_m apart)
-                    problems.append(("transit", (ids[i], ids[j]), float(t[k]), tuple(np.round(P[i, k], 2)),
-                                     f"{name}: drones {ids[i]} and {ids[j]} come within {d[k]:.2f} m "
-                                     f"(minimum {min_sep_m:g} m) at {t[k]:.1f} s."))
+        if len(iu):
+            d = np.linalg.norm(P[iu] - P[ju], axis=2)                       # (pairs, T)
+            d = np.where(active[iu] & active[ju], d, np.inf)
+            k = d.argmin(1)
+            dmin = d[np.arange(len(iu)), k]
+            worst = float(dmin.min())
+            for q in np.flatnonzero(dmin < min_sep_m - 1e-3):               # (pads exactly min_sep_m apart)
+                i, j, kk = int(iu[q]), int(ju[q]), int(k[q])
+                problems.append(("transit", (ids[i], ids[j]), float(t[kk]), tuple(np.round(P[i, kk], 2)),
+                                 f"{name}: drones {ids[i]} and {ids[j]} come within {dmin[q]:.2f} m "
+                                 f"(minimum {min_sep_m:g} m) at {t[kk]:.1f} s."))
         stats[name + " closest"] = worst
         for i, j, k in downwash_pairs(P, active, DOWNWASH_RADIUS_M, DOWNWASH_DEPTH_M):
             problems.append(("downwash", (ids[i], ids[j]), float(t[k]), tuple(np.round(P[i, k], 2)),

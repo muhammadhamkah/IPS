@@ -213,4 +213,55 @@ def test_pads_one_behind_the_other_are_named():
     _, reason, _ = diagnose("  ERROR  0.00 s  Pads 1 and 3, 2 and 4 stand one behind the other in the direction their "
                             "drones fly (heading 0 deg from North, to the show grid): ...\n"
                             "Not exported: fix the errors above, or pass --force")
-    assert reason.startswith("The charging pads are in two rows: pads 1 and 3, 2 and 4 stand one behind the other")
+    assert reason.startswith("The charging pads are in rows one behind the other (pads 1 and 3, 2 and 4)")
+
+
+@pytest.mark.parametrize("centres,n", [
+    ([[-4.75, 3.95], [-3.15, 3.95], [-4.75, 2.9], [-3.15, 2.9], [-1.55, 3.95]], 20),     # two rows, 3 + 2 pads
+    ([[-4, 4], [-3.4, 4], [-2.8, 4], [-4, 3.4], [-3.4, 3.4], [-2.8, 3.4]], 24),            # a 2 x 3 block, 0.6 m apart
+    ([[-4, 4], [-3.4, 4], [-4, 3.4], [-3.4, 3.4], [-4, 2.8], [-3.4, 2.8]], 24)])            # a 3 x 2 block
+def test_pads_in_two_rows_take_off_row_by_row(centres, n):
+    """Where there is no room for one row of pads: in every batch the front row's drones go first
+    and the rear row's a few seconds later (they land the other way round), still 4 batches to the
+    grid. The example show built for the layout passes every take-off and landing check, the
+    pads face across their rows, and the delays are written into the drones' files."""
+    import importlib.util
+    from idps.show.pads import pad_ranks, pads_from_site, sequence_plan
+    spec = importlib.util.spec_from_file_location("lfp", ROOT / "examples/shows/layers_from_pads.py")
+    lfp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lfp)
+    site = {"origin": {"xy": [-0.5, 1], "north_deg": 90},
+            "volume": {"polygon": [[-9.5, 5], [8.5, 5], [8.5, -3.5], [-9.5, -3.5]], "z": [0, 10]},
+            "pads": {"centres": centres, "batch_gap_s": 5, "climb_speed_mps": 1.5, "transfer_speed_mps": 1.5}}
+    lay = pads_from_site(site)
+    assert lay.facing_deg % 90 == 0                                  # square to the rows, not at the area's middle
+    ch = lfp.build(site, n)
+    _, P, _ = ch.arrays()
+    ned = np.stack([P[:, :, 1], P[:, :, 0], -P[:, :, 2]], -1)
+    ids = list(range(1, n + 1))
+    problems, stats = check_sequence(lay, ids, ned[:, 0], ned[:, -1])
+    assert not problems, problems[:3]
+    plan = sequence_plan(lay, ids, ned[:, 0], ned[:, -1])
+    ranks = pad_ranks(lay)
+    assert 2.0 <= plan.row_gap_s <= 6.0 and plan.max_delay == plan.row_gap_s * max(ranks.values())
+    assert stats["row gap"] == plan.row_gap_s and stats["take-off closest"] >= 0.5
+    for d in ids:                                                    # a pad with one in front of it goes later
+        assert plan.delay[d] == plan.row_gap_s * ranks[lay.pad_slot(d)[0]]
+    front = [d for d in ids if plan.delay[d] == 0 and lay.batch(d) == 1]
+    rear = [d for d in ids if plan.delay[d] > 0 and lay.batch(d) == 1]
+    assert front and rear
+    from idps.show.pads import launch_legs
+    t_front = launch_legs(lay, front[0], ned[front[0] - 1, 0], delay_s=plan.delay[front[0]], stagger_s=plan.max_delay).t0
+    t_rear = launch_legs(lay, rear[0], ned[rear[0] - 1, 0], delay_s=plan.delay[rear[0]], stagger_s=plan.max_delay).t0
+    assert t_rear - t_front == plan.delay[rear[0]]
+    b2 = [d for d in ids if lay.batch(d) == 2][0]                    # the next batch: after every row of this one
+    assert launch_legs(lay, b2, ned[b2 - 1, 0], delay_s=0.0, stagger_s=plan.max_delay).t0 == lay.batch_gap_s + plan.max_delay
+
+
+def test_trj_carries_the_row_delays():
+    from idps.show.trj import Trj, from_bytes, to_bytes
+    n = 2
+    t = Trj(3, 10.0, 0.0, np.zeros(3), 0.0, *[np.zeros((n, 3))] * 4, batch=1, n_batches=4, batch_gap_s=5,
+            row_delay_s=4.0, max_row_delay_s=8.0)
+    back = from_bytes(to_bytes(t))
+    assert (back.row_delay_s, back.max_row_delay_s) == (4.0, 8.0) and len(to_bytes(t)) == 72 + n * 40

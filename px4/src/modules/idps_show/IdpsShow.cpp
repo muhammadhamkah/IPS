@@ -234,7 +234,8 @@ const char *IdpsShow::launch(const vehicle_command_s &cmd, hrt_abstime now)
 
 	// take-off: straight up over the pad slot to the grid's height, forward clear of the pads (a long
 	// leg starts slowly), then level to the grid place, in its batch's time (a formation)
-	_legs.t0 = t_pc + (int64_t)h.batch_gap_ms * 1000 * (h.batch - 1);
+	// (pads one behind the other: a batch takes all its rows, and this drone goes row_delay into it)
+	_legs.t0 = t_pc + h.batch_period_us() * (h.batch - 1) + h.row_delay_us();
 	float fwd[3];
 	forward(fwd);
 	const float clear = clear_m();
@@ -290,9 +291,9 @@ const char *IdpsShow::start_in_air(int64_t t_pc, const vehicle_command_s &cmd, h
 	}
 
 	const idps::TrjHeader &h = _file.header();
-	const int64_t gap = (int64_t)h.batch_gap_ms * 1000;
-	const int64_t leave = _launch_pc + gap * (h.n_batches - 1) + (int64_t)h.hold_timeout_s * 1000000
-			      + gap * (h.n_batches - h.batch);
+	const int64_t gap = h.batch_period_us();
+	const int64_t leave = _launch_pc + gap * (h.n_batches - 1) + h.max_row_delay_us() + (int64_t)h.hold_timeout_s * 1000000
+			      + gap * (h.n_batches - h.batch) + h.land_delay_us();
 
 	if (t_pc < _legs.end() + 1000000) {
 		return "start before this drone reaches the grid";
@@ -724,9 +725,10 @@ void IdpsShow::run_pads(hrt_abstime now)
 			_state = State::Running;          // the show plays from the next cycle
 
 		} else if (_start_pc == 0) {
-			const int64_t gap = (int64_t)h.batch_gap_ms * 1000;
-			const int64_t leave = _launch_pc + gap * (h.n_batches - 1) + (int64_t)h.hold_timeout_s * 1000000
-					      + gap * (h.n_batches - h.batch);
+			const int64_t gap = h.batch_period_us();
+			const int64_t leave = _launch_pc + gap * (h.n_batches - 1) + h.max_row_delay_us()
+					      + (int64_t)h.hold_timeout_s * 1000000
+					      + gap * (h.n_batches - h.batch) + h.land_delay_us();
 
 			if (t >= leave) {
 				mavlink_log_info(&_mavlink_log_pub, "IDPS show: no start, back to the pad");
@@ -967,9 +969,9 @@ void IdpsShow::Run()
 				return;
 			}
 
-			const int64_t gap = (int64_t)h.batch_gap_ms * 1000;
+			const int64_t gap = h.batch_period_us();
 			const int64_t end_pc = _start_pc + (int64_t)((t_end - h.t0) * 1e6f);
-			begin_landing(last, end_pc + gap * (h.n_batches - h.batch));
+			begin_landing(last, end_pc + gap * (h.n_batches - h.batch) + h.land_delay_us());
 			mavlink_log_info(&_mavlink_log_pub, "IDPS show: finished, back to the pad");
 
 		} else {

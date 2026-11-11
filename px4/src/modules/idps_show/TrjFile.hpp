@@ -33,8 +33,16 @@ struct TrjHeader {
 	uint16_t up_leg_ms;       // the long take-off leg: as long as the longest in its batch (0: by distance)
 	uint16_t down_leg_ms;     // the long landing leg, likewise
 	uint16_t land_wait_ms;    // wait in front of its slot until the batch beside it is down
-	uint16_t reserved;
+	uint8_t row_delay_ds;     // pads one behind the other: this drone takes off this long (0.1 s) into its batch
+	uint8_t max_row_delay_ds; // the largest of those in the show: every batch is that much longer (0: one row)
 	uint32_t header_crc;
+
+	// a batch: the gap, plus the time its rows of pads take one after the other
+	int64_t batch_period_us() const { return (int64_t)batch_gap_ms * 1000 + (int64_t)max_row_delay_ds * 100000; }
+	int64_t row_delay_us() const { return (int64_t)row_delay_ds * 100000; }
+	// landing runs the other way round: the rear pad (the last up in its batch) first
+	int64_t land_delay_us() const { return (int64_t)(max_row_delay_ds - row_delay_ds) * 100000; }
+	int64_t max_row_delay_us() const { return (int64_t)max_row_delay_ds * 100000; }
 };
 static_assert(sizeof(TrjHeader) == 72, "TrjHeader must be 72 bytes");
 

@@ -36,6 +36,10 @@
  * last batch went, batch k leaves batch_gap x (n_batches - k) later (last up, first down): level
  * to above its pad slot, down onto it, and PX4 lands and disarms it. Every leg is a minimum-jerk
  * move, T = max(1.5 s, 1.875 x distance / speed), exactly as idps/show/pads.py checks them.
+ * Pads one behind the other (two rows, where there is no room for one): within a batch the rear
+ * pad's drones go row_delay after the front pad's, so they cross over the front pad once its
+ * drones have left; a batch then lasts batch_gap + the largest row delay, and landing runs the
+ * other way round (the rear pad's drones first). The file's header carries both delays.
  */
 #pragma once
 

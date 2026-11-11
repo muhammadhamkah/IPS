@@ -192,7 +192,8 @@ def cmd_start(a) -> int:
         # charging pads: launch (batches take off and fly to the air grid), wait until every drone
         # holds there, then start the show from the air
         nb = max(d.get("batch", 1) for d in man["drones"])
-        gap = float(pads["batch_gap_s"])
+        stagger = float(pads.get("max_row_delay_s") or 0.0)      # pads one behind the other: the rows' stagger
+        gap = float(pads["batch_gap_s"]) + stagger              # a batch, all its rows
         t_launch, replies = ob.start_all(drones, lead_s=a.lead, action=ob.LAUNCH)
         for did, r in sorted(replies.items()):
             print(f"drone {did}: launch {r.result} ({r.state}) {r.text}")
@@ -200,9 +201,11 @@ def cmd_start(a) -> int:
             print("Not started: every drone was told to abort. Fix the refused drone(s) and start again.")
             sync.stop()
             return 1
-        print(f"launch in {a.lead:.0f} s: {nb} batch(es) {gap:g} s apart, then every drone holds in the grid", flush=True)
-        give_up = t_launch / 1e6 + gap * (nb - 1) + float(pads["hold_timeout_s"]) + gap * nb + 40.0
-        states = ob.wait_holding(drones, timeout_s=a.lead + gap * (nb - 1) + 40.0)
+        print(f"launch in {a.lead:.0f} s: {nb} batch(es) {gap:g} s apart"
+              + (f" (pads one behind the other: the rear ones {float(pads.get('row_gap_s') or 0):g} s after the front "
+                 "ones in each batch)" if stagger else "") + ", then every drone holds in the grid", flush=True)
+        give_up = t_launch / 1e6 + gap * (nb - 1) + stagger + float(pads["hold_timeout_s"]) + gap * nb + 40.0
+        states = ob.wait_holding(drones, timeout_s=a.lead + gap * (nb - 1) + stagger + 40.0)
         late = [did for did, r in states.items() if r.progress_code != ob.HOLDING]
         if late:
             print("Not started: drone(s) " + ", ".join(f"{did} ({states[did].state})" for did in sorted(late))

@@ -69,12 +69,40 @@ class Layout:
         if nearest < need:
             self.centre = self.centre + self.u * (need - nearest)
 
+    def _row_order(self, members: list, col: float) -> list:
+        """A batch's drones in the order of their places along its row. From one row of pads: the
+        pads' order, so paths do not cross. With pads one behind the other (two rows of pads) the
+        rear pads' drones take off after the front pads' (idps.show.pads.pad_ranks) and fly along
+        the row to their places, so they must not pass a place where a drone already holds: the
+        last to take off get the places nearest their pads (a block of neighbouring places), then
+        the ones before them the nearest of what is left, each group in its pads' order. On the way
+        down (the last up first) the same holds."""
+        from idps.show.pads import pad_ranks
+        pad = {d: (d - 1) // SLOTS + 1 for d in members}
+        rank = pad_ranks(self.lay, set(pad.values()))
+        across = {d: float(self.lay.pads_ne[pad[d] - 1] @ self.v) for d in members}
+        m = len(members)
+        places = float(self.centre @ self.v) + (np.arange(m) - (m - 1) / 2) * col
+        free, at = list(range(m)), {}
+        for r in sorted({rank[pad[d]] for d in members}, reverse=True):
+            group = sorted((d for d in members if rank[pad[d]] == r), key=lambda d: (across[d], d))
+            best = None
+            for k in range(len(free) - len(group) + 1):
+                idx = free[k:k + len(group)]
+                cost = sum(abs(places[i] - across[d]) for i, d in zip(idx, group))
+                if best is None or cost < best[0] - 1e-9:
+                    best = (cost, idx)
+            for i, d in zip(best[1], group):
+                at[i] = d
+            free = [i for i in free if i not in best[1]]
+        return [at[i] for i in range(m)]
+
     def grid(self, col: float = COL, wave=None) -> np.ndarray:
         """(n, 3) show-frame places (x East, y North, z up); wave: +1/-1 lifts alternate drones."""
         P = np.zeros((self.n, 3))
         for b in range(1, SLOTS + 1):
             members = [d for d in range(1, self.n + 1) if batch(d) == b]
-            members.sort(key=lambda d: self.lay.pads_ne[(d - 1) // SLOTS] @ self.v)   # keep the pads' order
+            members = self._row_order(members, col)
             for i, did in enumerate(members):
                 ne = self.centre + self.u * ((SLOTS + 1) / 2 - b) * ROW + self.v * (i - (len(members) - 1) / 2) * col
                 dz = 0.0 if wave is None else WAVE * wave * (1 if (i + b) % 2 == 0 else -1)

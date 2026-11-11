@@ -186,9 +186,26 @@ spacing without coming any closer. On the way back each batch waits in front of 
 the batch beside it is down. A drone whose path to the grid would cross another pad first steps
 forward past it.
 
+**Pads can also stand in two or more rows, one behind the other,** where there is no room for
+one row. The drones still take off in the same 4 batches to the grid. Within each batch the
+front row's drones go first and the rear row's a few seconds later (the *row gap*), once the
+front pad's drones have left, since the rear drones cross over the front pads. Landing runs the
+other way round: the rear row first.
+* The row gap is chosen automatically: the shortest of 2–12 s with which the take-off and landing
+  checks pass. `row_gap_s` in the pads settings fixes it by hand.
+* A batch then lasts the batch gap plus the row gap for each extra row, so take-off and landing
+  take longer (about 40 s where one row takes 23 s, in the example).
+* A rear pad's drone must not fly past a grid place where a drone already holds. The example
+  show gives the last drones up the places nearest their pads.
+* Each drone's delay is in its file's header, and the manifest lists `row_gap_s`.
+
+Tested in SITL: 12 drones from 3 pads, one in front of the other two, took off row by row, flew
+the show and landed. No two flying drones came closer than 0.70 m, and none flew in another's
+downwash.
+
 **A pad's front faces where its drones fly** (`facing`: `auto`, the default: across the pads'
-row towards the performance area when they stand in a row, else towards the area's middle; or
-north / east / south / west). Slots 1 and 2 are at the front, so the
+rows towards the performance area, whether they stand in one row or in several; a single pad
+faces the area's middle; or north / east / south / west). Slots 1 and 2 are at the front, so the
 first batches leave first and the later ones step forward over empty slots: never over a drone
 still on the pad, wherever the pads stand. Drones still face North (yaw 0); only the slots turn.
 

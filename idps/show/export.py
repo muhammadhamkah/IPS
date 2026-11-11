@@ -71,10 +71,12 @@ def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz:
     ids = drone_ids(show)
     nb = pads.n_batches(ids) if pads is not None else 0
     up = down = wait = {}
-    if pads is not None:                    # each batch's long legs: as long as its longest (a formation)
-        from idps.show.pads import batch_leg_times
+    plan = None
+    if pads is not None:                    # each batch's long legs: as long as its longest (a formation);
+        from idps.show.pads import sequence_plan       # pads one behind the other: the rows' stagger
         ends = [drone_samples(d, pl, rate_hz, t0, t1) for d in show.drones]
-        up, down, wait = batch_leg_times(pads, ids, [S[0, 1:4] for S in ends], [S[-1, 1:4] for S in ends])
+        plan = sequence_plan(pads, ids, np.array([S[0, 1:4] for S in ends]), np.array([S[-1, 1:4] for S in ends]))
+        up, down, wait = plan.up, plan.down, plan.wait
     for k, d in zip(ids, show.drones):
         S = drone_samples(d, pl, rate_hz, t0, t1)
         # with charging pads the drone's home is its pad slot (the show starts in the air)
@@ -83,7 +85,8 @@ def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz:
                    climb_speed_mps=pads.climb_speed_mps, transfer_speed_mps=pads.transfer_speed_mps,
                    hold_timeout_s=pads.hold_timeout_s, pad_facing_deg=pads.facing_deg,
                    pad_clear_m=pads.clear_m(k), up_leg_s=up[k], down_leg_s=down[k],
-                   land_wait_s=wait[k]) if pads is not None else {}
+                   land_wait_s=wait[k], row_delay_s=plan.delay[k],
+                   max_row_delay_s=plan.max_delay) if pads is not None else {}
         doc = {
             "format": FORMAT, "drone_id": k, "name": d.name, "frame": "NED",
             "frame_note": "metres from the venue origin (calibration square corner): N along its long arm, "
@@ -107,7 +110,8 @@ def export_px4(show: Show, out_dir, placement: Placement | None = None, rate_hz:
         "format": "idps-show/1", "source": show.source, "duration_s": float(t1 - t0), "rate_hz": rate_hz,
         "placement": {"axes": pl.axes, "rotate_deg": pl.rotate_deg, "offset_ned": list(pl.offset_ned)},
         "venue": venue or {}, "drones": drones,
-        "pads": pads.to_dict() if pads is not None else None,
+        "pads": {**pads.to_dict(), "row_gap_s": plan.row_gap_s if plan.max_delay else 0.0,
+                 "max_row_delay_s": plan.max_delay} if pads is not None else None,
         "check": None if report is None else {"ok": report.ok, "summary": report.summary(),
                                               "errors": sum(f.severity == "error" for f in report.findings),
                                               "warnings": sum(f.severity == "warning" for f in report.findings)},

@@ -210,10 +210,13 @@ def check_show(show: Show, site, cameras=None, placement: Placement | None = Non
                 pairs = ", ".join(f"{a} and {b}" for a, b, _ in line[:4]) + (" ..." if len(line) > 4 else "")
                 rep.findings.append(Finding("pads", "error", (), 0.0, 0.0, (0, 0, 0),
                                             f"Pads {pairs} stand one behind the other in the direction their drones "
-                                            f"fly (heading {pads.facing_deg:.0f} deg from North, to the show grid): the "
-                                            "rear pad's drones cross over the front pad while its drones climb or "
-                                            "land. Put the pads side by side in one row across that direction "
-                                            "(0.5 m apart is enough), or fly only as many drones as one row holds."))
+                                            f"fly (heading {pads.facing_deg:.0f} deg from North, to the show grid). The "
+                                            "rear pads' drones take off after the front pads' in each batch (and land "
+                                            "before them), but for this show's grid no delay between them makes it "
+                                            "safe: a rear pad's drone would fly past a place where another already "
+                                            "holds, or over a front pad as its drones climb. Give the rear pads' "
+                                            "drones the grid places nearest the pads, move the pads further apart, or "
+                                            "put them in one row across that direction."))
         for kind, who, tk, ned, msg in problems:
             rep.findings.append(Finding(kind, "error", tuple(f"drone {d}" for d in who), tk, tk, tuple(ned), msg))
         rep.stats_pads = seq
