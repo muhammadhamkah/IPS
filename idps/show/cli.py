@@ -62,12 +62,27 @@ def _print_report(rep, limit=25):
         print(f"  … and {len(rep.findings) - limit} more")
 
 
+def _fit_pads(pads, show, pl):
+    """A show made elsewhere starts in its own layers: the pads take them from its first frame."""
+    if pads is None or not show.drones:
+        return pads
+    import numpy as np
+    from idps.show.export import drone_ids
+    from idps.show.pads import fit_layers
+    first = np.array([pl.to_ned(d.sample(np.array([show.t_start])))[0] for d in show.drones])
+    pads, note = fit_layers(pads, drone_ids(show), first)
+    if note:
+        print(note)
+    return pads
+
+
 def cmd_check(a) -> int:
     from idps.show.check import check_show
     from idps.show.readers import load_show
     site, cams = _site_and_cams(a)
     show = load_show(a.show)
-    rep = check_show(show, site, cams, _placement(a), _limits(a), pads=_pads(a))
+    pads = _fit_pads(_pads(a), show, _placement(a))
+    rep = check_show(show, site, cams, _placement(a), _limits(a), pads=pads)
     if not cams:
         print("(no --plan given: camera coverage along the paths is not checked)")
     _print_report(rep)
@@ -81,12 +96,14 @@ def cmd_export(a) -> int:
     site, cams = _site_and_cams(a)
     show = load_show(a.show)
     pl = _placement(a)
-    pads = _pads(a)
+    pads = _fit_pads(_pads(a), show, pl)
     rep = check_show(show, site, cams, pl, _limits(a), pads=pads)
     _print_report(rep, limit=10)
     if not rep.ok and not a.force:
         print("Not exported: fix the errors above, or pass --force to export anyway (not for flying).")
         return 1
+    if not rep.ok:
+        print("Exported anyway (--force): for the simulator, not for real drones.")
     path = export_px4(show, a.out, pl, a.rate, rep, venue={"site": str(a.site), "origin": site.frame.to_dict()},
                       pads=pads)
     print(f"wrote {len(show.drones)} drone files (by drone ID) and {path}")

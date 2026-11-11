@@ -55,8 +55,11 @@ The drones carry **no companion computer** (D20).
      programmes are kept as-is).
    * **XTJZ per-drone files** (what some show conversion software uploads to each drone, e.g.
      `1.dat`, `2.dat.gz`): a folder or ZIP of them. Positions are in cm, North-East-Down from
-     the show origin, 10 per second; colours 18 per position (180 per second). Plain and compressed (signed)
-     files are both read. The file has no take-off or landing: it starts and ends in the air.
+     the show origin; colours 18 per position. The rate (5 or 10 positions per second) is read
+     from the files. Plain and compressed (signed) files are both read, and a ZIP may hold both.
+     The file has no take-off or landing: it starts and ends in the air. To watch such a show:
+     Simulate tab, Drones: Show file; or Fly the show tab, "Show file…". The full loop flies it
+     even if it breaks IDPS's safety rules, and lists the rules it breaks.
 
 ### Or design a show in code (`idps.show.choreo`)
 

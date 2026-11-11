@@ -36,7 +36,7 @@ def load_show(path: str | Path, more: list | None = None) -> Show:
         files = {p.name: p.read_bytes() for p in sorted(path.iterdir()) if p.is_file() and not _junk(p.name)}
         xt = {n: b for n, b in files.items() if is_xtjz(b)}
         if xt:
-            return show_from_xtjz(xt, str(path))
+            return show_from_xtjz(xt, str(path), _summary_rate(p.read_text(errors="replace") for p in path.glob("*.csv")))
         return _load_csv_files({p.name: p.read_text() for p in path.glob("*.csv") if not _junk(p.name)}, str(path))
     if path.suffix.lower() == ".csv":
         return _load_csv_files({path.name: path.read_text()}, str(path))
@@ -52,10 +52,13 @@ def load_show(path: str | Path, more: list | None = None) -> Show:
         names = z.namelist()
         if any(n.endswith("show.json") for n in names):
             return _load_skyc(z, str(path))
-        xt = {PurePosixPath(n).name: z.read(n) for n in names if not n.endswith("/") and not _junk(n)}
+        # (keyed by the whole path: a download holds each drone in several folders, same file names)
+        xt = {n: z.read(n) for n in names if not n.endswith("/") and not _junk(n) and not n.lower().endswith(".csv")}
         xt = {n: b for n, b in xt.items() if is_xtjz(b)}
         if xt:
-            return show_from_xtjz(xt, str(path))
+            rate = _summary_rate(z.read(n).decode("utf-8-sig", errors="replace") for n in names
+                                 if n.lower().endswith(".csv") and not _junk(n) and z.getinfo(n).file_size < 200_000)
+            return show_from_xtjz(xt, str(path), rate)
         csvs = {n: z.read(n).decode("utf-8-sig") for n in names
                 if n.lower().endswith(".csv") and not _junk(n)}
         if csvs:
@@ -131,6 +134,16 @@ def _load_csv_files(files: dict, source: str) -> Show:
     if not drones:
         raise ValueError(f"{source}: no drone CSV files")
     return Show(drones, source, "csv")
+
+
+def _summary_rate(texts) -> float | None:
+    """The show's position rate from its summary CSV, if one of these texts is one."""
+    from idps.show.xtjz import rate_from_summary
+    for text in texts:
+        rate = rate_from_summary(text)
+        if rate:
+            return rate
+    return None
 
 
 def _junk(name: str) -> bool:

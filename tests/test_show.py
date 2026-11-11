@@ -383,6 +383,78 @@ def test_xtjz_reader_raw_and_run_length(tmp_path):
     assert np.allclose(show.drones[1].colour([0.0])[0], rgb[0])
 
 
+def test_xtjz_download_folder_with_every_variant(tmp_path):
+    """A show as downloaded for the drones: a ZIP with each drone's file four times over (_src plain,
+    encoding 0; _dif; _rle signed, run-length; _gz), a summary CSV and macOS debris. One track per
+    drone, at the show's own rate: 5 positions a second here (the plain header's colour rate / 18,
+    and the summary's frames / duration), not the 10 a signed file alone would be taken for."""
+    import gzip
+    import zipfile
+
+    from idps.show.readers import load_show
+    from idps.show.xtjz import rate_from_summary, read_xtjz
+    n = 30
+    t = np.arange(n) / 5.0
+    rgb = np.column_stack([np.linspace(0, 255, 18 * n).round(), np.zeros(18 * n), np.full(18 * n, 128)])
+
+    def files(k):
+        pos = np.column_stack([np.round(40 * np.sin(t)) + 30 * k, np.round(-250 + 20 * t), np.full(n, -300 + 70 * k)])
+        plain = bytearray(_xtjz(k, pos, rgb, 1))
+        plain[23] = 90                                              # colour samples per second
+        src = bytearray(plain)
+        off = 140
+        while off < len(src):                                       # the same, sections marked encoding 0
+            (ln,) = __import__("struct").unpack_from("<I", src, off)
+            src[off + 5] = 0
+            off += 8 + ln
+        return pos, bytes(src), bytes(plain), _xtjz(k, pos, rgb, 2, signed=True)
+
+    z = tmp_path / "_output.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        for k in (1, 2, 3):
+            pos, src, dif, rle = files(k)
+            zf.writestr(f"_output/_src/{k}.dat", src)
+            zf.writestr(f"_output/_dif/{k}.dat", dif)
+            zf.writestr(f"_output/_rle/{k}.dat", rle)
+            zf.writestr(f"_output/_gz/{k}.dat.gz", gzip.compress(rle))
+            zf.writestr(f"__MACOSX/_output/_src/._{k}.dat", b"junk")
+        zf.writestr("_output/Show-Summary.csv", "drone_id,duration,frames,x_max\n1,0:06.0,30,2.2\n2,0:06.0,30,2.2\n")
+    show = load_show(z)
+    assert [d.name for d in show.drones] == ["Drone 1", "Drone 2", "Drone 3"] and show.meta["rate_hz"] == 5.0
+    assert show.duration == pytest.approx((n - 1) / 5.0)
+    pos, src, dif, rle = files(2)
+    assert np.allclose(show.drones[1].sample([0.0])[0], [pos[0, 1] / 100, pos[0, 0] / 100, -pos[0, 2] / 100])
+    assert read_xtjz(src, "2.dat").rate_hz == 5.0 and np.array_equal(read_xtjz(src, "2.dat").pos_ned, pos / 100)
+    assert read_xtjz(rle, "2.dat").rate_hz == 10.0 and not read_xtjz(rle, "2.dat").rate_known       # nothing says
+    assert rate_from_summary("drone_id,duration,frames\n1,3:49.0,1145\n") == 5.0
+    assert rate_from_summary("time,x,y,z\n0,1,2,3\n") is None
+    (tmp_path / "only_rle").mkdir()                                 # signed files with the summary beside them
+    for k in (1, 2):
+        (tmp_path / "only_rle" / f"{k}.dat").write_bytes(files(k)[3])
+    (tmp_path / "only_rle" / "Show-Summary.csv").write_text("drone_id,duration,frames\n1,0:06.0,30\n")
+    assert load_show(tmp_path / "only_rle").duration == pytest.approx((n - 1) / 5.0)
+
+
+def test_pads_take_their_layers_from_a_show_made_elsewhere():
+    """A show that starts in its own layers (the first batch up the highest): the pads' layers follow
+    it, so its take-off is checked at its own heights. Where it ends is free."""
+    from idps.show.pads import PadLayout, check_sequence, fit_layers
+    lay = PadLayout(np.array([[3.0, -1.0], [3.0, 1.0]]), 0.2, (4, 3, 2, 1), 5, 60, 1.5, 1.5, 180.0)
+    ids = list(range(1, 9))
+    first = np.array([[0.4 * ((d - 1) % 4), -1.5 + 1.0 * ((d - 1) // 4) + 0.2 * ((d - 1) % 4),
+                       -[3.46, 2.75, 2.04, 1.34][(d - 1) % 4]] for d in ids])
+    fitted, note = fit_layers(lay, ids, first)
+    assert fitted.layers_m == (3.46, 2.75, 2.04, 1.34) and note.startswith("Layers taken from the show's first frame: 3.46")
+    assert fit_layers(fitted, ids, first) == (fitted, "")                        # already at its layers
+    upside = first.copy()
+    upside[:, 2] = -np.array([1.34, 2.04, 2.75, 3.46])[(np.array(ids) - 1) % 4]  # the first batch the lowest: no
+    assert fit_layers(lay, ids, upside) == (lay, "")
+    last = first.copy()
+    last[:, 2] = -2.0                                                            # ends elsewhere: not a layer error
+    assert not [p for p in check_sequence(fitted, ids, first, last)[0] if p[0] == "layer"]
+    assert [p for p in check_sequence(lay, ids, first, last)[0] if p[0] == "layer"]
+
+
 def test_check_measures_acceleration_on_sampled_paths():
     """A sampled path is straight between samples: the check still sees its acceleration."""
     from idps.show.check import _accel

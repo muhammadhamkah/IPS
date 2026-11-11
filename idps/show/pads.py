@@ -445,6 +445,27 @@ DOWNWASH_RADIUS_M = 0.4          # no flying drone this close sideways above ano
 DOWNWASH_DEPTH_M = 3.0           # ... that is less than this far below it
 
 
+def fit_layers(lay: PadLayout, ids, first: np.ndarray, tol_m: float = 0.1) -> tuple[PadLayout, str]:
+    """The layout with its layers taken from a show made elsewhere: each batch's height in the
+    show's first frame, when every batch starts at one height and the first batch up is the
+    highest (as the take-off needs). Returns (layout, note); the layout unchanged and "" if the
+    show already starts at the layout's layers, or does not start in layers by batch."""
+    import dataclasses
+    heights: dict = {}
+    for k, did in enumerate(ids):
+        if lay.pad_slot(did)[0] <= len(lay.pads_ne):
+            heights.setdefault(lay.batch(did), []).append(-float(first[k][2]))
+    if not heights or any(np.ptp(h) > tol_m for h in heights.values()):
+        return lay, ""
+    layers = [float(np.mean(heights[b])) if b in heights else float(lay.layers_m[b - 1]) for b in range(1, SLOTS + 1)]
+    if any(a <= b for a, b in zip(layers, layers[1:])):
+        return lay, ""
+    if all(abs(a - b) <= tol_m for a, b in zip(layers, lay.layers_m)):
+        return lay, ""
+    return (dataclasses.replace(lay, layers_m=tuple(round(x, 2) for x in layers)),
+            "Layers taken from the show's first frame: " + ", ".join(f"{x:.2f}" for x in layers) + " m (batches 1 to 4).")
+
+
 ROW_GAPS_S = (2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0)     # tried in turn for pads one behind the other
 _PLANS: dict = {}
 
@@ -507,11 +528,11 @@ def check_sequence(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray, dt:
             problems.append(("pads", (did,), 0.0, (0, 0, 0), f"drone {did} needs pad {pad}: the layout has "
                              f"{len(lay.pads_ne)} pads ({SLOTS} drones each)."))
             continue
-        for what, P in (("starts", first[k]), ("ends", last[k])):
-            h = -float(P[2])
-            if abs(h - lay.layer_m(did)) > layer_tol_m:
-                problems.append(("layer", (did,), 0.0, tuple(P), f"drone {did} (batch {slot}) {what} the show at "
-                                 f"{h:.2f} m; its batch flies at {lay.layer_m(did):g} m."))
+        # (where the show ends is free: the landing flies from there and is checked as flown)
+        h = -float(first[k][2])
+        if abs(h - lay.layer_m(did)) > layer_tol_m:
+            problems.append(("layer", (did,), 0.0, tuple(first[k]), f"drone {did} (batch {slot}) starts the show at "
+                             f"{h:.2f} m; its batch flies at {lay.layer_m(did):g} m."))
     if problems:
         return problems, {}
     plan = sequence_plan(lay, ids, first, last)

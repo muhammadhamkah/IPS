@@ -9,7 +9,8 @@
 # cameras: needs a machine that runs 5 PX4 instances, 11 cameras at 60 fps and the engine in real
 # time (8+ cores). Watch the cameras' "behind the clock" (out/loop/cams.log, want p99 < 30 ms)
 # and the engine's "exposure to send" (out/loop/engine.log): EV_DELAY_MS should match the latter.
-# Env: N (drones, 1-20), OUT (default out/loop), EV_DELAY_MS (default 28), PX4_BUILD,
+# Env: N (drones, 1-20), SHOW_FILE (a show to fly instead of the example: .skyc, CSV zip, XTJZ zip),
+#      OUT (default out/loop), EV_DELAY_MS (default 28), PX4_BUILD,
 #      IMU_NOISE (default 0.1, needs sih_noise_scale.patch), WORKERS (camera processes, default 3).
 #      Cameras: the engine stamps positions with their exposure time (idps-engine live --timesync;
 #      the drones' EKF2_EV_DELAY 0, EKF2_DELAY_MAX EV_HORIZON_MS, default 50) and sends none older
@@ -87,19 +88,58 @@ if busy:
           "  pkill -f 'idps.sim px4'; pkill -f idps_stand_in; pkill -f 'idps.engine.cli live'; pkill -x px4")
     sys.exit(1)
 PY
-echo "== show"
-"$PY" "${SHOW_CMD[@]}" "$OUT/show.zip" "$N" > "$OUT/show.txt"
-"$PY" -m idps.show.cli export "$OUT/show.zip" --site "$SITE" \
-    "${PLAN_ARG[@]}" --min-sep 0.9 "${PADS_ARG[@]}" -o "$OUT/show" > "$OUT/export.txt" 2>&1 \
+if [ -n "$SHOW_FILE" ]; then
+  # a show made elsewhere (SHOW_FILE: .skyc, CSV zip, or a folder or zip of per-drone XTJZ files): flown
+  # as it is. What it breaks of IDPS's own rules is listed, not a reason to stop: this is a simulator.
+  [ -e "$SHOW_FILE" ] || { echo "Show file not found: $SHOW_FILE"; exit 1; }
+  echo "== show: $(basename "$SHOW_FILE")"
+  SHOW_SRC=$SHOW_FILE; FORCE=(--force); MIN_SEP=${MIN_SEP:-0.5}
+  echo "show file: $SHOW_FILE" > "$OUT/show.txt"
+else
+  echo "== show"
+  "$PY" "${SHOW_CMD[@]}" "$OUT/show.zip" "$N" > "$OUT/show.txt"
+  SHOW_SRC=$OUT/show.zip; FORCE=(); MIN_SEP=${MIN_SEP:-0.9}
+fi
+"$PY" -m idps.show.cli export "$SHOW_SRC" --site "$SITE" \
+    "${PLAN_ARG[@]}" --min-sep "$MIN_SEP" "${PADS_ARG[@]}" "${FORCE[@]}" -o "$OUT/show" > "$OUT/export.txt" 2>&1 \
   || { cat "$OUT/export.txt"; exit 1; }
-grep -E "^Charging pads" "$OUT/export.txt" || true
+grep -E "^Charging pads|^Layers taken" "$OUT/export.txt" || true
+if [ -n "$SHOW_FILE" ]; then
+  grep -E "Show OK|Show has problems" "$OUT/export.txt" | head -1
+  if grep -q "Show has problems" "$OUT/export.txt"; then
+    "$PY" - "$OUT/export.txt" <<'PY'
+import collections, re, sys
+kinds = collections.Counter()
+for line in open(sys.argv[1]):
+    if "ERROR" not in line:
+        continue
+    for key, name in (("come within", "drones closer than the minimum distance"), ("downwash", "a drone in another's downwash"),
+                      ("accelerates", "acceleration over the limit"), ("m/s (limit", "speed over the limit"),
+                      ("its batch flies at", "a start height that is not its batch's layer"),
+                      ("outside", "a drone outside the performance area")):
+        if key in line:
+            kinds[name] += 1
+            break
+    else:
+        kinds["other"] += 1
+if kinds:
+    print("   it breaks IDPS's own rules (flown anyway, this is a simulator; the list is in export.txt), first 10 of them: "
+          + ", ".join(f"{n} x {k}" for k, n in kinds.most_common()))
+PY
+  fi
+fi
 tail -1 "$OUT/export.txt"
-"$PY" - "$OUT/show/manifest.json" "$N" <<'PY'
+HAVE=$("$PY" - "$OUT/show/manifest.json" "$N" <<'PY'
 import json, sys
 p, n = sys.argv[1], int(sys.argv[2])
 m = json.load(open(p)); m["drones"] = [d for d in m["drones"] if d["drone_id"] <= n]
+if not m["drones"]:
+    sys.exit("the show has no drone 1.." + str(n))
 json.dump(m, open(p, "w"), indent=1)
+print(len(m["drones"]))
 PY
+) || exit 1
+if [ "$HAVE" -lt "$N" ]; then echo "the show has $HAVE drones: flying $HAVE, not $N"; N=$HAVE; fi
 
 echo "== $N PX4 drones (micro60)"
 TS_ARGS=""
@@ -178,7 +218,7 @@ else
   fi
 fi
 
-SHOW_S=$(awk '/^duration_s:/ {printf "%.0f", $2}' "$OUT/show.txt")
+SHOW_S=$("$PY" -c "import json, sys; print(round(json.load(open(sys.argv[1]))['duration_s']))" "$OUT/show/manifest.json")
 EXTRA=20; [ "${PADS:-1}" = 0 ] || EXTRA=90                 # take-off and landing in batches
 echo "== upload and fly (about $((SHOW_S + EXTRA)) s)"
 "$PY" -m idps.show.cli upload "$OUT/show/manifest.json" $L --sitl > "$OUT/upload.txt" 2>&1 || true

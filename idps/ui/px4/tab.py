@@ -89,6 +89,9 @@ FAILURES = [(r"udp port\(s\) (\[.*?\]) are in use", "An earlier run is still goi
              "behind real time during the flight: the simulated cameras ran {0} ms behind the clock, so the drones "
              "were flying on old positions and the flight was stopped. This is the computer, not the tracking: plug "
              "it in (low battery slows it down), close other heavy programs, or fly fewer drones."),
+            (r"Show file not found: (.*)", "The show file is not there any more: {0}. Choose it again."),
+            (r"not a \.skyc, ZIP or XTJZ file|no show\.json or CSV files inside", "That file is not a show IDPS can "
+             "read (a .skyc, a ZIP of CSVs, or a ZIP or folder of per-drone XTJZ .dat files)."),
             (r"Not enough free disk space", "The disk is nearly full: free some space (see the Log pane) and fly "
              "again."),
             (r"No space left on device", "The disk is full: free some space (see the Log pane) and fly again."),
@@ -190,6 +193,17 @@ class Px4Tab(QWidget):
                                  "takes about a third of a CPU core.")
         self.n_drones.setSuffix(" drones")
         bar.addWidget(self.n_drones)
+        # which show: the example (built for the venue's pads), or a show file made elsewhere
+        self.show_file: str | None = None
+        self.show_pick = QComboBox()
+        self.show_pick.addItem("Example show")
+        self.show_pick.addItem("Show file…")
+        self.show_pick.setToolTip("The example show (a layered grid built for this venue's charging pads), or a show "
+                                  "made elsewhere: a .skyc, a ZIP of CSVs, or a ZIP or folder of per-drone XTJZ "
+                                  "(.dat) files. A show file is flown as it is; what it breaks of IDPS's own rules "
+                                  "is listed in the Log pane.")
+        self.show_pick.activated.connect(self._show_picked)
+        bar.addWidget(self.show_pick)
         self.px4_btn = QPushButton()
         self.px4_btn.setToolTip("Your PX4-Autopilot folder, built with the IDPS module (px4/README.md)")
         self.px4_btn.clicked.connect(self.choose_px4)
@@ -301,6 +315,21 @@ class Px4Tab(QWidget):
         if d:
             self.open_run(d)
 
+    def _show_picked(self, index: int):
+        if index == 0:
+            self.set_show_file(None)
+            return
+        start = str(Path(self.show_file).parent) if self.show_file else str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(self, "A show file", start,
+                                              "Shows (*.skyc *.zip *.csv *.dat *.gz);;All files (*)")
+        self.set_show_file(path or self.show_file)
+
+    def set_show_file(self, path: str | None):
+        """Fly this show file (None: the example show)."""
+        self.show_file = path or None
+        self.show_pick.setItemText(1, f"Show: {Path(path).name}" if path else "Show file…")
+        self.show_pick.setCurrentIndex(1 if path else 0)
+
     # ------------------------------------------------------------ running
     def start(self) -> bool:
         if self.proc is not None:
@@ -329,6 +358,8 @@ class Px4Tab(QWidget):
         env.insert("OUT", str(self.out_dir))
         for k, v in venue.items():                       # the venue open in the Planner (else the example)
             env.insert(k, v)
+        if self.show_file:                               # a show made elsewhere, flown as it is
+            env.insert("SHOW_FILE", self.show_file)
         self.proc = QProcess(self)
         pp = QProcess.UnixProcessParameters()            # its own process group: Stop reaches every helper
         pp.flags = QProcess.UnixProcessFlag.CreateNewSession

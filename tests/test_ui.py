@@ -816,6 +816,22 @@ def test_px4_flight_tab_explains_a_failed_run():
     assert reason.startswith("This computer fell behind real time during the flight: the simulated cameras ran 45365 ms")
 
 
+def test_px4_flight_tab_takes_a_show_file(win, app):
+    """Fly the show with a show made elsewhere: the picker names the file, and the flight script
+    gets it (SHOW_FILE); back to the example show clears it."""
+    from idps.ui.px4.tab import diagnose
+    tab = win.px4
+    assert tab.show_file is None and tab.show_pick.currentIndex() == 0
+    tab.set_show_file("/shows/_output.zip")
+    assert tab.show_file == "/shows/_output.zip" and tab.show_pick.currentText() == "Show: _output.zip"
+    tab._show_picked(0)
+    assert tab.show_file is None and tab.show_pick.itemText(1) == "Show file…"
+    _, reason, _ = diagnose("== show: x.zip\nShow file not found: /shows/x.zip")
+    assert reason.startswith("The show file is not there any more: /shows/x.zip")
+    script = (Path(__file__).resolve().parents[1] / "px4" / "sitl" / "run_loop.sh").read_text()
+    assert 'SHOW_SRC=$SHOW_FILE; FORCE=(--force)' in script and '"${FORCE[@]}" -o "$OUT/show"' in script
+
+
 def test_px4_camera_loop_uses_the_paced_build_when_patched(tmp_path):
     from idps.ui.px4.tab import SIH_SOURCE, camera_build
     assert camera_build(tmp_path) == "px4_sitl_nolockstep"             # no PX4 source: the real-clock build
