@@ -15,6 +15,9 @@
 #   PX4_BUILD=px4_sitl_nolockstep ...          # PX4 on the real clock (camera loop; see px4/README.md)
 # EKF2 fuses in the past by EKF2_DELAY_MAX and predicts forward with the IMU; it is kept just above
 # the vision delay (PX4's 200 ms default would leave centimetres of IMU drift in every position).
+# EVP_GATE (default 40): how far, in standard deviations, an IDPS position may be from the drone's own
+# estimate and still be used. PX4's 5 is a few cm with 1 cm positions: a drone that drifted further (a hard
+# manoeuvre, a stall) rejected every position from then on and flew away (seen: 23 m). EVP_GATE=5: as before.
 # In the camera loop EV_DELAY_MS is what idps-engine live reports as "exposure to send" (plus the
 # network on real drones); EV_HORIZON_MS overrides the horizon.
 set -e
@@ -36,7 +39,7 @@ fi
 sleep 0.5
 export PX4_PARAM_EKF2_EV_CTRL=11 PX4_PARAM_EKF2_HGT_REF=3 PX4_PARAM_EKF2_GPS_CTRL=0 PX4_PARAM_EKF2_BARO_CTRL=0 PX4_PARAM_EKF2_RNG_CTRL=0 \
        PX4_PARAM_EKF2_MAG_TYPE=5 PX4_PARAM_SYS_HAS_MAG=0 PX4_PARAM_EKF2_EVP_NOISE=0.01 PX4_PARAM_EKF2_EVA_NOISE=0.05 \
-       PX4_PARAM_EKF2_EVP_GATE=${EVP_GATE:-5} \
+       PX4_PARAM_EKF2_EVP_GATE=${EVP_GATE:-40} \
        PX4_PARAM_EKF2_EV_POS_Z=-0.08 PX4_PARAM_EKF2_EV_DELAY=${EV_DELAY_MS:-0} \
        PX4_PARAM_EKF2_ASP_DELAY=0 PX4_PARAM_EKF2_OF_DELAY=0 PX4_PARAM_EKF2_RNG_DELAY=0 PX4_PARAM_EKF2_AVEL_DELAY=0 \
        PX4_PARAM_EKF2_DELAY_MAX=${EV_HORIZON_MS:-$(( ${EV_DELAY_MS:-0} + 10 ))}
