@@ -81,6 +81,7 @@ def too_late(age_s: float, ev_delay_ms: float | None, horizon_ms: float | None =
     return ev_delay_ms is not None and age_s - ev_delay_ms / 1000 > MAX_LATE_S
 
 
+HEADING_BELOW_M = 0.3    # a drone's marker this low: it stands on the floor (its pad), facing North
 WEAK_CAMS = 2            # a position from this few cameras ...
 WEAK_HOLD_S = 0.03       # ... is not sent this soon after one from more cameras
 
@@ -175,7 +176,9 @@ def cmd_live(a) -> int:
                     if too_late(age, a.ev_delay_ms, a.horizon_ms if ts else None):
                         dropped += 1
                     else:
-                        f = odometry_fields(o.ned, o.t_ns // 1000 if ts else int(now * 1e6), 0.0, v)
+                        # the heading (North, as it was put down) only while it stands on the floor
+                        yaw = 0.0 if a.heading_always or -o.ned[2] < HEADING_BELOW_M else None
+                        f = odometry_fields(o.ned, o.t_ns // 1000 if ts else int(now * 1e6), yaw, v)
                         if ts:
                             ts.send(o.marker_id, lambda m, f=f: m.mav.odometry_send(**f))
                         else:
@@ -235,6 +238,8 @@ def main(argv=None) -> int:
                          "exposure time (drones: EKF2_EV_DELAY 0, EKF2_DELAY_MAX = --horizon-ms)")
     lv.add_argument("--record", help="also write the camera packets as received to this file (idps-engine "
                     "replay reads it: diagnose a flight offline)")
+    lv.add_argument("--heading-always", action="store_true",
+                    help="send the fixed heading (North) with every position, also in flight (as before)")
     lv.add_argument("--all-positions", action="store_true",
                     help="also send a drone's positions from 1-2 cameras right after one from more cameras")
     lv.add_argument("--horizon-ms", type=float, default=50.0,

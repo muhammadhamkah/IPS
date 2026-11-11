@@ -32,18 +32,21 @@ MAV_ESTIMATOR_TYPE_VISION = 3
 NAN = float("nan")
 
 
-def odometry_fields(ned, time_usec: int, yaw_rad: float = 0.0, vel_ned=None,
+def odometry_fields(ned, time_usec: int, yaw_rad: float | None = 0.0, vel_ned=None,
                     pos_sigma_m: float = 0.005, yaw_sigma_rad: float = math.radians(3.0),
                     reset_counter: int = 0) -> dict:
     """Arguments for pymavlink's odometry_send: IDPS position (NED) and the fixed heading.
 
     Roll and pitch are the drone's own (PX4 only takes yaw from the quaternion when
     EKF2_EV_CTRL has the yaw bit). The heading uncertainty covers how squarely the drone was
-    put down facing North on its home pad.
+    put down facing North on its home pad. yaw_rad None: a position without a heading (the
+    quaternion and its variance NaN): PX4 keeps the heading it has, from its gyro and from how
+    its accelerations match the positions.
     """
     cov = [NAN] * 21                                   # upper triangle of the 6x6 pose covariance
     cov[0] = cov[6] = cov[11] = pos_sigma_m ** 2       # x, y, z; roll and pitch stay NaN
-    cov[20] = yaw_sigma_rad ** 2                       # yaw
+    if yaw_rad is not None:
+        cov[20] = yaw_sigma_rad ** 2                   # yaw
     vcov = [NAN] * 21
     if vel_ned is None:
         v = (NAN, NAN, NAN)
@@ -52,7 +55,7 @@ def odometry_fields(ned, time_usec: int, yaw_rad: float = 0.0, vel_ned=None,
         vcov[0] = vcov[6] = vcov[11] = 0.05 ** 2
     return dict(time_usec=int(time_usec), frame_id=MAV_FRAME_LOCAL_NED, child_frame_id=MAV_FRAME_BODY_FRD,
                 x=float(ned[0]), y=float(ned[1]), z=float(ned[2]),
-                q=[math.cos(yaw_rad / 2), 0.0, 0.0, math.sin(yaw_rad / 2)],
+                q=[NAN] * 4 if yaw_rad is None else [math.cos(yaw_rad / 2), 0.0, 0.0, math.sin(yaw_rad / 2)],
                 vx=v[0], vy=v[1], vz=v[2], rollspeed=NAN, pitchspeed=NAN, yawspeed=NAN,
                 pose_covariance=cov, velocity_covariance=vcov, reset_counter=reset_counter,
                 estimator_type=MAV_ESTIMATOR_TYPE_VISION)
