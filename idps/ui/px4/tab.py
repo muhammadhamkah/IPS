@@ -454,9 +454,9 @@ class Px4Tab(QWidget):
             bad = [r["pad"] for r in canvas.result[0].summary.get("pads", []) if not r["ok"]]
             if mode == "cameras" and bad:
                 return None, (f"The planned cameras cannot tell the drones on pad(s) {', '.join(map(str, bad))} apart "
-                              "(Planner: red pads, and the warning in the plan log), so no drone would take off. Move "
-                              "those pads 1.5 m or more in from the edge, or add a mount looking down on them, and plan "
-                              "again.")
+                              "(Planner: red pads, and the warning under Plan cameras), so no drone would take off. "
+                              "Press Plan Cameras again in the Planner: it adds cameras for the pads. If a pad is still "
+                              "red, move it nearer a truss or add a mount looking down on it.")
             canvas.result[0].save(folder / "plan.yaml")
             env["PLAN"] = str(folder / "plan.yaml")
         if mode == "cameras":

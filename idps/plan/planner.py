@@ -363,7 +363,7 @@ def pad_cameras(site: Site, cands: CandidateSet, selected: list[int], max_camera
     res = _resolves(site, cands.pos, cands.R, cands.f_px)
     cap, spacing = site.candidates.max_cameras_per_mount, float(site.candidates.min_camera_spacing_m)
     limit = max_cameras or site.max_cameras
-    added = 0
+    added = shared = 0
     while len(selected) < limit:
         need = PAD_MIN_CAMERAS - res[selected].sum(axis=0) > 0
         if not need.any():
@@ -378,12 +378,25 @@ def pad_cameras(site: Site, cands: CandidateSet, selected: list[int], max_camera
                 free &= ~((np.linalg.norm(cands.pos - cands.pos[i], axis=1) < spacing) & (cands.mount_key != cands.mount_key[i]))
         gain = np.where(free, (res & need).sum(axis=1), 0)
         if gain.max() == 0:
-            break
+            # every mount that looks down on the pad is taken: a second camera beside one of them,
+            # aimed at the pad (one more than "cameras per mount" there, for the pads only)
+            free = np.ones(len(cands), bool)
+            free[selected] = False
+            for key in set(cands.mount_key[selected]):
+                if np.sum(cands.mount_key[selected] == key) > cap:
+                    free &= cands.mount_key != key
+            free &= np.isin(cands.mount_key, cands.mount_key[selected])
+            gain = np.where(free, (res & need).sum(axis=1), 0)
+            if gain.max() == 0:
+                break
+            shared += 1
         selected.append(int(gain.argmax()))
         added += 1
     if added:
         log(f"Added {added} camera(s) for the charging pads: each pad's 4 drones are now told apart by "
-            f"{PAD_MIN_CAMERAS} cameras or more, where a mount allows it.")
+            f"{PAD_MIN_CAMERAS} cameras or more, where a mount allows it."
+            + (f" {shared} of them share{'s' if shared == 1 else ''} a mount position with another camera "
+               "(every position that looks down on the pad was taken)." if shared else ""))
     return selected
 
 

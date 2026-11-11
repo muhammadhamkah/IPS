@@ -384,3 +384,14 @@ def test_planning_adds_cameras_for_the_charging_pads(tmp_path):
     plan, _ = optimise(site, log=said.append)
     assert all(r["ok"] and r["resolving"] >= PAD_MIN_CAMERAS for r in plan.summary["pads"])
     assert any(s.startswith("Added ") and "for the charging pads" in s for s in said)
+    # two trusses only, the pads along the short edge: every truss position that looks down on them
+    # is taken, so the pads' camera goes beside one of them
+    d["trusses"] = d["trusses"][:2]
+    d["pads"]["centres"] = [[-7.25, 3.75 - 1.5 * i] for i in range(5)]
+    path.write_text(yaml.safe_dump(d))
+    said = []
+    plan, _ = optimise(load_site(path), log=said.append)
+    assert all(r["ok"] for r in plan.summary["pads"])
+    assert any("a mount position with another camera" in s for s in said)
+    spots = [tuple(np.round(c.position_m, 3)) for c in plan.cameras]
+    assert len(spots) - len(set(spots)) >= 1
