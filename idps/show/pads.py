@@ -675,11 +675,35 @@ def _check(lay: PadLayout, ids, first, last, plan: SequencePlan, dt: float = 0.0
 
 def smallest_safe_gap(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray, step_s: float = 0.5,
                       max_s: float = 60.0) -> float | None:
-    """The shortest batch gap (s) with which take-off and landing pass (same speeds); None: none up to max_s."""
+    """The shortest batch gap (s) with which take-off and landing pass (same speeds); None: none up
+    to max_s. With the drones' delays as planned for the layout's own gap: planning them afresh
+    for each gap tried took many minutes with a first frame the pads do not suit."""
     import dataclasses
-    gap = step_s
-    while gap <= max_s + 1e-9:
-        if not check_sequence(dataclasses.replace(lay, batch_gap_s=gap), ids, first, last)[0]:
-            return gap
-        gap += step_s
-    return None
+    ids = list(ids)
+    first, last = np.asarray(first, float), np.asarray(last, float)
+    plan0 = sequence_plan(lay, ids, first, last)
+
+    def passes(gap: float) -> bool:
+        cand = dataclasses.replace(lay, batch_gap_s=gap)
+        plan = dataclasses.replace(_plan_from_delays(cand, ids, first, last, plan0.delay, plan0.max_delay),
+                                   row_gap_s=plan0.row_gap_s)
+        return not _check(cand, ids, first, last, plan, dt=0.1, stop_early=True)[0] \
+            and not _check(cand, ids, first, last, plan)[0]
+
+    gap, lo = step_s, None
+    while gap <= max_s + 1e-9:                             # doubling, then halving back to step_s
+        if passes(gap):
+            break
+        lo, gap = gap, gap * 2
+    else:
+        if lo is None or lo >= max_s or not passes(max_s):
+            return None
+        gap = max_s
+    lo = lo if lo is not None else 0.0
+    while gap - lo > step_s + 1e-9:
+        mid = round((lo + gap) / 2 / step_s) * step_s
+        if passes(mid):
+            gap = mid
+        else:
+            lo = mid
+    return gap
