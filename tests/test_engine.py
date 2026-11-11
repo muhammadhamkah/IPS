@@ -350,3 +350,17 @@ def test_weak_positions_of_a_well_seen_drone_are_left_out():
     assert w.skip(1, 50 * ms, 2) and not w.skip(1, 70 * ms, 2)         # drone 1: 17 ms after, then 37 ms after
     assert w.skip(1, 25 * ms, 2)                                        # (a weak one arriving late, out of order)
     assert not WeakPositions(hold_s=0.0).skip(1, 0, 4) and not WeakPositions(hold_s=-1).skip(1, 5, 2)
+
+
+def test_positions_carry_the_heading_only_on_the_floor():
+    """In flight a position goes out without a heading (PX4 keeps its own: told "North" all the
+    time it never noticed the drone turning); standing on the floor it says North."""
+    import math
+    from idps.engine.cli import HEADING_BELOW_M
+    from idps.show.fleet import odometry_fields
+    f = odometry_fields((1.0, 2.0, -3.0), 5, None)
+    assert all(math.isnan(x) for x in f["q"]) and math.isnan(f["pose_covariance"][20])
+    assert f["pose_covariance"][0] > 0 and (f["x"], f["y"], f["z"]) == (1.0, 2.0, -3.0)
+    g = odometry_fields((1.0, 2.0, -0.08), 5, 0.0)
+    assert g["q"] == [1.0, 0.0, 0.0, 0.0] and g["pose_covariance"][20] > 0
+    assert 0.08 < HEADING_BELOW_M < 1.0                 # a marker on its pad is below it, the lowest layer above
