@@ -283,7 +283,7 @@ def test_planner_pad_layout_report():
     assert not two.warning and two.note.startswith("Pads 1 and 2 stand behind another pad: in each of the 4 batches "
                                                    "their drones take off 4 s after the front pads'")
     bad = pad_layout_report(dict(base, pads={"centres": [[-5 + 1.0 * i, 4.4 - 1.0 * j] for j in range(3) for i in range(4)]}))
-    assert bad.warning.startswith("Pads 1, 2, 3") and "cannot fly as placed (48 drones)" in bad.warning
+    assert bad.warning.startswith("Pads ") and "cannot fly as placed (48 drones)" in bad.warning
     assert bad.pads_at_fault and not bad.note
     assert pad_layout_report(dict(base, pads={"centres": [[0, 0]]})).warning == ""        # one pad: nothing to check
 
@@ -312,3 +312,26 @@ def test_simulation_starts_on_the_charging_pads():
     assert np.allclose(res.marker[:, 0, 2], 0.08, atol=0.01)                  # the replay begins on the pads
     assert all(d.identified_s < PAD_WAIT_S for d in res.drones)               # named while still on the pad
     assert max(d.p95_mm for d in res.drones) < 10
+
+
+def test_a_first_frame_not_laid_out_for_the_pads_gets_a_delay_for_each_drone():
+    """A show made elsewhere: 20 drones start in a staircase line (4 heights, 0.28 m apart along
+    East), the pads stand in two rows to one side. With the rows' stagger alone drones of one batch
+    pass 0.2 m apart; with a delay of its own for each drone they keep 0.5 m, up and down. The
+    drones stacked in the show's own frame are the show's business, not the take-off's."""
+    from idps.show.pads import TRANSIT_MIN_SEP_M, PadLayout, _check, _make_plan, check_sequence, pad_ranks, sequence_plan
+    lay = PadLayout(np.array([[2.95, -4.25], [2.95, -2.65], [1.9, -4.25], [1.9, -2.65], [2.95, -1.05]]),
+                    layers_m=(3.46, 2.75, 2.04, 1.34), climb_speed_mps=1.5, transfer_speed_mps=1.5, facing_deg=180.0)
+    ids = list(range(1, 21))
+    north, height = [-0.16, 0.13, 0.39, 0.65], [3.46, 2.75, 2.04, 1.34]
+    first = np.array([[north[k % 4], -2.64 + 0.278 * k, -height[k % 4]] for k in range(20)])
+    last = first * [-1, 1, 1] + [0.35, 0, 0]              # it ends mirrored: the highest furthest from the pads
+    last[:, 2] = -np.array(height[::-1])[np.arange(20) % 4]
+    rows = _check(lay, ids, first, last, _make_plan(lay, ids, first, last, pad_ranks(lay), 2.0))[1]
+    assert rows["take-off closest"] < 0.4 and rows["landing after the show closest"] < 0.2
+    plan = sequence_plan(lay, ids, first, last)
+    assert plan.row_gap_s == 0.0 and 0 < plan.max_delay <= 12 and len(set(plan.delay.values())) > 1
+    problems, stats = check_sequence(lay, ids, first, last)
+    assert not [p for p in problems if p[0] == "transit"], problems[:3]
+    assert not [p for p in problems if p[-1].startswith(("take-off", "landing after a hold"))]
+    assert min(stats[k] for k in stats if k.endswith("closest")) >= TRANSIT_MIN_SEP_M

@@ -220,7 +220,8 @@ def cmd_start(a) -> int:
             return 1
         print(f"launch in {a.lead:.0f} s: {nb} batch(es) {gap:g} s apart"
               + (f" (pads one behind the other: the rear ones {float(pads.get('row_gap_s') or 0):g} s after the front "
-                 "ones in each batch)" if stagger else "") + ", then every drone holds in the grid", flush=True)
+                 "ones in each batch)" if stagger and float(pads.get('row_gap_s') or 0)
+                 else f" (each drone up to {stagger:g} s into its batch)" if stagger else "") + ", then every drone holds in the grid", flush=True)
         give_up = t_launch / 1e6 + gap * (nb - 1) + stagger + float(pads["hold_timeout_s"]) + gap * nb + 40.0
         states = ob.wait_holding(drones, timeout_s=a.lead + gap * (nb - 1) + stagger + 40.0)
         late = [did for did, r in states.items() if r.progress_code != ob.HOLDING]

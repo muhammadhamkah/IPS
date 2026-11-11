@@ -66,7 +66,7 @@ def pad_layout_report(site: dict) -> PadLayoutReport:
         return PadLayoutReport({p - 1 for p in bad},
                                f"Pads {_and(bad)} cannot fly as placed ({n} drones): {how}. {fix}", "", n)
     note = ""
-    if plan.max_delay > 0 and rear:
+    if plan.max_delay > 0 and rear and plan.row_gap_s > 0:
         note = (f"Pad{'s' if len(rear) > 1 else ''} {_and(rear)} stand{'' if len(rear) > 1 else 's'} behind another pad: "
                 f"in each of the 4 batches {'their' if len(rear) > 1 else 'its'} drones take off {plan.row_gap_s:g} s "
                 "after the front pads' and land before them.")

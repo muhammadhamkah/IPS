@@ -109,6 +109,13 @@ class PadLayout:
         or past any other pad standing ahead of its own within reach (a drone flying on over it would
         still be above it when that pad's next batch climbs)."""
         pad = self.pad_slot(drone_id)[0] - 1
+        cache = self.__dict__.setdefault("_clear", {})
+        key = (pad, self.facing_deg, self.slot_spacing_m, self.pads_ne.tobytes())
+        if key not in cache:
+            cache[key] = self._clear_m(pad)
+        return cache[key]
+
+    def _clear_m(self, pad: int) -> float:
         a = np.radians(self.facing_deg)
         fwd, right = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
         reach = PAD_REACH_M + self.slot_spacing_m
@@ -194,7 +201,7 @@ def pad_ranks(lay: "PadLayout", pads=None, by_depth: bool = False) -> dict[int, 
 class SequencePlan:
     """How the drones take off and land: each one's extra wait behind the pad in front of it
     (delay, s; landing waits max_delay - delay), the batches' long legs and landing waits."""
-    row_gap_s: float
+    row_gap_s: float                # (0 with max_delay > 0: every drone a delay of its own, see _own_delays)
     delay: dict
     max_delay: float
     up: dict
@@ -351,7 +358,8 @@ def _forward(lay: PadLayout) -> np.ndarray:
     return np.array([np.cos(a), np.sin(a), 0.0])
 
 
-def batch_leg_times(lay: PadLayout, ids, first, last, delay: dict | None = None) -> tuple[dict, dict, dict]:
+def batch_leg_times(lay: PadLayout, ids, first, last, delay: dict | None = None,
+                    most: float | None = None) -> tuple[dict, dict, dict]:
     """Each drone's long level leg on the way up (clear point -> its grid place) and down (grid ->
     in front of its slot), as long as the longest in its batch: a batch moves as one formation, so
     drones from pads side by side (0.5 m apart) never close in on each other on their way. The
@@ -375,7 +383,7 @@ def batch_leg_times(lay: PadLayout, ids, first, last, delay: dict | None = None)
     wait, done_after = {}, None                       # landing: the last batch up comes down first
     nb = lay.n_batches(ids)
     delay = delay or {}
-    most = max(delay.values(), default=0.0)
+    most = max(delay.values(), default=0.0) if most is None else most
     for b in sorted(batches, reverse=True):
         mine = [d for d in ids if lay.batch(d) == b]
         done = []
@@ -467,6 +475,7 @@ def fit_layers(lay: PadLayout, ids, first: np.ndarray, tol_m: float = 0.1) -> tu
 
 
 ROW_GAPS_S = (2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0)     # tried in turn for pads one behind the other
+OWN_DELAYS_S = (4.0, 8.0, 12.0)                              # ... and the longest delay, each drone its own
 _PLANS: dict = {}
 
 
@@ -475,6 +484,66 @@ def _make_plan(lay: PadLayout, ids, first, last, ranks: dict, row_gap: float) ->
     delay = {d: ranks.get(lay.pad_slot(d)[0], 0) * row_gap for d in ids}
     up, down, wait = batch_leg_times(lay, ids, first, last, delay)
     return SequencePlan(row_gap, delay, max(delay.values(), default=0.0), up, down, wait)
+
+
+def _plan_from_delays(lay: PadLayout, ids, first, last, delay: dict, most: float) -> SequencePlan:
+    up, down, wait = batch_leg_times(lay, ids, first, last, delay, most)
+    return SequencePlan(0.0, dict(delay), most, up, down, wait)
+
+
+def _n_transit(problems, among=None) -> int:
+    return sum(1 for kind, who, *_ in problems if kind == "transit" and (among is None or set(who) <= among))
+
+
+def _own_delays(lay: PadLayout, ids, first, last, ranks: dict) -> SequencePlan | None:
+    """A delay of its own for every drone, for a first frame the pads' rows do not suit (a show
+    made elsewhere, whose places are not laid out for these pads): each drone in turn (batch by
+    batch, front pads first) takes the shortest delay with which it keeps its distance from those
+    before it, on the way up and on both ways down. The plan with the fewest drones too close;
+    None if no drone needs a delay."""
+    order = sorted(ids, key=lambda d: (lay.batch(d), ranks.get(lay.pad_slot(d)[0], 0), d))
+    best, best_n = None, None
+    layered = min(np.diff(sorted(lay.layers_m)), default=0.0) >= TRANSIT_MIN_SEP_M
+    for most in OWN_DELAYS_S:
+        steps = np.arange(0.0, most + 1e-9, 1.0)
+        delay = {d: 0.0 for d in ids}
+        row = {d: k for k, d in enumerate(ids)}
+        nb = lay.n_batches(ids)
+        done: list = []
+
+        def pick(d, near):
+            rows = [row[x] for x in near]
+            counts = []
+            for x in steps:
+                delay[d] = float(x)
+                n = len(_check(lay, near, first[rows], last[rows], _plan_from_delays(lay, ids, first, last, delay, most),
+                               dt=0.1, min_sep_m=TRANSIT_MIN_SEP_M + 0.05, nb=nb, focus=d)[0])
+                counts.append(n)
+                if n == 0:
+                    break
+            delay[d] = float(steps[int(np.argmin(counts))])
+
+        for d in order:
+            done.append(d)
+            # (batches fly a layer apart: a drone mostly comes too close to one of its own batch; quick)
+            pick(d, [x for x in done if lay.batch(x) == lay.batch(d)] if layered else done)
+        for _ in range(3):                                # ... then those still too close, against every drone
+            plan = _plan_from_delays(lay, ids, first, last, delay, most)
+            problems = _check(lay, ids, first, last, plan)[0]
+            again = sorted({max(who, key=order.index) for kind, who, *_ in problems if kind == "transit"},
+                           key=order.index)
+            if not again:
+                break
+            for d in again:
+                pick(d, list(ids))
+        plan = _plan_from_delays(lay, ids, first, last, delay, most)
+        problems = _check(lay, ids, first, last, plan)[0]
+        n = (_n_transit(problems), len(problems))
+        if best_n is None or n < best_n:
+            best, best_n = plan, n
+        if n[0] == 0:
+            break
+    return best if best is not None and any(best.delay.values()) else None
 
 
 def sequence_plan(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray) -> SequencePlan:
@@ -510,6 +579,14 @@ def sequence_plan(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray) -> S
                 break
         if plan is None:
             plan = _make_plan(lay, ids, first, last, ranks, ROW_GAPS_S[0])
+    if lay.row_gap_s is None:
+        problems = _check(lay, ids, first, last, plan)[0]
+        if _n_transit(problems):                              # still too close: a delay for each drone
+            own = _own_delays(lay, ids, first, last, ranks)
+            if own is not None:
+                mine = _check(lay, ids, first, last, own)[0]
+                if (_n_transit(mine), len(mine)) < (_n_transit(problems), len(problems)):
+                    plan = own
     if len(_PLANS) > 64:
         _PLANS.clear()
     _PLANS[key] = plan
@@ -542,11 +619,12 @@ def check_sequence(lay: PadLayout, ids, first: np.ndarray, last: np.ndarray, dt:
 
 
 def _check(lay: PadLayout, ids, first, last, plan: SequencePlan, dt: float = 0.05,
-           min_sep_m: float = TRANSIT_MIN_SEP_M, stop_early: bool = False):
+           min_sep_m: float = TRANSIT_MIN_SEP_M, stop_early: bool = False, nb: int | None = None,
+           focus: int | None = None):
     """The sequence flown with `plan`, sampled every dt: every pair of flying drones at least
     min_sep_m apart, and none in another's downwash."""
-    nb = lay.n_batches(ids)
-    problems, stats = [], {}
+    nb = nb or lay.n_batches(ids)             # (nb, focus: a search looking at some of the drones, and at the
+    problems, stats = [], {}                  # distances to one of them only)
     up, down, wait, dl, most = plan.up, plan.down, plan.wait, plan.delay, plan.max_delay
     phases = [("take-off", [launch_legs(lay, d, first[k], long_s=up[d], delay_s=dl[d], stagger_s=most)
                             for k, d in enumerate(ids)], "launch")]
@@ -555,6 +633,9 @@ def _check(lay: PadLayout, ids, first, last, plan: SequencePlan, dt: float = 0.0
                                            delay_s=most - dl[d], stagger_s=most) for k, d in enumerate(ids)], "land"))
     N = len(ids)
     iu, ju = np.triu_indices(N, 1)
+    if focus is not None:
+        keep = (iu == ids.index(focus)) | (ju == ids.index(focus))
+        iu, ju = iu[keep], ju[keep]
     for name, legs, kind in phases:
         if stop_early and problems:                                        # (searching: one problem is enough)
             break
@@ -579,7 +660,13 @@ def _check(lay: PadLayout, ids, first, last, plan: SequencePlan, dt: float = 0.0
                                  f"{name}: drones {ids[i]} and {ids[j]} come within {dmin[q]:.2f} m "
                                  f"(minimum {min_sep_m:g} m) at {t[kk]:.1f} s."))
         stats[name + " closest"] = worst
+        if focus is not None:
+            continue
+        ends = np.asarray(last if name == "landing after the show" else first, float)
         for i, j, k in downwash_pairs(P, active, DOWNWASH_RADIUS_M, DOWNWASH_DEPTH_M):
+            dz = ends[j, 2] - ends[i, 2]
+            if np.linalg.norm(ends[i, :2] - ends[j, :2]) < DOWNWASH_RADIUS_M + 0.05 and 0.05 < dz < DOWNWASH_DEPTH_M:
+                continue                    # stacked like this in the show's own frame: the show's check says so
             problems.append(("downwash", (ids[i], ids[j]), float(t[k]), tuple(np.round(P[i, k], 2)),
                              f"{name}: drone {ids[i]} is above drone {ids[j]} ({P[j, k, 2] - P[i, k, 2]:.1f} m, "
                              f"within {DOWNWASH_RADIUS_M:g} m sideways) at {t[k]:.1f} s: its downwash."))
