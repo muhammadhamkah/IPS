@@ -203,12 +203,17 @@ class SequencePlan:
 
 
 def site_facing_deg(d: dict) -> float:
-    """The pads' front, degrees from North: "auto" (the default) faces the middle of the performance
-    area from the pads' middle, where their drones fly; or north / east / south / west, or degrees."""
+    """The pads' front for the take-off order, degrees from North: 0, 90, 180 or 270.
+
+    A pad never turns: it stands square to North and its drones sit on it facing North (the drone
+    fits one way only). Its *front* is only the side its drones fly out over: slots 1 and 2 are on
+    that side and leave first. "auto" (the default) takes the side nearest to where the drones fly
+    (across the pads' rows towards the performance area; a single pad or scattered pads: towards
+    the area's middle); north / east / south / west, or degrees (taken to the nearest side), fix it."""
     from idps.core.frames import Frame
     facing = (d.get("pads") or {}).get("facing", "auto")
     if isinstance(facing, (int, float)):
-        return float(facing) % 360.0
+        return _to_side(float(facing))
     if str(facing).lower() in FACINGS:
         return FACINGS[str(facing).lower()]
     f = Frame.from_dict(d.get("origin"))
@@ -254,7 +259,12 @@ def site_facing_deg(d: dict) -> float:
             if sv[1] < PAD_SIDE_M:
                 normal = np.array([-vt[0][1], vt[0][0]])
                 face = normal if normal @ to_area >= 0 else -normal
-    return round(float(np.degrees(np.arctan2(face[1], face[0]))), 3) % 360.0 + 0.0
+    return _to_side(float(np.degrees(np.arctan2(face[1], face[0]))))
+
+
+def _to_side(deg: float) -> float:
+    """The side of a pad standing square to North (0, 90, 180, 270) nearest to a direction."""
+    return float(round((deg % 360.0) / 90.0) % 4 * 90)
 
 
 def coverage_points(lay: PadLayout, frame, step_m: float = 0.5) -> np.ndarray:

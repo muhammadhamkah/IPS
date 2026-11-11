@@ -86,7 +86,10 @@ def test_pads_face_the_area_and_step_forward_before_the_long_leg():
     from idps.show.pads import CLEAR_M, launch_legs, pads_from_site, slot_offset_ne
     one = _corner_site()
     one["pads"]["centres"] = one["pads"]["centres"][:1]
-    assert pads_from_site(one).facing_deg == pytest.approx(np.degrees(np.arctan2(4.0, -3.0)) % 360, abs=1e-3)  # SE
+    # a pad never turns (it stands square to North, its drones facing North): its front is the side
+    # nearest to where they fly, here South-East of it -> its East side
+    assert pads_from_site(one).facing_deg == 90.0
+    assert pads_from_site(dict(one, pads=dict(one["pads"], facing=200))).facing_deg == 180.0
     lay = pads_from_site(_corner_site())
     assert lay.facing_deg == 180.0          # pads in a row (E-W): across it, towards the area (South)
     a = np.radians(lay.facing_deg)

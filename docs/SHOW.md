@@ -203,11 +203,17 @@ Tested in SITL: 12 drones from 3 pads, one in front of the other two, took off r
 the show and landed. No two flying drones came closer than 0.70 m, and none flew in another's
 downwash.
 
-**A pad's front faces where its drones fly** (`facing`: `auto`, the default: across the pads'
-rows towards the performance area, whether they stand in one row or in several; a single pad
-faces the area's middle; or north / east / south / west). Slots 1 and 2 are at the front, so the
-first batches leave first and the later ones step forward over empty slots: never over a drone
-still on the pad, wherever the pads stand. Drones still face North (yaw 0); only the slots turn.
+**A pad never turns.** It stands square to North, and its drones sit on it facing North (a
+drone fits its pad one way only). What the software chooses is the pad's *front* for the take-off
+order: the side its drones fly out over, always one of its four sides (North, East, South or
+West). Slots 1 and 2 are on that side, so the first batches leave first and the later ones step
+forward over empty slots, never over a drone still on the pad.
+* `facing: auto` (the default) takes the side nearest to where the drones fly: across the pads'
+  rows towards the performance area; a single pad or scattered pads, towards the area's middle.
+* `facing: north | east | south | west` fixes it; a number of degrees is taken to the nearest
+  side.
+* Pads in a row that is not square to North still fly: where one pad then stands partly behind
+  another, its drones go a few seconds later, as with two rows.
 
 **The cameras must tell the drones on a pad apart.** Four drones 0.2 m apart, seen from far away
 or edge-on, merge or get mixed up. Planning reports, per pad, the cameras that see its 4 drones at
