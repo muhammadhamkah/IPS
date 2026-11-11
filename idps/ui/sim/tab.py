@@ -297,15 +297,19 @@ class SimTab(QWidget):
         self.slider.blockSignals(False)
         self.slider.setEnabled(True)
         self.play_btn.setEnabled(True)
-        start = res.show_start_s or 0.0
+        # from charging pads: the replay begins on the pads, so the take-off is seen
+        start = 0.0 if getattr(res, "takeoff_s", None) else (res.show_start_s or 0.0)
         k0 = int(min(len(res.t) - 1, max(0.0, start) * len(res.t) / max(res.t[-1], 1e-9)))
         self.set_frame(k0)
         self.slider.setValue(k0)
         verdict = ("meets" if np.isfinite(worst) and worst <= req and ids == n and wrong == 0 else "does not meet")
         self.status.setText(f"This layout {verdict} the requirement in simulation: worst drone p95 {_mm(worst)} "
                             f"(requirement {req:g} mm), {ids} of {n} drones identified, {wrong} wrong IDs, "
-                            f"{len(res.cameras)} cameras, {flown:.0f} s flown. Press Play to watch it, pick a drone "
-                            "to see which cameras have it.")
+                            f"{len(res.cameras)} cameras, {flown:.0f} s flown"
+                            + (f" (from the charging pads: every drone up after {res.takeoff_s:.0f} s)"
+                               if getattr(res, "takeoff_s", None) else "")
+                            + ". Press Play to watch it, pick a drone to see which cameras have it."
+                            + "".join(f" Note: {n}" for n in getattr(res, "notes", []) or []))
         if not self.timer.isActive():
             self.toggle_play()
 

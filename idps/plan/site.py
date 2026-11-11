@@ -104,6 +104,7 @@ class Site:
     # charging pads: drones on their slots and climbing to their layers must be seen too
     pad_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     pad_slots: list = field(default_factory=list)          # per pad: (centre xy, its 4 markers (4, 3))
+    pads: object = None                                    # idps.show.pads.PadLayout (NED), or None
 
     @property
     def volume_min(self) -> np.ndarray:
@@ -243,6 +244,7 @@ def site_from_dict(d: dict, source_path: str | None = None) -> Site:
         frame=frame,
         pad_points=coverage_points(pads, frame) if pads is not None else np.zeros((0, 3)),
         pad_slots=_pad_slots(pads, frame) if pads is not None else [],
+        pads=pads,
     )
 
 

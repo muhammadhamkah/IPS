@@ -286,3 +286,29 @@ def test_planner_pad_layout_report():
     assert bad.warning.startswith("Pads 1, 2, 3") and "cannot fly as placed (48 drones)" in bad.warning
     assert bad.pads_at_fault and not bad.note
     assert pad_layout_report(dict(base, pads={"centres": [[0, 0]]})).warning == ""        # one pad: nothing to check
+
+
+def test_simulation_starts_on_the_charging_pads():
+    """Simulate: with charging pads in the venue every drone starts on its pad slot, is identified
+    there, takes off with its batch and then flies its route; more drones than the pads hold are
+    left out, with a note."""
+    from idps.plan.model import Plan
+    from idps.plan.site import load_site
+    from idps.sim.fromplan import PAD_WAIT_S, SimSettings, build_scenario, simulate_plan
+    site = load_site(ROOT / "examples/sites/show_8x8.yaml")
+    plan = Plan.load(ROOT / "examples/plans/show_8x8.yaml")
+    sc, _ = build_scenario(site, plan.cameras, SimSettings(drones="formation", n_drones=30, duration_s=5))
+    assert len(sc.drones) == 20 and "30 drones need 8 charging pads; the venue has 5" in sc.extras["notes"][0]
+    t_up = sc.extras["takeoff_s"]
+    for d in sc.drones[:6]:
+        home = site.frame.from_ned(site.pads.home_ned(d.id)[None])[0]
+        assert np.allclose(d.trajectory.position(np.array(0.0)).reshape(3), home, atol=1e-6)      # on its slot
+        assert np.allclose(d.trajectory.position(np.array(PAD_WAIT_S - 0.1)).reshape(3), home, atol=1e-6)
+        p_up = d.trajectory.position(np.array(t_up)).reshape(3)
+        assert p_up[2] > 0.5 and np.allclose(p_up, d.trajectory.inner.position(np.array(0.0)).reshape(3), atol=1e-6)
+    assert sc.duration_s == pytest.approx(t_up + 5)
+    res = simulate_plan(site, plan.cameras, SimSettings(drones="formation", n_drones=5, duration_s=4))
+    assert res.takeoff_s and res.identified == 5 and sum(d.wrong for d in res.drones) == 0
+    assert np.allclose(res.marker[:, 0, 2], 0.08, atol=0.01)                  # the replay begins on the pads
+    assert all(d.identified_s < PAD_WAIT_S for d in res.drones)               # named while still on the pad
+    assert max(d.p95_mm for d in res.drones) < 10

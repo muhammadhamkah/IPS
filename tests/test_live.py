@@ -258,3 +258,34 @@ def test_px4_run_covers_take_off_hold_show_and_landing(tmp_path):
     out = subprocess.run([sys.executable, str(ROOT / "px4/sitl/score_track.py"), str(tmp_path / "track.csv")],
                          capture_output=True, text=True, check=True).stdout
     assert "worst over all drones: 3.0 mm" in out and "landing: worst 20.0 mm" in out
+
+
+def test_px4_run_shows_drones_on_their_pads_before_any_data(tmp_path):
+    """A flight from charging pads that has no tracking data yet (or not for every drone): the
+    drones are on their pads. They used to be drawn at their first places in the air grid until
+    their own data came, then jumped to their pads."""
+    import json
+    from idps.show.trj import Trj, write_trj
+    from idps.sim import px4run
+    show = tmp_path / "show"
+    show.mkdir()
+    n, rows = 41, []
+    for did, east in ((1, -1.0), (2, 1.0)):
+        pos = np.tile([2.0, east, -3.0], (n, 1))                             # the show: holding in the air grid
+        home = np.array([0.0, east, 0.0])
+        write_trj(show / f"drone_{did:03d}.trj", Trj(did, 20.0, 0.0, home, 0.0, pos, np.zeros((n, 3)), np.zeros((n, 3)),
+                                                       np.zeros((n, 3)), batch=did, n_batches=2, batch_gap_s=5))
+        rows.append({"drone_id": did, "trj": f"drone_{did:03d}.trj", "home_ned": home.tolist()})
+    (show / "manifest.json").write_text(json.dumps({"venue": {"origin": {"xy": [0, 0], "north_deg": 90}}, "drones": rows}))
+    px4run._TRACK_CACHE.clear()
+    run = px4run.load_run(tmp_path)                                          # no tracking log at all
+    assert np.allclose(run.plan[0], [0, -1, 0]) and np.allclose(run.plan[1], [0, 1, 0])
+    # drone 1 has started its take-off (phase 1 rows, no show rows yet); drone 2 has no data
+    lines = ["drone_id,show_t,dn,de,dd,phase,pc_s,pn,pe,pd"]
+    lines += [f"1,nan,0.001,0,0,1,{100 + 0.01 * k:.2f},0.0,-1.0,{-0.01 * k:.2f}" for k in range(100)]
+    (tmp_path / "track.csv").write_text("\n".join(lines) + "\n")
+    px4run._TRACK_CACHE.clear()
+    run = px4run.load_run(tmp_path)
+    k = int(np.searchsorted(run.t, run.last_t - 0.3))
+    assert run.plan[0, k, 2] < -0.5 and np.allclose(run.plan[0, k, :2], [0, -1])     # climbing over its pad
+    assert np.allclose(run.plan[1, k], [0, 1, 0]) and np.allclose(run.plan[1, 0], [0, 1, 0])   # still on its pad

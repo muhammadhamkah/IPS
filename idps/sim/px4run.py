@@ -171,7 +171,10 @@ def load_run(folder) -> Px4Run:
     T = read_track(tf) if tf is not None else np.empty((0, NCOL))
     T = T[np.isfinite(phase_times(T))] if len(T) else T
     tt = phase_times(T) if len(T) else np.empty(0)
-    pads = bool(len(T) and (T[:, 5] > 0).any())
+    # from charging pads (the files say so): the show starts in the air, and until the tracking log
+    # has show rows its times are not show times yet (seconds from its first row)
+    pads = any(tr.batch > 0 for tr in trjs) or bool(len(T) and (T[:, 5] > 0).any())
+    started = bool(len(T) and ((T[:, 5] == 0) & np.isfinite(T[:, 1])).any())
     t_lo = min(show_start, float(tt.min())) if len(tt) else show_start
     t_hi = max(show_end, float(tt.max())) if len(tt) else show_end
     t = np.arange(t_lo, t_hi + 1e-9, 1.0 / REPLAY_HZ)
@@ -188,7 +191,10 @@ def load_run(folder) -> Px4Run:
         order = np.argsort(rt, kind="stable")
         R, rt = R[order], rt[order]
         if pads:                                         # on its pad before its take-off and after landing
-            off = (t < show_start) | (t > show_end)
+            # (and for the whole of a flight that has not reached the show yet: the drones used to
+            # be drawn at their first places in the air grid until their own data came, then jump
+            # to their pads)
+            off = (t < show_start) | (t > show_end) if started else np.ones(len(t), bool)
             plan[i, off] = homes[i]
         if len(R) >= 2:
             want = np.where(np.isfinite(R[:, 7:10]), R[:, 7:10], _plan_at(tr, rt))   # older logs: no plan

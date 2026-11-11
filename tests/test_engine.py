@@ -313,3 +313,25 @@ def test_a_parked_drone_that_drops_out_is_found_again(parked_run, backend):
     assert all(np.linalg.norm(o.pos - X) < 0.02 for t, o in mid)
     later = [o.n_cams for t, o in mid if t > 7.0]
     assert max(later) == 2 and later.count(2) > 0.95 * len(later)    # from the two cameras that see it
+
+
+def test_a_parked_marker_seen_by_one_camera_is_held_on_its_spot():
+    """One camera gives a direction but no distance: a marker standing still that only one camera
+    sees (its neighbour taking off hides it from the rest) slid along that line, 28 cm in a
+    simulated take-off. While the camera's line still passes through its spot, a second line
+    through the spot pins it there; once the line has left the spot (it moves) it is followed."""
+    from idps.engine.tracker import CONFIRMED, KalmanCV, Track
+    cam = _cam([0.0, 0.0, -5.0], dist=(0.0,) * 5)
+    eng = Engine({1: cam}, backend="python")
+    spot = np.array([0.3, 0.2, 0.0])
+    d = (spot - cam.position) / np.linalg.norm(spot - cam.position)
+    tr = Track(1, KalmanCV(spot + 0.2 * d, 10.0, np.eye(3) * 0.04, q=50.0), 0.0)      # slid 20 cm along the line
+    tr.state, tr.rest_pos, tr.rest_since = CONFIRMED, spot.copy(), 0.0
+    assert eng._parked_anchor(tr, cam.position, d, 0.5) is None                       # not still long enough yet
+    o2, d2 = eng._parked_anchor(tr, cam.position, d, 10.0)
+    assert abs(d2 @ d) < 1e-9 and np.allclose(o2 + 20.0 * d2, spot)                   # across the line, through the spot
+    assert eng._bearing_update(tr, np.vstack([cam.position, o2]), np.vstack([d, d2]), np.zeros(2), eng.sigma_ang[1])
+    assert np.linalg.norm(tr.kf.pos - spot) < 0.01                                    # back on its spot
+    moved = spot + [0.05, 0.0, 0.0]                                                   # the line has left the spot
+    dm = (moved - cam.position) / np.linalg.norm(moved - cam.position)
+    assert eng._parked_anchor(tr, cam.position, dm, 10.0) is None

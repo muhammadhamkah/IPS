@@ -75,6 +75,7 @@ class SimResult:
     engine_s: float = 0.0              # wall time for the engine
     show_start_s: float | None = None  # replay time when the show starts (drones="show")
     notes: list = field(default_factory=list)
+    takeoff_s: float | None = None     # from charging pads: replay time when every drone is up and the flight starts
 
     @property
     def worst_p95_mm(self) -> float:
@@ -98,9 +99,58 @@ class _ShowTrajectory(traj.Trajectory):
         return self.frame.from_ned(ned)
 
 
+PAD_WAIT_S = 5.0            # on the pads this long before the first batch takes off (to be identified)
+DRONE_BODY_RADIUS_M = 0.06  # the show drone (60 g, 65 mm frame + props), as in the camera loop's scenario: the
+                            # default 0.2 m is a 1 kg quad, and 4 of those on a pad would hide each other
+
+
+class _FromPad(traj.Trajectory):
+    """A drone that starts on its charging pad slot: it stands there, takes off with its batch
+    (straight up, forward clear of the pad, then level to where its flight begins:
+    idps.show.pads.launch_legs), holds until every drone is up (t_join), then flies `inner`
+    from its start."""
+
+    def __init__(self, inner: traj.Trajectory, legs, frame, t_join: float):
+        self.inner, self.legs, self.frame, self.t_join = inner, legs, frame, float(t_join)
+
+    def position(self, t):
+        t = np.asarray(t, float)
+        flat = np.atleast_1d(t).ravel()
+        out = np.asarray(self.inner.position(np.maximum(flat - self.t_join, 0.0)), float).reshape(-1, 3).copy()
+        up = flat < self.t_join
+        if up.any():
+            out[up] = self.frame.from_ned(self.legs.at(flat[up]))
+        return out.reshape(t.shape + (3,))
+
+
+def from_pads(site: Site, drones: list, starts_at_0: bool = True):
+    """Put simulated drones on the venue's charging pads: drone k on pad (k - 1) // 4 + 1, slot
+    (k - 1) % 4 + 1, taking off in the 4 batches (rows of pads one behind the other: staggered)
+    to where its flight begins. drones: [(id, trajectory)], ids 1..n. Returns ([(id, trajectory)],
+    time when every drone is up and the flight starts, notes)."""
+    from idps.show.pads import SLOTS, launch_legs, sequence_plan
+    lay = site.pads
+    room = SLOTS * len(lay.pads_ne)
+    notes = []
+    if len(drones) > room:
+        notes.append(f"{len(drones)} drones need {-(-len(drones) // SLOTS)} charging pads; the venue has "
+                     f"{len(lay.pads_ne)}: {room} drones fly (4 per pad).")
+        drones = drones[:room]
+    ids = [did for did, _ in drones]
+    first = np.array([site.frame.ned(np.asarray(tr.position(np.array(0.0)), float).reshape(1, 3))[0]
+                      for _, tr in drones])
+    plan = sequence_plan(lay, ids, first, first)
+    legs = [launch_legs(lay, did, first[k], t_launch=PAD_WAIT_S, delay_s=plan.delay[did], stagger_s=plan.max_delay)
+            for k, did in enumerate(ids)]
+    t_join = max(L.t_end for L in legs) + 1.0
+    return [(did, _FromPad(tr, L, site.frame, t_join)) for (did, tr), L in zip(drones, legs)], t_join, notes
+
+
 def build_scenario(site: Site, cameras: list[PlannedCamera], s: SimSettings) -> tuple[Scenario, float | None]:
-    """A Scenario for the planned cameras, with formation, random or show drones.
-    Returns (scenario, replay time when the show starts or None)."""
+    """A Scenario for the planned cameras, with formation, random or show drones. With charging
+    pads in the venue every drone starts on its pad slot and takes off from it (from_pads).
+    Returns (scenario, replay time when the show starts or None); the scenario's extras carry
+    "takeoff_s" (when every drone is up) and "notes"."""
     from idps.monitor.simsource import SimShow
     rng = np.random.default_rng(s.seed)
     show_start = None
@@ -116,20 +166,32 @@ def build_scenario(site: Site, cameras: list[PlannedCamera], s: SimSettings) -> 
         t0 = show.t_start
         show_start = SHOW_LEAD_S
         duration = SHOW_LEAD_S + (show.duration - t0) + 2.0
-        drones = [SimDrone(did, did, _ShowTrajectory(tr, pl, site.frame, t0, show_start))
-                  for did, tr in zip(ids, show.drones)]
+        routes = [(did, _ShowTrajectory(tr, pl, site.frame, t0, show_start)) for did, tr in zip(ids, show.drones)]
     else:
         sim = SimShow(site, cameras, n_drones=s.n_drones, seed=s.seed, speed_mps=s.speed_mps,
                       formation=s.drones == "formation")
-        drones = [SimDrone(did, did, route) for did, route in sim.drones]
+        routes = list(sim.drones)
         duration = s.duration_s
+    extras = {}
+    if getattr(site, "pads", None) is not None and len(site.pads.pads_ne) \
+            and [did for did, _ in routes] == list(range(1, len(routes) + 1)):
+        # every flight starts on the charging pads: take-off in the 4 batches, then the flight
+        if s.drones == "show":                         # (the show's own lead: it begins when all are up)
+            routes = [(did, _ShowTrajectory(tr.track, tr.pl, tr.frame, tr.t0, 0.0)) for did, tr in routes]
+        routes, t_join, notes = from_pads(site, routes)
+        duration = t_join + (duration - (SHOW_LEAD_S if s.drones == "show" else 0.0))
+        if s.drones == "show":
+            show_start = t_join
+        extras = {"takeoff_s": t_join, "notes": notes}
+    drones = [SimDrone(did, did, route) for did, route in routes]
     model = CameraModel(site.sensor, peak_at_10m=marker_brightness(site, cameras))
     timing = TimingModel(sync="ptp", jitter_sigma_us=5.0, clock_profile=s.clock_profile)
     lo, hi = site.volume_min.copy(), site.volume_max.copy()
     sc = Scenario(name="planned layout", duration_s=float(duration), seed=int(rng.integers(1 << 30)),
                   cameras=list(cameras), station_ids=list(range(1, len(cameras) + 1)), camera_model=model,
-                  timing=timing, network=NetworkModel(loss=s.network_loss), markers=MarkerModel(), drones=drones,
-                  calib_rot_mrad=s.calib_rot_mrad, calib_pos_mm=s.calib_pos_mm, bounds=(lo, hi))
+                  timing=timing, network=NetworkModel(loss=s.network_loss),
+                  markers=MarkerModel(body_radius_m=DRONE_BODY_RADIUS_M), drones=drones,
+                  calib_rot_mrad=s.calib_rot_mrad, calib_pos_mm=s.calib_pos_mm, bounds=(lo, hi), extras=extras)
     return sc, show_start
 
 
@@ -229,7 +291,8 @@ def simulate_plan(site: Site, cameras: list[PlannedCamera], s: SimSettings | Non
     drones = [DroneResult(sc.drones[index[r.marker_id]].id, r.median_mm, r.p95_mm, r.max_mm, r.availability,
                           r.first_id_s, r.wrong) for r in scores]
     return SimResult(s, list(cameras), list(sim.stations), [d.id for d in sc.drones], tr, C, Mr, led, E, err, ncam,
-                     drones, unknown, stats.frames, stats.packets, sim_s, engine_s, show_start)
+                     drones, unknown, stats.frames, stats.packets, sim_s, engine_s, show_start,
+                     list(sc.extras.get("notes", [])), sc.extras.get("takeoff_s"))
 
 
 def marker_in_view(station, marker: np.ndarray) -> np.ndarray:

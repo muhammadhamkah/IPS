@@ -376,7 +376,8 @@ struct Config {
            init_support_px = 2.5, coast_s = 0.5, q_accel = 50.0, innov_gate = 25.0, inherit_radius_m = 0.5,
            inherit_within_s = 1.0, decode_every_s = 0.5, decode_every_named_s = 2.0, decode_window_s = 2.5,
            ambiguous_px = 3.0, id_vote_decay = 0.7, single_cam_max_gap_s = 0.1, parked_keep_s = 300.0,
-           parked_px = 3.0, parked_radius_m = 0.05, parked_still_s = 1.0;
+           parked_px = 3.0, parked_radius_m = 0.05, parked_still_s = 1.0,
+           parked_hold_m = 0.03;
     int min_cams_init = 3, min_cams_update = 2, confirm_hits = 8, confirm_window = 16, innov_max_rejects = 3,
         id_votes_needed = 2, decodes_per_epoch = 2, single_cam_update = 1;
 };
@@ -597,7 +598,7 @@ class Core {
             SETD(reorder_s) SETD(sigma_px) SETD(gate_px) SETD(max_resid_px) SETD(init_gap_m) SETD(init_support_px)
             SETD(coast_s) SETD(q_accel) SETD(innov_gate) SETD(inherit_radius_m) SETD(inherit_within_s)
             SETD(decode_every_s) SETD(decode_every_named_s) SETD(decode_window_s) SETD(ambiguous_px) SETD(id_vote_decay)
-            SETD(single_cam_max_gap_s) SETD(parked_keep_s) SETD(parked_px) SETD(parked_radius_m) SETD(parked_still_s)
+            SETD(single_cam_max_gap_s) SETD(parked_keep_s) SETD(parked_px) SETD(parked_radius_m) SETD(parked_still_s) SETD(parked_hold_m)
             SETI(min_cams_init) SETI(min_cams_update) SETI(confirm_hits) SETI(confirm_window) SETI(innov_max_rejects)
             SETI(id_votes_needed) SETI(decodes_per_epoch) SETI(single_cam_update)
 #undef SETD
@@ -753,7 +754,26 @@ class Core {
                 continue;
             }
             tr.predict(times[o.frame], cfg.q_accel);
-            if (!bearing_update(tr, {c.pos}, {rays[o.dot]}, {0.0}, c.sigma_ang, cfg.innov_gate)) {
+            std::vector<Vec3> bo{c.pos}, bd{rays[o.dot]};
+            std::vector<double> bt{0.0};
+            // standing still and seen where it stands: a second line through its spot pins it there
+            // (engine.py _parked_anchor)
+            if (tr.has_rest && T - tr.rest_since >= cfg.parked_still_s) {
+                const Vec3 &d = rays[o.dot];
+                Vec3 r = sub(tr.rest_pos, c.pos);
+                double al = dot(r, d);
+                Vec3 perp{r[0] - al * d[0], r[1] - al * d[1], r[2] - al * d[2]};
+                if (norm(perp) <= cfg.parked_hold_m) {
+                    Vec3 n{d[1], -d[0], 0.0};
+                    if (norm(n) < 1e-6) n = {0.0, d[2], -d[1]};
+                    double nn = norm(n);
+                    n = {n[0] / nn, n[1] / nn, n[2] / nn};
+                    bo.push_back({tr.rest_pos[0] + 20.0 * n[0], tr.rest_pos[1] + 20.0 * n[1], tr.rest_pos[2] + 20.0 * n[2]});
+                    bd.push_back({-n[0], -n[1], -n[2]});
+                    bt.push_back(0.0);
+                }
+            }
+            if (!bearing_update(tr, bo, bd, bt, c.sigma_ang, cfg.innov_gate)) {
                 used[o.dot] = 0;
                 continue;
             }

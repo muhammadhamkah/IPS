@@ -114,6 +114,9 @@ class EngineConfig:
     parked_px: float = 3.0            # (within this many pixels of where it stood)
     parked_radius_m: float = 0.05     # and two cameras are enough to find it again within this of that spot
     parked_still_s: float = 1.0       # (standing still: it stayed within parked_radius_m of one spot this long)
+    parked_hold_m: float = 0.03       # a marker standing still, seen by one camera whose line of sight still passes
+                                      # this close to its spot, is held there (one camera gives no distance: the
+                                      # position slid along the line, 28 cm while a neighbour took off)
     decode_every_s: float = 0.5       # read a track's blink code this often until it has an ID ...
     decode_every_named_s: float = 2.0 # ... and this often afterwards (to keep checking it)
     decodes_per_epoch: int = 2        # at most this many decodes per 1/120 s slot (spreads the work)
@@ -480,7 +483,11 @@ class Engine:
                 used[fi][di] = False
                 continue
             self._predict([ti], [times[fi]])
-            if not self._bearing_update(tr, self.cams[f.station_id].position[None], f.rays[di][None], np.zeros(1),
+            O, D = self.cams[f.station_id].position[None], f.rays[di][None]
+            anchor = self._parked_anchor(tr, O[0], D[0], T)
+            if anchor is not None:
+                O, D = np.vstack([O, anchor[0]]), np.vstack([D, anchor[1]])
+            if not self._bearing_update(tr, O, D, np.zeros(len(O)),
                                         self.sigma_ang[f.station_id], gate=cfg.innov_gate):
                 used[fi][di] = False
                 continue
@@ -489,6 +496,23 @@ class Engine:
             tr.updated_epoch = self.stats["epochs"]
             tr.n_cams = 1
             tr.add_brightness(times[fi], f.station_id, f.sum[di])
+
+    def _parked_anchor(self, tr: Track, o, d, T: float, far_m: float = 20.0):
+        """For a marker standing still that one camera sees where it stands: a second line of sight,
+        from far_m away across the camera's, through its spot. With the camera's own line it pins the
+        marker there (a few millimetres along the camera's line). None if it is not standing still
+        or the camera's line has left the spot (it is moving: follow the line)."""
+        cfg = self.cfg
+        if tr.rest_pos is None or T - tr.rest_since < cfg.parked_still_s:
+            return None
+        r = tr.rest_pos - o
+        if np.linalg.norm(r - (r @ d) * d) > cfg.parked_hold_m:
+            return None
+        n = np.array([d[1], -d[0], 0.0])                     # d x up
+        if np.linalg.norm(n) < 1e-6:
+            n = np.array([0.0, d[2], -d[1]])                 # d x east
+        n = n / np.linalg.norm(n)
+        return tr.rest_pos + far_m * n, -n
 
     def _update_multi(self, rows, frames, times, T, used):
         cfg = self.cfg
