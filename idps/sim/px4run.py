@@ -56,6 +56,7 @@ class Px4Run:
     mode: str                   # "cameras" | "vision" | "" (no tracking log yet)
     phase: np.ndarray = None    # (D, T) PHASES key at each step (-1: no sample)
     show_span: tuple = (0.0, 0.0)   # the show file's start and end, show time
+    rgb: np.ndarray = None      # (D, T, 3) the file's LED colour, 0..255 (dark outside the show)
 
     @property
     def worst_mm(self) -> float:
@@ -79,6 +80,15 @@ def _plan_at(trj, t: np.ndarray) -> np.ndarray:
     k = np.clip((t - trj.t0) * trj.rate_hz, 0, len(trj.pos) - 1)
     i = np.arange(len(trj.pos))
     return np.stack([np.interp(k, i, trj.pos[:, j]) for j in range(3)], 1)
+
+
+def _rgb_at(trj, t: np.ndarray) -> np.ndarray:
+    """The file's LED colour at show times t (dark before and after the show)."""
+    k = np.rint((t - trj.t0) * trj.rate_hz).astype(int)
+    inside = (k >= 0) & (k < len(trj.rgb))
+    out = np.zeros((len(t), 3), np.uint8)
+    out[inside] = np.clip(np.rint(trj.rgb[k[inside]]), 0, 255)
+    return out
 
 
 def track_file(folder) -> Path | None:
@@ -222,4 +232,5 @@ def load_run(folder) -> Px4Run:
             drones.append(DroneFlight(did, 0, *[float("nan")] * 4, last, *worst_of))
     last = float(tt.max()) if len(tt) else float("nan")
     mode = "" if tf is None else ("cameras" if tf.name == "track.csv" else "vision")
-    return Px4Run(folder, frame, ids, t, plan, actual, err, drones, last, mode, phase, (show_start, show_end))
+    rgb = np.stack([_rgb_at(tr, t) for tr in trjs])
+    return Px4Run(folder, frame, ids, t, plan, actual, err, drones, last, mode, phase, (show_start, show_end), rgb)

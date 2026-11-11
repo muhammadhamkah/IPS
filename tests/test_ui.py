@@ -1019,3 +1019,52 @@ def test_replay_keeps_real_time_when_drawing_is_slow(win, app, monkeypatch):
     assert abs(sim.res.t[sim.slider.value()] - 1.033) < 0.05     # 1 s of replay for 1 s of clock
     sim.slider.blockSignals(False)
     sim.res = None
+
+
+def test_views_show_the_show_files_led_colours(win, app, tmp_path):
+    """The show file's LED colours are drawn: each drone's dot is filled with its colour at that
+    moment and edged with its distance colour; "LED colours" off gives the distance dot back; a
+    file with no colours is drawn as before."""
+    import json
+
+    import numpy as np
+    from PySide6.QtGui import QColor
+
+    from idps.show.trj import Trj, write_trj
+    from idps.sim.px4run import TRACK_HEADER, load_run
+    from idps.ui.sim.view import LED_OFF, led_colours
+    show = tmp_path / "show"
+    show.mkdir()
+    n = 101                                                      # 5 s at 20 Hz: red, then green from 2.5 s
+    rgb = np.zeros((n, 3))
+    rgb[:50, 0], rgb[50:, 1] = 255, 200
+    pos = np.zeros((n, 3))
+    pos[:, 2] = -1.0
+    write_trj(show / "drone_001.trj", Trj(1, 20.0, 0.0, np.zeros(3), 0.0, pos, np.zeros((n, 3)), np.zeros((n, 3)), rgb))
+    (show / "manifest.json").write_text(json.dumps({
+        "venue": {"origin": {"xy": [0, 0], "north_deg": 90}},
+        "drones": [{"drone_id": 1, "trj": "drone_001.trj", "home_ned": [0, 0, 0]}]}))
+    (tmp_path / "track.csv").write_text(TRACK_HEADER + "".join(
+        f"1,{t:.4f},0.001,0,0,0,{100 + t:.4f},0,0,-1\\n" for t in np.arange(0, 5.0, 0.05)))
+    run = load_run(tmp_path)
+    k_red, k_green = int(np.searchsorted(run.t, 1.0)), int(np.searchsorted(run.t, 4.0))
+    assert tuple(run.rgb[0, k_red]) == (255, 0, 0) and tuple(run.rgb[0, k_green]) == (0, 200, 0)
+    assert not run.rgb[0, run.t < 0].any()                       # dark before the show
+    tab = win.px4
+    tab.show_run(run, live=False)
+    assert tab.lights.isChecked() and tab.view._rgb is not None
+    err, surface = QColor("#00ff00"), QColor("#101010")
+    fill, edge, more = led_colours(tab.view._rgb, 0, k_red, err, surface)
+    assert (fill.red(), fill.green(), fill.blue()) == (255, 0, 0) and edge == err and more > 0
+    assert led_colours(np.zeros((1, 5, 3), np.uint8), 0, 2, err, surface)[0] == QColor(LED_OFF)   # LED off: dark
+    assert led_colours(None, 0, 0, err, surface) == (err, surface, 0.0)
+    tab.lights.setChecked(False)
+    assert tab.view.lights is False
+    tab.view.grab()                                              # draws without LED colours ...
+    tab.lights.setChecked(True)
+    tab.slider.setValue(k_green)
+    tab.view.grab()                                              # ... and with them
+    run.rgb[:] = 0                                               # a file with no colours
+    tab.view.set_run(run, 30.0)
+    assert tab.view._rgb is None
+    assert win.sim.lights.isChecked() and win.sim.view._rgb is None

@@ -76,6 +76,7 @@ class SimResult:
     show_start_s: float | None = None  # replay time when the show starts (drones="show")
     notes: list = field(default_factory=list)
     takeoff_s: float | None = None     # from charging pads: replay time when every drone is up and the flight starts
+    rgb: np.ndarray | None = None      # (D, F, 3) a show's LED colours, 0..255 (dark before it starts); None: no show
 
     @property
     def worst_p95_mm(self) -> float:
@@ -183,6 +184,9 @@ def build_scenario(site: Site, cameras: list[PlannedCamera], s: SimSettings) -> 
         if s.drones == "show":
             show_start = t_join
         extras = {"takeoff_s": t_join, "notes": notes}
+    if s.drones == "show":
+        extras["lights"] = {did: tr for did, tr in zip(ids, show.drones)}
+        extras["lights_t0"] = t0
     drones = [SimDrone(did, did, route) for did, route in routes]
     model = CameraModel(site.sensor, peak_at_10m=marker_brightness(site, cameras))
     timing = TimingModel(sync="ptp", jitter_sigma_us=5.0, clock_profile=s.clock_profile)
@@ -290,9 +294,18 @@ def simulate_plan(site: Site, cameras: list[PlannedCamera], s: SimSettings | Non
             err[i, k] = 1000 * np.linalg.norm(o.pos - ref)
     drones = [DroneResult(sc.drones[index[r.marker_id]].id, r.median_mm, r.p95_mm, r.max_mm, r.availability,
                           r.first_id_s, r.wrong) for r in scores]
+    rgb = None
+    if sc.extras.get("lights") and show_start is not None:
+        ts = tr - show_start + sc.extras["lights_t0"]                       # show time at each replay step
+        rgb = np.zeros((D, len(tr), 3), np.uint8)
+        for i, d in enumerate(sc.drones):
+            track = sc.extras["lights"].get(d.id)
+            if track is not None:
+                on = (ts >= track.t_start) & (ts <= track.t_end)
+                rgb[i, on] = np.clip(np.rint(track.colour(ts[on])), 0, 255)
     return SimResult(s, list(cameras), list(sim.stations), [d.id for d in sc.drones], tr, C, Mr, led, E, err, ncam,
                      drones, unknown, stats.frames, stats.packets, sim_s, engine_s, show_start,
-                     list(sc.extras.get("notes", [])), sc.extras.get("takeoff_s"))
+                     list(sc.extras.get("notes", [])), sc.extras.get("takeoff_s"), rgb)
 
 
 def marker_in_view(station, marker: np.ndarray) -> np.ndarray:

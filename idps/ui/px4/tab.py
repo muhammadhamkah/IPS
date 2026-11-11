@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, Qt, QTimer
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
                                QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSplitter, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -237,6 +237,12 @@ class Px4Tab(QWidget):
         tl.addWidget(self.speed)
         tl.addWidget(self.slider, 1)
         tl.addWidget(self.clock)
+        self.lights = QCheckBox("LED colours")
+        self.lights.setChecked(True)
+        self.lights.setToolTip("Fill each drone with the LED colour its show file has at that moment; its edge "
+                               "keeps the distance colour. Off: the whole dot shows the distance.")
+        self.lights.toggled.connect(self._lights_toggled)
+        tl.addWidget(self.lights)
         ll.addLayout(tl)
         self.graph = ErrorGraph()
         ll.addWidget(self.graph)
@@ -684,6 +690,10 @@ class Px4Tab(QWidget):
             self.slider.setValue(k)
             if k >= self.slider.maximum():
                 self.toggle_play()
+
+    def _lights_toggled(self, on: bool):
+        self.view.lights = bool(on)
+        self.view.update()
 
     def set_frame(self, k: int):
         if self.run_data is None:

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QWidget
 
 from idps.ui import theme
 from idps.ui.planner.view3d import View3D
-from idps.ui.sim.view import error_colour
+from idps.ui.sim.view import error_colour, led_colours
 
 TRAIL_S = 2.0
 
@@ -27,12 +27,16 @@ class FlightView3D(View3D):
         self.selected: int | None = None
         self.limit_mm = 30.0
         self._plan_w = self._actual_w = None
+        self.lights = True                        # the file's LED colours on the drones
+        self._rgb = None
 
     def set_run(self, run, limit_mm: float):
         keep = self.run is not None and run is not None and self.run.folder == run.folder
         self.run, self.limit_mm = run, limit_mm
         self._plan_w = run.world(run.plan) if run is not None else None
         self._actual_w = run.world(run.actual) if run is not None else None
+        rgb = getattr(run, "rgb", None)
+        self._rgb = rgb if rgb is not None and rgb.any() else None       # (a file with no colours: as before)
         if not keep:
             self.selected = None
         self.update()
@@ -68,7 +72,8 @@ class FlightView3D(View3D):
                 Pa, za = self.project([act[k]])
                 if za[0] > 0.05:
                     big = 6.5 if i == self.selected else 5.0
-                    prims.append((float(za[0]) - 0.03, "dot", (Pa[0], big, col, tok["surface"])))
+                    fill, edge, more = led_colours(self._rgb if self.lights else None, i, k, col, tok["surface"])
+                    prims.append((float(za[0]) - 0.03, "dot", (Pa[0], big + more, fill, edge)))
             label = f"{did}" + (f"  {err:.0f} mm" if i == self.selected and np.isfinite(err) else "")
             self._text(prims, act[k] if np.isfinite(act[k]).all() else plan[k], label, tok["text2"],
                        i == self.selected, 9)
@@ -83,9 +88,10 @@ class FlightView3D(View3D):
         if self.run is None:
             return
         x, lim = 10, self.limit_mm
-        for text, colour in ((f"● within {lim:g} mm of the file", theme.STATUS[3]),
+        for text, colour in (((f"● within {lim:g} mm of the file", theme.STATUS[3]),
                              (f"● {lim:g}–{2 * lim:g} mm", theme.STATUS[2]), (f"● over {2 * lim:g} mm", theme.STATUS[0]),
-                             ("○ where the file has it", tok["volume"].name())):
+                             ("○ where the file has it", tok["volume"].name()))
+                            + ((("filled: LED colour", tok["text2"].name()),) if self.lights and self._rgb is not None else ())):
             p.setPen(QColor(colour))
             p.drawText(QRectF(x, 8, 260, 20), Qt.AlignmentFlag.AlignLeft, text)
             x += p.fontMetrics().horizontalAdvance(text) + 16

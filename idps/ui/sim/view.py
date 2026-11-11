@@ -29,6 +29,18 @@ def error_colour(err_mm: float, limit_mm: float) -> QColor:
     return QColor(theme.STATUS[0])
 
 
+LED_OFF = "#1c1c1c"
+
+
+def led_colours(rgb, i: int, k: int, err_col: QColor, surface) -> tuple:
+    """(fill, edge, extra radius) of a drone's dot: with the show's LED colours (rgb (D, T, 3) or
+    None) it is filled with its LED colour and edged with its distance colour."""
+    if rgb is None:
+        return err_col, surface, 0.0
+    r, g, b = (int(x) for x in rgb[i, min(k, rgb.shape[1] - 1)])
+    return (QColor(r, g, b) if r or g or b else QColor(LED_OFF)), err_col, 1.5
+
+
 class SimView3D(View3D):
     def __init__(self, doc, canvas, parent=None):
         super().__init__(doc, canvas, parent)
@@ -38,9 +50,13 @@ class SimView3D(View3D):
         self.frame = 0
         self.selected: int | None = None          # drone index
         self.limit_mm = 10.0
+        self.lights = True                        # a show's LED colours on the drones
+        self._rgb = None
 
     def set_result(self, res, limit_mm: float):
         self.res, self.limit_mm, self.frame = res, limit_mm, 0
+        rgb = getattr(res, "rgb", None)
+        self._rgb = rgb if rgb is not None and rgb.any() else None       # (a file with no colours: as before)
         self.selected = None
         self.update()
 
@@ -70,7 +86,8 @@ class SimView3D(View3D):
             P, z = self.project([r.marker[i, k]])
             if z[0] > 0.05:
                 big = 7.0 if i == self.selected else 5.0
-                prims.append((float(z[0]) - 0.03, "dot", (P[0], big, col, tok["surface"])))
+                fill, edge, more = led_colours(self._rgb if self.lights else None, i, k, col, tok["surface"])
+                prims.append((float(z[0]) - 0.03, "dot", (P[0], big + more, fill, edge)))
             e = r.engine[i, k]
             if np.isfinite(e).all():
                 Pe, ze = self.project([e])
