@@ -357,3 +357,30 @@ def test_plan_exports_ned(tmp_path):
 def yaml_load(p):
     import yaml
     return yaml.safe_load(open(p))
+
+
+def test_planning_adds_cameras_for_the_charging_pads(tmp_path):
+    """High trusses, a flight volume that starts 1 m up and 6 cameras wanted per point: the layout
+    covers the volume, yet too few cameras tell the 4 drones on a pad at the edge apart. Planning
+    adds cameras for the pads; a pad needs 3, not the venue's 6."""
+    import yaml
+    from idps.plan.planner import PAD_MIN_CAMERAS, optimise
+    from idps.plan.site import load_site
+    d = {"name": "pads", "sensor": "OV9281", "lenses_mm": [2.8],
+         "volume": {"polygon": [[-8.25, 4.75], [8.25, 4.75], [8.25, -4.75], [-8.25, -4.75]], "z": [1, 10]},
+         "origin": {"xy": [0, 0.25], "north_deg": 90},
+         "requirements": {"min_cameras": 6, "p95_mm": 10, "noise": "tight"},
+         "evaluation": {"spacing_m": [2, 2, 2], "inset_m": 0.5},
+         "trusses": [{"id": "T1", "start": [-8.25, 5.75], "end": [8.25, 5.75], "height_m": 11.5},
+                     {"id": "T2", "start": [-8.25, -5.75], "end": [8.25, -5.75], "height_m": 11.5},
+                     {"id": "T3", "start": [-9.75, 4.75], "end": [-9.75, -4.75], "height_m": 11.5},
+                     {"id": "T4", "start": [9.75, 4.75], "end": [9.75, -4.75], "height_m": 11.5}],
+         "pads": {"centres": [[-7.25 + 1.5 * i, 3.75] for i in range(5)]},
+         "candidates": {"truss_step_m": 3, "min_camera_spacing_m": 1.5}}
+    path = tmp_path / "venue.yaml"
+    path.write_text(yaml.safe_dump(d))
+    site = load_site(path)
+    said = []
+    plan, _ = optimise(site, log=said.append)
+    assert all(r["ok"] and r["resolving"] >= PAD_MIN_CAMERAS for r in plan.summary["pads"])
+    assert any(s.startswith("Added ") and "for the charging pads" in s for s in said)

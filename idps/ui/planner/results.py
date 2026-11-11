@@ -210,8 +210,20 @@ class ResultsPanel(QWidget):
                 self.table.setItem(r, col, it)
         opt = plan.summary.get("optimiser", {})
         self.status.setText(f"Planned in {opt.get('seconds', 0):.1f} s from {opt.get('candidates', 0):,} "
-                            f"candidate placements ({opt.get('stopped_because', '')}).")
+                            f"candidate placements ({opt.get('stopped_because', '')})." + self._pad_note(plan))
         self.mark_stale(False)
+
+    @staticmethod
+    def _pad_note(plan) -> str:
+        """Why pads are drawn red after planning: too few cameras tell their 4 drones apart."""
+        from idps.plan.planner import PAD_MIN_CAMERAS
+        bad = [r for r in plan.summary.get("pads", []) if not r["ok"]]
+        if not bad:
+            return ""
+        return (" ⚠ Pad" + ("s " if len(bad) > 1 else " ") + ", ".join(str(r["pad"]) for r in bad)
+                + f" (red): fewer than {PAD_MIN_CAMERAS} cameras can tell the 4 drones standing on "
+                + ("them" if len(bad) > 1 else "it") + " apart, so the drones would not be identified before take-off. "
+                "Move the pad nearer a truss or tripod area, or add a mount that looks down on it.")
 
     def select_camera(self, k):
         self.table.blockSignals(True)

@@ -308,6 +308,7 @@ def _neighbour_spacing(cams: list[PlannedCamera]) -> None:
                                      if others else None)
 
 
+PAD_MIN_CAMERAS = 3            # cameras that must tell a pad's 4 drones apart (simulated: 2 failed, 3 worked)
 PAD_MIN_SEP_PX = 8.0           # a camera tells a pad's 4 drones apart if no two are closer than this in its image
 
 
@@ -334,8 +335,56 @@ def pad_coverage(site: Site, cameras: list[PlannedCamera]) -> list[dict]:
             if d >= PAD_MIN_SEP_PX:
                 sep.append(cameras[i].id)
         out.append({"pad": k + 1, "cameras": len(sees), "resolving": len(sep), "ids": sep,
-                    "ok": len(sep) >= req.min_cameras})
+                    "ok": len(sep) >= PAD_MIN_CAMERAS})
     return out
+
+
+def _resolves(site: Site, pos, R, f_px) -> np.ndarray:
+    """(cameras, pads): the camera sees the pad's 4 drones PAD_MIN_SEP_PX apart or more."""
+    out = np.zeros((len(pos), len(site.pad_slots)), bool)
+    for k, (_, slots) in enumerate(site.pad_slots):
+        vis, _ = contributions(pos, R, f_px, slots, site.sensor, site.requirements.noise, site.limits)
+        X = np.einsum("cij,csj->csi", R, slots[None, :, :] - pos[:, None, :])          # (C, 4, 3) camera frame
+        with np.errstate(divide="ignore", invalid="ignore"):
+            uv = f_px[:, None, None] * X[:, :, :2] / X[:, :, 2:3]
+        d = np.min([np.linalg.norm(uv[:, a] - uv[:, b], axis=1) for a in range(4) for b in range(a + 1, 4)], axis=0)
+        out[:, k] = vis.all(axis=1) & (d >= PAD_MIN_SEP_PX)
+    return out
+
+
+def pad_cameras(site: Site, cands: CandidateSet, selected: list[int], max_cameras: int | None = None, log=print) -> list[int]:
+    """Cameras added for the charging pads: the flight volume starts above the floor, so a layout
+    that covers it can still leave the drones standing on a pad too close together in every image.
+    While a pad has fewer than PAD_MIN_CAMERAS cameras that tell its 4 drones apart, the allowed
+    placement that does so for the most such pads is added. Returns the selection, with them."""
+    if not site.pad_slots:
+        return list(selected)
+    selected = list(selected)
+    res = _resolves(site, cands.pos, cands.R, cands.f_px)
+    cap, spacing = site.candidates.max_cameras_per_mount, float(site.candidates.min_camera_spacing_m)
+    limit = max_cameras or site.max_cameras
+    added = 0
+    while len(selected) < limit:
+        need = PAD_MIN_CAMERAS - res[selected].sum(axis=0) > 0
+        if not need.any():
+            break
+        free = np.ones(len(cands), bool)
+        free[selected] = False
+        for key in set(cands.mount_key[selected]):
+            if np.sum(cands.mount_key[selected] == key) >= cap:
+                free &= cands.mount_key != key
+        if spacing > 0:
+            for i in selected:
+                free &= ~((np.linalg.norm(cands.pos - cands.pos[i], axis=1) < spacing) & (cands.mount_key != cands.mount_key[i]))
+        gain = np.where(free, (res & need).sum(axis=1), 0)
+        if gain.max() == 0:
+            break
+        selected.append(int(gain.argmax()))
+        added += 1
+    if added:
+        log(f"Added {added} camera(s) for the charging pads: each pad's 4 drones are now told apart by "
+            f"{PAD_MIN_CAMERAS} cameras or more, where a mount allows it.")
+    return selected
 
 
 def pad_coverage_text(rows: list[dict], min_cameras: int) -> list[str]:
@@ -385,9 +434,13 @@ def optimise(site: Site, log=print, max_cameras: int | None = None, cancel=None)
         if len(extra) == before:
             break                                       # the same points again: nothing more to gain
         log(f"Re-planning with {len(extra):,} extra points where the fine check found gaps…")
+    with_pads = pad_cameras(site, cands, result.selected, max_cameras, log)
+    if len(with_pads) > len(result.selected):
+        result.selected = with_pads
+        cams = build_cameras(site, cands, result.selected)
     ev = evaluate(site, cams)
     pads = pad_coverage(site, cams)
-    for line in pad_coverage_text(pads, site.requirements.min_cameras):
+    for line in pad_coverage_text(pads, PAD_MIN_CAMERAS):
         log("warning: " + line)
     summary = dict(ev.summary)
     if pads:

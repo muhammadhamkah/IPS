@@ -220,10 +220,12 @@ forward over empty slots, never over a drone still on the pad.
 
 **The cameras must tell the drones on a pad apart.** Four drones 0.2 m apart, seen from far away
 or edge-on, merge or get mixed up. Planning reports, per pad, the cameras that see its 4 drones at
-least 8 px apart in the image (`pad_coverage`); a pad with fewer than the required cameras is
-drawn red and named in the plan log (simulated: 2 such cameras failed to identify them, 3
-worked). Pads tucked under the cameras on the near side are the usual cause: move them 1.5 m or
-more in from the edge, or add a mount that looks down on them.
+least 8 px apart in the image (`pad_coverage`). A pad needs 3 such cameras (simulated: 2 failed
+to identify the drones, 3 worked), whatever the venue's own "cameras per point". The flight
+volume starts above the floor, so a layout that covers it can still fall short on the pads:
+planning then adds cameras for them (`pad_cameras`). A pad that still has fewer than 3 is drawn
+red and named under the plan: move it nearer a truss or tripod area, or add a mount that looks
+down on it.
 
 Every leg is a minimum-jerk move: T = max(1.5 s, 1.875 × distance / speed). The drone (the PX4
 module) computes the legs itself from its file's header (batch, gap, speeds, timeout), so all
