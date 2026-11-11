@@ -81,6 +81,34 @@ def too_late(age_s: float, ev_delay_ms: float | None, horizon_ms: float | None =
     return ev_delay_ms is not None and age_s - ev_delay_ms / 1000 > MAX_LATE_S
 
 
+WEAK_CAMS = 2            # a position from this few cameras ...
+WEAK_HOLD_S = 0.03       # ... is not sent this soon after one from more cameras
+
+
+class WeakPositions:
+    """Leaves out the weak positions of a drone that is well seen. The cameras do not expose at the
+    same instant, so the engine works through them in groups, and a drone can be in two groups
+    every frame: one of 4 cameras, one of 2. Both give a position, 7 to 10 ms apart; the 2-camera
+    one is 2 to 4 times as far off, and PX4 weighs every position the same. Alternating like this,
+    120 a second, they shake the drone's velocity estimate: seen as 40 to 60 degrees of tilt in a
+    drone meant to hover, which then lost its position. A drone that only 1 or 2 cameras see keeps
+    getting those positions: nothing better was sent in the last WEAK_HOLD_S."""
+
+    def __init__(self, weak_cams: int = WEAK_CAMS, hold_s: float = WEAK_HOLD_S):
+        self.weak_cams, self.hold_ns = weak_cams, int(hold_s * 1e9)
+        self.good: dict = {}                 # marker -> exposure time of its last position from more cameras
+        self.left_out = 0
+
+    def skip(self, marker_id: int, t_ns: int, n_cams: int) -> bool:
+        if n_cams > self.weak_cams:
+            self.good[marker_id] = t_ns
+            return False
+        if abs(t_ns - self.good.get(marker_id, -(1 << 62))) <= self.hold_ns:
+            self.left_out += 1
+            return True
+        return False
+
+
 def cmd_live(a) -> int:
     import socket
     from idps.engine.calib import load_calibration
@@ -117,6 +145,7 @@ def cmd_live(a) -> int:
         rec.write(b"IDPSRAW1")
     print(f"listening on udp {a.host}:{a.port}; positions to drone(s) {sorted(mavs) or 'none'}; Ctrl+C to stop")
     last_print, sent, dropped, seen, ages = time.monotonic(), 0, 0, {}, []
+    weak = WeakPositions(hold_s=-1.0 if a.all_positions else WEAK_HOLD_S)
     try:
         while True:
             try:
@@ -132,6 +161,8 @@ def cmd_live(a) -> int:
             now = time.monotonic()
             now_ns = time.time_ns()                         # the system time base (PTP) the exposures are in
             for o in outs:
+                if weak.skip(o.marker_id, o.t_ns, o.n_cams):
+                    continue
                 v = vel_ned(frame, o.vel)
                 seen[o.marker_id] = (now, o.n_cams)
                 mav = mavs.get(o.marker_id)                 # drone ID = marker ID (D21)
@@ -160,6 +191,7 @@ def cmd_live(a) -> int:
                 print(f"{len(ing.stations)} stations, {eng.stats['frames']} frames, {eng.n_live_tracks} tracks; "
                       f"drones with positions: {sorted(live) or 'none'}; sent {sent}{lat}"
                       + (f"; {dropped} too late, not sent" if dropped else "")
+                      + (f"; {weak.left_out} from 1-2 cameras left out" if weak.left_out else "")
                       + (f"; clock sync answers {ts.answered}" if ts else ""), flush=True)
                 last_print, ages = now, []
     except KeyboardInterrupt:
@@ -203,6 +235,8 @@ def main(argv=None) -> int:
                          "exposure time (drones: EKF2_EV_DELAY 0, EKF2_DELAY_MAX = --horizon-ms)")
     lv.add_argument("--record", help="also write the camera packets as received to this file (idps-engine "
                     "replay reads it: diagnose a flight offline)")
+    lv.add_argument("--all-positions", action="store_true",
+                    help="also send a drone's positions from 1-2 cameras right after one from more cameras")
     lv.add_argument("--horizon-ms", type=float, default=50.0,
                     help="with --timesync: the drones' EKF2_DELAY_MAX; an older position is not sent")
     a = ap.parse_args(argv)

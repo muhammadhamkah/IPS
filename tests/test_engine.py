@@ -335,3 +335,18 @@ def test_a_parked_marker_seen_by_one_camera_is_held_on_its_spot():
     moved = spot + [0.05, 0.0, 0.0]                                                   # the line has left the spot
     dm = (moved - cam.position) / np.linalg.norm(moved - cam.position)
     assert eng._parked_anchor(tr, cam.position, dm, 10.0) is None
+
+
+def test_weak_positions_of_a_well_seen_drone_are_left_out():
+    """Two groups of cameras give a drone two positions each frame, 8 ms apart: the one from 2
+    cameras is left out. A drone only 2 cameras see keeps its positions, and so does one whose
+    better cameras lost it more than 30 ms ago."""
+    from idps.engine.cli import WeakPositions
+    w = WeakPositions()
+    ms = 1_000_000
+    sent = [(t, n) for t, n in [(0, 4), (8, 2), (17, 4), (25, 2), (33, 5), (41, 1)] if not w.skip(1, t * ms, n)]
+    assert sent == [(0, 4), (17, 4), (33, 5)] and w.left_out == 3
+    assert not w.skip(2, 0, 2) and not w.skip(2, 8 * ms, 1)            # drone 2: only ever 1-2 cameras
+    assert w.skip(1, 50 * ms, 2) and not w.skip(1, 70 * ms, 2)         # drone 1: 17 ms after, then 37 ms after
+    assert w.skip(1, 25 * ms, 2)                                        # (a weak one arriving late, out of order)
+    assert not WeakPositions(hold_s=0.0).skip(1, 0, 4) and not WeakPositions(hold_s=-1).skip(1, 5, 2)
