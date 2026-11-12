@@ -1068,3 +1068,79 @@ def test_views_show_the_show_files_led_colours(win, app, tmp_path):
     tab.view.set_run(run, 30.0)
     assert tab.view._rgb is None
     assert win.sim.lights.isChecked() and win.sim.view._rgb is None
+
+
+def test_designer_tab_builds_a_show_from_scenes(win, app, tmp_path):
+    """Designer tab: scenes are added, edited, reordered and deleted; every change rebuilds the
+    show; problems are listed and block sending; the show goes to Simulate and PX4 flight as a
+    show file; the design is saved and opened."""
+    from pathlib import Path
+
+    import numpy as np
+
+    from idps.ui.px4.tab import VENUE
+    win.open_doc(str(VENUE))
+    tab = win.design
+    win.tabs.setCurrentWidget(tab)
+    assert tab.compiled is None and "Add a scene" in tab.status.text() and not tab.play_btn.isEnabled()
+    tab.n_drones.setValue(12)
+    tab.add_scene("grid")
+    tab.add_scene("text", text="HI")
+    tab.add_scene("circle")
+    c = tab.compiled
+    assert c is not None and c.ok and tab.scenes.count() == 3 and tab.scenes.currentRow() == 2
+    assert tab.view.world.shape == (12, len(c.t), 3) and tab.slider.maximum() == len(c.t) - 1
+    assert "12 drones, 3 scene(s)" in tab.status.text()
+    # the form edits the selected scene: a wave on the circle, a colour, a tilt
+    assert not tab.f_text.isVisible() and not tab.f_wave_len.isVisible()
+    tab.f_wave.setValue(0.25)
+    tab.set_colour((255, 0, 80))
+    tab.f_depth.setCurrentIndex(tab.f_depth.findData("tilt"))
+    tab.rebuild()
+    sc = tab.design.scenes[2]
+    assert (sc.wave_m, sc.rgb, sc.depth, sc.depth_m) == (0.25, (255, 0, 80), "tilt", 1.0) and tab.f_wave_len.isVisible()
+    t0, t1 = tab.compiled.scene_span(2)
+    assert (tab.view.rgb[:, int((t0 + 1) * 20)] == (255, 0, 80)).all()
+    # selecting a scene shows its form and jumps the view to it
+    tab.scenes.setCurrentRow(1)
+    assert tab.f_text.isVisible() and tab.f_text.text() == "HI"
+    assert tab.slider.value() == int(round(tab.compiled.scene_span(1)[0] * 20)) and "HI" in tab.clock.text()
+    tab.view.grab()
+    # reorder, duplicate, delete
+    tab.move_scene(-1)
+    assert [s.kind for s in tab.design.scenes] == ["text", "grid", "circle"] and tab.scenes.currentRow() == 0
+    tab.duplicate_scene()
+    tab.delete_scene()
+    assert [s.kind for s in tab.design.scenes] == ["text", "grid", "circle"]
+    # a scene that cannot fly: listed, and nothing is sent
+    tab.scenes.setCurrentRow(1)
+    tab.f_width.setValue(1.0)
+    tab.rebuild()
+    assert not tab.compiled.ok and tab.findings.count() >= 1 and tab.findings.item(0).text().startswith("✖")
+    assert tab.export_show(tmp_path / "bad.zip") is None and "Fix what is marked" in tab.status.text()
+    assert not (tmp_path / "bad.zip").exists()
+    tab.f_width.setValue(0.0)
+    tab.rebuild()
+    assert tab.compiled.ok
+    # save and open
+    tab.save_design(tmp_path / "d.yaml")
+    tab.delete_scene()
+    assert tab.open_design(tmp_path / "d.yaml") and [s.kind for s in tab.design.scenes] == ["text", "grid", "circle"]
+    assert tab.n_drones.value() == 12 and tab.compiled.ok
+    assert not tab.open_design(VENUE) and "Could not open" in tab.status.text()
+    # to the other tabs, as a show file they read
+    tab.send_to_px4()
+    assert win.tabs.currentWidget() is win.px4 and win.px4.show_file and Path(win.px4.show_file).exists()
+    from idps.show.readers import load_show
+    assert len(load_show(win.px4.show_file).drones) == 12
+    Path(win.px4.show_file).unlink()
+    win.tabs.setCurrentWidget(tab)
+    tab.send_to_simulate()
+    assert win.tabs.currentWidget() is win.sim and win.sim.show_path and win.sim.mode.currentData() == "show"
+    Path(win.sim.show_path).unlink()
+    win.px4.set_show_file(None)
+    # no charging pads in the venue: it says so
+    win.doc.edit("no pads", lambda d: d["pads"]["centres"].clear())
+    tab.rebuild()
+    assert tab.compiled is None and "charging pads" in tab.status.text()
+    win.doc.undo.undo()

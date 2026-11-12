@@ -75,6 +75,9 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.addTab(page, "Planner")
+        from idps.ui.design.tab import DesignTab
+        self.design = DesignTab(self)
+        self.tabs.addTab(self.design, "Designer")
         from idps.ui.sim.tab import SimTab
         self.sim = SimTab(self)
         self.tabs.addTab(self.sim, "Simulate")
