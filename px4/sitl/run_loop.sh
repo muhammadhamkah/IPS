@@ -267,7 +267,29 @@ if [ "$MODE" = cameras ]; then
     done ) &
   WATCH=$!
 fi
+# a drone that does not reach the grid: ask its PX4 at once which failsafe it is in (its log only
+# says "Failsafe activated"), while it is still in it
+( while kill -0 $START 2>/dev/null; do
+    sleep 1
+    late=$(grep -m1 -oE "^Not started: drone\(s\) [^n]*not holding" "$OUT/start.txt" 2>/dev/null | grep -oE "[0-9]+ \(" | grep -oE "[0-9]+" || true)
+    [ -n "$late" ] || continue
+    for d in $late; do
+      "$B/bin/px4-listener" --instance $((d - 1)) failsafe_flags > "$OUT/failsafe_$d.txt" 2>&1 || true
+      "$B/bin/px4-listener" --instance $((d - 1)) estimator_status_flags > "$OUT/estimator_$d.txt" 2>&1 || true
+    done
+    break
+  done ) &
+ASK=$!
 wait $START || true
+kill $ASK 2>/dev/null || true
+for f in "$OUT"/failsafe_*.txt; do
+  [ -f "$f" ] || continue
+  d=${f##*failsafe_}; d=${d%.txt}
+  # (no GPS, no mission and no remote control are normal here)
+  flags=$(grep -E ": True$" "$f" | grep -vE "global_position_invalid|auto_mission_missing|manual_control_signal_lost" | sed -E 's/^ +//; s/: True$//' | tr '\n' ' ')
+  off=$(grep -E "^ +cs_(ev_pos|ev_yaw|ev_hgt|yaw_align|tilt_align|in_air): " "$OUT/estimator_$d.txt" 2>/dev/null | sed -E 's/^ +cs_//' | tr '\n' ' ')
+  echo "   drone $d did not reach the grid. PX4 failsafe flags set: ${flags:-none}. Estimator: ${off:-?}"
+done
 [ -n "$WATCH" ] && { kill $WATCH 2>/dev/null || true; }
 if [ -f "$OUT/fell_behind" ]; then
   echo "This computer fell behind real time: the simulated cameras ran $(cat "$OUT/fell_behind") ms behind the clock (want under 30),"
