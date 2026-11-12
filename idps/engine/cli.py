@@ -81,6 +81,7 @@ def too_late(age_s: float, ev_delay_ms: float | None, horizon_ms: float | None =
     return ev_delay_ms is not None and age_s - ev_delay_ms / 1000 > MAX_LATE_S
 
 
+KEEP_ALIVE_S = 0.15      # a drone is never left this long without a position, however late it is
 HEADING_BELOW_M = 0.3    # a drone's marker this low: it stands on the floor (its pad), facing North
 WEAK_CAMS = 2            # a position from this few cameras ...
 WEAK_HOLD_S = 0.03       # ... is not sent this soon after one from more cameras
@@ -146,6 +147,7 @@ def cmd_live(a) -> int:
         rec.write(b"IDPSRAW1")
     print(f"listening on udp {a.host}:{a.port}; positions to drone(s) {sorted(mavs) or 'none'}; Ctrl+C to stop")
     last_print, sent, dropped, seen, ages = time.monotonic(), 0, 0, {}, []
+    last_sent, kept = {}, 0
     weak = WeakPositions(hold_s=-1.0 if a.all_positions else WEAK_HOLD_S)
     try:
         while True:
@@ -173,9 +175,16 @@ def cmd_live(a) -> int:
                     # time, so the status line reports the part of it spent up to here
                     age = (now_ns - o.t_ns) * 1e-9
                     ages.append(age)
-                    if too_late(age, a.ev_delay_ms, a.horizon_ms if ts else None):
+                    late = too_late(age, a.ev_delay_ms, a.horizon_ms if ts else None)
+                    if late and now - last_sent.get(o.marker_id, now) <= KEEP_ALIVE_S:
                         dropped += 1
                     else:
+                        # (late, but its drone has had nothing for KEEP_ALIVE_S: sent all the same.
+                        # PX4 stops using positions altogether 0.4 s after the last one, its height
+                        # with them, and lands blind: a 0.6 s hold-up of this computer brought down
+                        # 20 drones. An old position is a few cm off; none at all ends the flight.)
+                        kept += late
+                        last_sent[o.marker_id] = now
                         # the heading (North, as it was put down) only while it stands on the floor
                         yaw = 0.0 if a.heading_always or -o.ned[2] < HEADING_BELOW_M else None
                         f = odometry_fields(o.ned, o.t_ns // 1000 if ts else int(now * 1e6), yaw, v)
@@ -194,6 +203,7 @@ def cmd_live(a) -> int:
                 print(f"{len(ing.stations)} stations, {eng.stats['frames']} frames, {eng.n_live_tracks} tracks; "
                       f"drones with positions: {sorted(live) or 'none'}; sent {sent}{lat}"
                       + (f"; {dropped} too late, not sent" if dropped else "")
+                      + (f"; {kept} late but sent (nothing newer for {1000 * KEEP_ALIVE_S:.0f} ms)" if kept else "")
                       + (f"; {weak.left_out} from 1-2 cameras left out" if weak.left_out else "")
                       + (f"; clock sync answers {ts.answered}" if ts else ""), flush=True)
                 last_print, ages = now, []

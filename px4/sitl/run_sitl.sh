@@ -18,6 +18,8 @@
 # EVP_GATE (default 40): how far, in standard deviations, an IDPS position may be from the drone's own
 # estimate and still be used. PX4's 5 is a few cm with 1 cm positions: a drone that drifted further (a hard
 # manoeuvre, a stall) rejected every position from then on and flew away (seen: 23 m). EVP_GATE=5: as before.
+# CBRK_SUPPLY_CHK: no battery checks. On a busy computer a simulated battery's readings came over 5 s apart;
+# PX4 called it unhealthy, the drone went into failsafe as it armed and never took off (so the show never started).
 # In the camera loop EV_DELAY_MS is what idps-engine live reports as "exposure to send" (plus the
 # network on real drones); EV_HORIZON_MS overrides the horizon.
 set -e
@@ -48,7 +50,7 @@ export PX4_PARAM_EKF2_EV_CTRL=${EV_CTRL:-11} PX4_PARAM_EKF2_HGT_REF=3 PX4_PARAM_
 # default, while the show file climbs from its first second).
 export PX4_PARAM_SIH_KDV=0.2 PX4_PARAM_MPC_XY_P=1.8 PX4_PARAM_MPC_XY_VEL_P_ACC=4.0 PX4_PARAM_MPC_XY_VEL_I_ACC=1.5 \
        PX4_PARAM_MPC_Z_P=1.5 PX4_PARAM_MPC_Z_VEL_P_ACC=6.0 \
-       PX4_PARAM_MPC_TKO_RAMP_T=0.5 PX4_PARAM_SIM_BAT_MIN_PCT=100 PX4_PARAM_COM_LOW_BAT_ACT=0 \
+       PX4_PARAM_MPC_TKO_RAMP_T=0.5 PX4_PARAM_SIM_BAT_MIN_PCT=100 PX4_PARAM_COM_LOW_BAT_ACT=0 PX4_PARAM_CBRK_SUPPLY_CHK=894281 \
        PX4_PARAM_SYS_HAS_BARO=0   # simulated battery never drains or warns into a failsafe; baro off (IDPS height)
 # DRONE=micro60: a 60 g indoor show quad (65 mm frame: motors 2.3 cm from the axes, thrust/weight
 # 3.5, 20 ms motors, inertia 3e-5 / 3e-5 / 5e-5 kg m^2) instead of SIH's 1 kg default, with
