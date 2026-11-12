@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "px4" / "sitl" / "run_loop.sh"
 VENUE = ROOT / "examples" / "sites" / "show_8x8.yaml"   # where run_loop.sh flies the show
 LIMIT_MM = 30.0
-LIVE_LAG_S = 0.6               # live view: this far behind the newest sample, so every drone has data there
+LIVE_LAG_S = 1.3               # live view: this far behind the newest sample, so every drone has data there
 PLAY_MS = 40
 MODES = [("Positions inside PX4 (quick check)", "vision", "px4_sitl_default"),
          ("Simulated cameras + engine (full loop)", "cameras", None)]      # None: camera_build()
@@ -300,7 +300,7 @@ class Px4Tab(QWidget):
         self._last_tick = None
         self._live_last = None
         self.poll = QTimer(self)                       # while flying: reload the tracking log
-        self.poll.setInterval(250)
+        self.poll.setInterval(1000)                   # (reading the log costs a quarter of a second of one core with 20 drones)
         self.live = QTimer(self)                       # while flying: move the view on smoothly between reloads
         self.live.setInterval(PLAY_MS)
         self.live.timeout.connect(self._live_tick)
