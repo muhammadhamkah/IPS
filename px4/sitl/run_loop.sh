@@ -225,7 +225,14 @@ echo "== upload and fly (about $((SHOW_S + EXTRA)) s)"
 UP=$(grep -c ": OK " "$OUT/upload.txt" || true)
 echo "$UP of $N drone(s) uploaded"
 if [ "$UP" -lt "$N" ]; then
-  grep -E "FAILED|Error|error" "$OUT/upload.txt" | tail -5
+  grep -E "FAILED|Error|error|no heartbeat|answered as" "$OUT/upload.txt" | tail -5
+  # a drone that does not answer: is its PX4 still running, and what did it say last?
+  for d in $(grep -oE "drone [0-9]+: no heartbeat" "$OUT/upload.txt" | grep -oE "[0-9]+" | sort -un); do
+    i=$((d - 1))
+    if pgrep -f "px4.* -i $i( |$)" > /dev/null 2>&1; then alive="still running"; else alive="NOT running any more (it stopped or crashed)"; fi
+    echo "   drone $d: its PX4 is $alive. Its last lines ($B/rootfs/$i/out.log):"
+    tail -6 "$B/rootfs/$i/out.log" 2>/dev/null | sed 's/^/      /'
+  done
   echo "Upload failed: those drones have no show file (see $OUT/upload.txt)"; exit 1
 fi
 # in the background and waited for, so a stop (TERM) is handled at once: the trap aborts the

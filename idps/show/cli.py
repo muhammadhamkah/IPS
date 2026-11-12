@@ -144,7 +144,7 @@ def _connect(a) -> dict:
     mavs = {}
     for did, dev in links.items():
         m = mavutil.mavlink_connection(dev, source_system=255, source_component=190)
-        hb, end = None, time.monotonic() + 10
+        hb, end = None, time.monotonic() + 30        # (a busy computer: 20 simulated drones answer slowly)
         while hb is None and time.monotonic() < end:     # the drone's own heartbeat, not a ground station's it forwards
             hb = m.recv_match(type="HEARTBEAT", blocking=True, timeout=1.0)
             if hb is not None and hb.type == mavutil.mavlink.MAV_TYPE_GCS:
