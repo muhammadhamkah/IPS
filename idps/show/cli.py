@@ -144,14 +144,21 @@ def _connect(a) -> dict:
     mavs = {}
     for did, dev in links.items():
         m = mavutil.mavlink_connection(dev, source_system=255, source_component=190)
-        hb, end = None, time.monotonic() + 30        # (a busy computer: 20 simulated drones answer slowly)
-        while hb is None and time.monotonic() < end:     # the drone's own heartbeat, not a ground station's it forwards
-            hb = m.recv_match(type="HEARTBEAT", blocking=True, timeout=1.0)
-            if hb is not None and hb.type == mavutil.mavlink.MAV_TYPE_GCS:
-                hb = None
-        if hb is None:
+        # Any message of the drone's own autopilot will do, not only its heartbeat: that comes once a
+        # second among thousands of others on a fast link, and on a busy computer (20 simulated
+        # drones) it was missed for 10 s on end, which stopped the whole upload.
+        seen, end = None, time.monotonic() + 30
+        while seen is None and time.monotonic() < end:
+            msg = m.recv_match(blocking=True, timeout=1.0)
+            if msg is None or msg.get_type() == "BAD_DATA":
+                continue
+            if msg.get_type() == "HEARTBEAT" and msg.type == mavutil.mavlink.MAV_TYPE_GCS:
+                continue                                 # a ground station's, which the drone forwards
+            if msg.get_srcComponent() == mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1:
+                seen = msg
+        if seen is None:
             raise SystemExit(f"drone {did}: no heartbeat on {dev}")
-        m.target_system, m.target_component = hb.get_srcSystem(), hb.get_srcComponent()
+        m.target_system, m.target_component = seen.get_srcSystem(), seen.get_srcComponent()
         if m.target_system != did:
             raise SystemExit(f"{dev} answered as MAV_SYS_ID {m.target_system}, not drone {did}: wrong drone or ID not set")
         ob.send_heartbeat(m)
