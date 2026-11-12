@@ -271,7 +271,7 @@ fi
 # says "Failsafe activated"), while it is still in it
 ( while kill -0 $START 2>/dev/null; do
     sleep 1
-    late=$(grep -m1 -oE "^Not started: drone\(s\) [^n]*not holding" "$OUT/start.txt" 2>/dev/null | grep -oE "[0-9]+ \(" | grep -oE "[0-9]+" || true)
+    late=$(grep -m1 -oE "^Not started: drone\(s\) .*not holding" "$OUT/start.txt" 2>/dev/null | grep -oE "[0-9]+ \(" | grep -oE "[0-9]+" || true)
     [ -n "$late" ] || continue
     for d in $late; do
       "$B/bin/px4-listener" --instance $((d - 1)) failsafe_flags > "$OUT/failsafe_$d.txt" 2>&1 || true
